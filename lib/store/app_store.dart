@@ -103,6 +103,41 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  // User details (for KYC Completed page)
+  dynamic _userDetails;
+  bool _loadingUserDetails = false;
+  String? _errorUserDetails;
+  dynamic get userDetails => _userDetails;
+  bool get loadingUserDetails => _loadingUserDetails;
+  String? get errorUserDetails => _errorUserDetails;
+
+  Future<void> fetchUserDetails() async {
+    debugPrint('[AppStore] fetchUserDetails START');
+    _loadingUserDetails = true;
+    _errorUserDetails = null;
+    notifyListeners();
+    try {
+      final client = ApiClient();
+      final res = await client.post('/api/user-details', body: {});
+      debugPrint('[AppStore] fetchUserDetails Response: ${res.statusCode}');
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final data = _parseJson(res.body);
+        _userDetails = data;
+        debugPrint('[AppStore] fetchUserDetails OK');
+      } else {
+        _errorUserDetails = res.body;
+        debugPrint('[AppStore] fetchUserDetails ERROR: ${res.body}');
+      }
+    } catch (e, st) {
+      _errorUserDetails = e.toString();
+      debugPrint('[AppStore] fetchUserDetails Exception: $e\n$st');
+    } finally {
+      _loadingUserDetails = false;
+      notifyListeners();
+      debugPrint('[AppStore] fetchUserDetails DONE');
+    }
+  }
+
   dynamic _parseJson(String body) {
     try {
       return jsonDecode(body);

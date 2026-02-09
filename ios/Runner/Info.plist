@@ -64,6 +64,20 @@
 <string>We are using it for user uploading documents</string>
 <key>NSMicrophoneUsageDescription</key>
 <string>We need access to your microphone for audio recording.</string>
-
+	
+	<!-- Allow querying / opening UPI & payment apps from url_launcher -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>upi</string>
+		<string>bhim</string>
+		<string>gpay</string>
+		<string>tez</string>
+		<string>googlepay</string>
+		<string>google.payments</string>
+		<string>paytm</string>
+		<string>paytmmp</string>
+		<string>phonepe</string>
+	</array>
+	
 </dict>
 </plist>

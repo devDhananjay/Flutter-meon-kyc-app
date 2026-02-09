@@ -69,4 +69,8 @@ class KycAPI {
     final stream = await request.send();
     return http.Response.fromStream(stream);
   }
+
+  static Future<http.Response> getUserDetails() async {
+    return _client.post('/api/user-details', body: {});
+  }
 }

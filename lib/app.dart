@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/pages/home_page.dart';
+import 'package:meon_kyc/pages/kyc_completed_page.dart';
 import 'package:meon_kyc/pages/page_not_found.dart';
 import 'package:meon_kyc/pages/webview_page.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
@@ -52,6 +53,10 @@ class MeonKycApp extends StatelessWidget {
                 workflowName: workflow,
               );
             },
+          ),
+          GoRoute(
+            path: '/:company/:workflowName/completed',
+            builder: (context, state) => const KycCompletedPage(),
           ),
           GoRoute(
             path: '/404',

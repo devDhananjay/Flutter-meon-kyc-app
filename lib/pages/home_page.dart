@@ -70,13 +70,33 @@ class _HomePageState extends State<HomePage> {
         widget.workflowName,
         queryString,
       );
+      
+      // Check if KYC is completed (is_admin: true)
+      final response = store.fieldsWithAuth;
+      if (response is Map && response['is_admin'] == true) {
+        debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
+        await store.fetchUserDetails();
+        if (mounted && store.userDetails != null) {
+          // Navigate to KYC Completed page
+          context.go('/${widget.company}/${widget.workflowName}/completed');
+          return;
+        } else if (mounted && store.errorUserDetails != null) {
+          debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
+          Fluttertoast.showToast(msg: 'Error loading completion details');
+        }
+      }
+      
       // Check for redirect after get-context
-      // Skip redirect if verifyCompleted flag is present (prevents infinite loop after verify page)
-      final verifyCompleted = widget.queryParams['verifyCompleted'] == 'true';
-      if (mounted && !verifyCompleted) {
+      // Skip redirect if step completion params present (IPV, RPD, eSign, DigiLocker, etc.)
+      // Prevents infinite loop when backend returns redirect despite completed step
+      final hasCompletionParams = widget.queryParams['success'] == 'yes' ||
+          widget.queryParams['verifyCompleted'] == 'true' ||
+          widget.queryParams['esign'] == 'yes' ||
+          widget.queryParams.containsKey('transaction_id');
+      if (mounted && !hasCompletionParams) {
         await _checkAndHandleRedirect(store);
-      } else if (verifyCompleted) {
-        debugPrint('[HomePage] Verify completed - skipping redirect check to prevent loop');
+      } else if (hasCompletionParams) {
+        debugPrint('[HomePage] Step completed (success/transaction_id/esign) - skipping redirect to prevent loop');
       }
     } else {
       await store.fetchWorkflowFields(widget.company, widget.workflowName);

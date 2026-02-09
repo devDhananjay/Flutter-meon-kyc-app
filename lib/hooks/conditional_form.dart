@@ -31,7 +31,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
         _conditionalFlow = conditionalFlow;
 
   void updateFields(List<dynamic>? fields, List<dynamic>? conditionalFlow) {
-    final fieldsChanged = _fields != fields || _conditionalFlow != conditionalFlow;
+    final fieldsChanged = !listEquals(_fields, fields) || !listEquals(_conditionalFlow, conditionalFlow);
     _fields = fields;
     _conditionalFlow = conditionalFlow;
     
