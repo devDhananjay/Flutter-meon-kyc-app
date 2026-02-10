@@ -153,11 +153,17 @@ class _WebViewPageState extends State<WebViewPage> {
     if (isOurDomain) {
       if (!isWorkflowPath || hasCompletionParams) {
         for (final e in uri.queryParameters.entries) {
-          if (e.value.isNotEmpty) {
+          final keyLower = e.key.toLowerCase();
+          // Never override routing params (state, client_token, auto) from intermediate domains
+          // These should always come from the final workflow URL (bp_flow, etc.)
+          if (e.value.isNotEmpty &&
+              keyLower != 'state' &&
+              keyLower != 'client_token' &&
+              keyLower != 'auto') {
             _completionParams[e.key] = e.value;
           }
         }
-        if (uri.queryParameters.isNotEmpty) {
+        if (_completionParams.isNotEmpty) {
           debugPrint('[WebView] Captured completion params: $_completionParams');
         }
       }
@@ -313,14 +319,24 @@ class _WebViewPageState extends State<WebViewPage> {
     // Also capture completion params from onLoadStop (in case shouldOverride wasn't called)
     _captureCompletionParamsIfApplicable(url);
 
-    if (uri.queryParameters.containsKey('state')) {
-      _preservedState = uri.queryParameters['state'];
-    }
-    if (uri.queryParameters.containsKey('client_token')) {
-      _preservedClientToken = uri.queryParameters['client_token'];
-    }
-    if (uri.queryParameters.containsKey('auto')) {
-      _preservedAuto = uri.queryParameters['auto'];
+    // Only update preserved routing params from our main frontend domains
+    final isMainFrontendHost = (host.contains('meon.co.in') &&
+            !host.contains('digilocker.') &&
+            !host.contains('api.') &&
+            !host.contains('accounts.')) ||
+        host.contains('stoxbox.in') ||
+        host.contains('localhost');
+
+    if (isMainFrontendHost) {
+      if (uri.queryParameters.containsKey('state')) {
+        _preservedState = uri.queryParameters['state'];
+      }
+      if (uri.queryParameters.containsKey('client_token')) {
+        _preservedClientToken = uri.queryParameters['client_token'];
+      }
+      if (uri.queryParameters.containsKey('auto')) {
+        _preservedAuto = uri.queryParameters['auto'];
+      }
     }
 
     final isFrontendUrl = host.contains('stoxbox.in') ||
@@ -330,6 +346,7 @@ class _WebViewPageState extends State<WebViewPage> {
             !host.contains('accounts.')) ||
         host.contains('localhost');
     final isWorkflowPath = path.contains('/${widget.company}/${widget.workflowName}');
+    final isReversePennyRoute = path.contains('/reverse_pennydrop/');
     final hasVerifyParam = uri.queryParameters.containsKey('verify');
 
     final initialUri = Uri.tryParse(widget.url);
@@ -345,7 +362,11 @@ class _WebViewPageState extends State<WebViewPage> {
       return;
     }
 
-    final isCleanWorkflowUrl = isFrontendUrl && isWorkflowPath && !hasVerifyParam;
+    // For Reverse Penny Drop, we must keep the WebView open on
+    // /reverse_pennydrop/... so the Digio popup can complete.
+    // Treat only the plain workflow URL (/company/workflowName) as "clean".
+    final isCleanWorkflowUrl =
+        isFrontendUrl && isWorkflowPath && !hasVerifyParam && !isReversePennyRoute;
 
     if (isCleanWorkflowUrl && initialWasVerifyPage) {
       if (!_hasSeenCleanUrl) {

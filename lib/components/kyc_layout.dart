@@ -13,6 +13,7 @@ class KycLayout extends StatelessWidget {
   final Widget? leading;
   final Widget? trailing;
   final bool showDocumentsSection;
+  final bool skipScaffold; // When true, skip Scaffold/SafeArea (for nested use)
 
   const KycLayout({
     super.key,
@@ -23,62 +24,114 @@ class KycLayout extends StatelessWidget {
     this.leading,
     this.trailing,
     this.showDocumentsSection = true,
+    this.skipScaffold = false,
   });
+
+  Widget _buildContent() {
+    if (skipScaffold) {
+      // When skipping scaffold, return scrollable content directly (no Expanded)
+      // This prevents overflow when used inside Expanded widget
+      return SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Top bar: logo (STOXBOX) - always show (has logo and leading/trailing buttons)
+              _buildTopBar(null),
+              if (title != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  title!,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: KycTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              child,
+              if (showDocumentsSection) ...[
+                const SizedBox(height: 24),
+                const DocumentsHandySection(),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+    
+    // Default: full layout with Expanded
+    return Column(
+      children: [
+        // Top bar: logo (STOXBOX) - always show (has logo and leading/trailing buttons)
+        _buildTopBar(null),
+        // Stepper (only show if stepperSteps is provided)
+        if (stepperSteps != null)
+          KycStepperBar(
+            steps: stepperSteps!,
+            currentIndex: stepperIndex ?? 0,
+          ),
+        // Main content
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (title != null) ...[
+                    Text(
+                      title!,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: KycTheme.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  child,
+                  if (showDocumentsSection) ...[
+                    const SizedBox(height: 24),
+                    const DocumentsHandySection(),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final content = _buildContent();
+    
+    if (skipScaffold) {
+      // When skipping scaffold, just return content (for nested use)
+      return content;
+    }
+    
+    // Default: wrap in Scaffold and SafeArea
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: KycTheme.statusBar,
       child: Scaffold(
         backgroundColor: KycTheme.background,
         body: SafeArea(
-          child: Column(
-            children: [
-              // Top bar: logo (STOXBOX)
-              _buildTopBar(context),
-              // Stepper (Figma: Mobile Verify, Email Verify, Pan Details, etc.)
-              KycStepperBar(
-                steps: stepperSteps ?? KycStepperBar.defaultSteps,
-                currentIndex: stepperIndex ?? 0,
-              ),
-              // Main content
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 480),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (title != null) ...[
-                          Text(
-                            title!,
-                            style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              color: KycTheme.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        child,
-                        if (showDocumentsSection) ...[
-                          const SizedBox(height: 24),
-                          const DocumentsHandySection(),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+          child: content,
         ),
       ),
     );
   }
 
-  Widget _buildTopBar(BuildContext context) {
+  Widget _buildTopBar(BuildContext? context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: Row(

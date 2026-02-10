@@ -73,4 +73,8 @@ class KycAPI {
   static Future<http.Response> getUserDetails() async {
     return _client.post('/api/user-details', body: {});
   }
+
+  static Future<http.Response> getStepperWorkflow(String company, String workflowId) async {
+    return _client.post('/kycadmin_getWorkflow/$company/$workflowId', body: {});
+  }
 }

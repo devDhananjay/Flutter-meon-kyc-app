@@ -25,6 +25,7 @@ class BaseAPI {
     final url = '$_baseUrl$path';
     _log('GET', 'Request: $url');
     final token = await StorageService.getAccessToken();
+    debugPrint('[API] Token: $token');
     final h = {...?headers, 'Content-Type': 'application/json'};
     if (token != null) h['Authorization'] = 'Bearer $token';
     try {
@@ -50,6 +51,7 @@ class BaseAPI {
             : body.toString();
     _log('POST', 'Request: $url', 'body: ${_truncate(bodyStr ?? '{}')}');
     final token = await StorageService.getAccessToken();
+    debugPrint('[API] Token: $token');
     final h = Map<String, String>.from(headers ?? {});
     if (!h.containsKey('Content-Type')) {
       h['Content-Type'] = 'application/json';
@@ -63,7 +65,7 @@ class BaseAPI {
       );
       _log('POST', 'Response ${res.statusCode}: $path', _truncate(res.body));
       
-      // Extract and print the position (only if response has context)
+      // Extract and log Position from get-context API response
       if (res.statusCode == 200) {
         try {
           final responseData = json.decode(res.body);
@@ -71,7 +73,7 @@ class BaseAPI {
             final context = responseData['context'];
             if (context is Map && context.containsKey('position')) {
               final position = context['position'];
-              print('Position: $position');
+              debugPrint('[API] Position extracted: $position');
             }
           }
         } catch (_) {

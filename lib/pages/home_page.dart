@@ -10,6 +10,7 @@ import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
 import 'package:meon_kyc/components/form_field_widget.dart';
 import 'package:meon_kyc/components/kyc_layout.dart';
+import 'package:meon_kyc/components/kyc_stepper_bar.dart';
 import 'package:meon_kyc/components/kyc_note_box.dart';
 import 'package:meon_kyc/components/loader.dart';
 import 'package:meon_kyc/components/otp_verify_section.dart';
@@ -71,12 +72,39 @@ class _HomePageState extends State<HomePage> {
         queryString,
       );
       
-      // Check if KYC is completed (is_admin: true)
+      // Extract workflowId from design_template (format: "company-workflowId-number")
+      // Example: "mandotsecurities-2321998632-76" -> workflowId = "2321998632"
+      String? workflowId;
       final response = store.fieldsWithAuth;
+      if (response is Map) {
+        final context = response['context'] as Map<String, dynamic>?;
+        final designTemplate = context?['design_template']?.toString();
+        if (designTemplate != null && designTemplate.contains('-')) {
+          final parts = designTemplate.split('-');
+          if (parts.length >= 2) {
+            workflowId = parts[1]; // Second part is workflowId
+            debugPrint('[HomePage] Extracted workflowId from design_template: $workflowId');
+          }
+        }
+        
+        // Also try extracting from user details if available
+        if (workflowId == null || workflowId.isEmpty) {
+          // Will be fetched later if needed
+        }
+      }
+      
+      // Fetch stepper workflow if we have workflowId
+      if (workflowId != null && workflowId.isNotEmpty) {
+        debugPrint('[HomePage] Fetching stepper workflow: ${widget.company} / $workflowId');
+        await store.fetchStepperWorkflow(widget.company, workflowId);
+      }
+      
+      // Check if KYC is completed (is_admin: true)
       if (response is Map && response['is_admin'] == true) {
         debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
         await store.fetchUserDetails();
         if (mounted && store.userDetails != null) {
+          // Stepper workflow already fetched above (if workflowId was available)
           // Navigate to KYC Completed page
           context.go('/${widget.company}/${widget.workflowName}/completed');
           return;
@@ -186,16 +214,39 @@ class _HomePageState extends State<HomePage> {
 
   int _getStepperIndex(AppStore store, bool isAuth) {
     if (!isAuth) return 0;
+    
+    // Use dynamic position-based index from AppStore
+    final currentIndex = store.getCurrentStepIndex();
+    if (currentIndex != null) {
+      debugPrint('[HomePage] Stepper index from position: $currentIndex');
+      return currentIndex;
+    }
+    
+    // Fallback to old logic if position not found
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
     if (ctx is Map) {
       // Try 'index' first (from get-context response), then 'step'
       final indexStr = ctx['index']?.toString() ?? ctx['step']?.toString();
       if (indexStr != null) {
         final idx = int.tryParse(indexStr);
-        if (idx != null && idx >= 0) return idx.clamp(0, 4);
+        if (idx != null && idx >= 0) {
+          final steps = store.getStepperSteps();
+          return idx.clamp(0, steps.length > 0 ? steps.length - 1 : 4);
+        }
       }
     }
     return 0;
+  }
+  
+  List<String> _getStepperSteps(AppStore store) {
+    // Get dynamic steps from stepper workflow API
+    final steps = store.getStepperSteps();
+    if (steps.isNotEmpty) {
+      // debugPrint('[HomePage] Using dynamic stepper steps: $steps');
+      return steps;
+    }
+    // Fallback to default steps
+    return KycStepperBar.defaultSteps;
   }
 
   dynamic _getActiveFields(AppStore store) {
@@ -654,19 +705,43 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _handleLogout() async {
     final token = await StorageService.getAccessToken();
-    if (token == null) {
-      await _clearCookiesAndRefresh();
-      return;
-    }
     setState(() => _logoutLoading = true);
     try {
-      final client = ApiClient();
-      await client.post('/api/user/logout', headers: {'Authorization': 'Bearer $token'});
-      Fluttertoast.showToast(msg: 'Logged out');
-    } catch (_) {
-      Fluttertoast.showToast(msg: 'Logged out from local session');
+      // Step 1: Call logout API
+      if (token != null) {
+        try {
+          final client = ApiClient();
+          await client.post('/api/user/logout', headers: {'Authorization': 'Bearer $token'});
+          debugPrint('[HomePage] Logout API called successfully');
+        } catch (e) {
+          debugPrint('[HomePage] Logout API error (continuing anyway): $e');
+        }
+      }
+      
+      // Step 2: Clear all auth tokens and data
+      await StorageService.clearAll();
+      debugPrint('[HomePage] Tokens cleared');
+      
+      // Step 3: Reset form state
+      _formNotifier.resetForm();
+      
+      // Step 4: Reset AppStore state
+      final store = context.read<AppStore>();
+      store.resetState();
+      
+      // Step 5: Fetch workflow again (without auth) to get first step
+      await store.fetchWorkflowFields(widget.company, widget.workflowName);
+      debugPrint('[HomePage] Workflow refreshed after logout');
+      
+      // Step 6: Refresh UI - navigate to same route to trigger rebuild
+      if (mounted) {
+        context.go('/${widget.company}/${widget.workflowName}');
+        Fluttertoast.showToast(msg: 'Logged out successfully');
+      }
+    } catch (e) {
+      debugPrint('[HomePage] Logout error: $e');
+      Fluttertoast.showToast(msg: 'Error during logout');
     } finally {
-      await _clearCookiesAndRefresh();
       if (mounted) setState(() => _logoutLoading = false);
     }
   }
@@ -678,31 +753,10 @@ class _HomePageState extends State<HomePage> {
       child: Consumer2<AppStore, ConditionalFormNotifier>(
         builder: (context, store, form, _) {
           final activeFields = _getActiveFields(store);
-          if (store.loading) {
-            return const Loader(message: 'Loading...');
-          }
-          if (store.error != null) {
-            return KycLayout(
-              title: 'Error',
-              child: Center(
-                child: Text(
-                  store.error!,
-                  style: const TextStyle(color: Colors.red),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
-          }
-
           final fieldList = (activeFields?['fields'] as List?) ?? [];
           final conditionalFlow = activeFields?['conditionalFlow'] as List?;
           final submitButton = activeFields?['submitButton'] as Map?;
-          
-          // Show smooth loading overlay when fetching get-context
-          if (store.loadingWithAuth) {
-            return const Loader(message: 'Loading...');
-          }
-          
+
           return FutureBuilder<bool>(
             future: StorageService.hasAccessToken(),
             builder: (context, snapshot) {
@@ -711,50 +765,143 @@ class _HomePageState extends State<HomePage> {
                 if (mounted) _formNotifier.updateFields(fieldList, conditionalFlow);
               });
 
+              // Get stepper data
+              final stepperIndex = _getStepperIndex(store, isAuthenticated);
+              final stepperSteps = _getStepperSteps(store);
+
+              // Build stepper widget with fixed height container (always visible)
+              final stepperWidget = Container(
+                height: 100, // Fixed height for stepper (circle + label + padding)
+                color: Colors.white, // Ensure background color
+                child: KycStepperBar(
+                  steps: stepperSteps,
+                  currentIndex: stepperIndex,
+                ),
+              );
+
+              // Handle loading states - show loader BELOW stepper
+              if (store.loading) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Column(
+                      children: [
+                        // Fixed height stepper container
+                        stepperWidget,
+                        // Loader below stepper
+                        const Expanded(child: Loader(message: 'Loading...')),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              
+              if (store.error != null) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Column(
+                      children: [
+                        // Fixed height stepper container
+                        stepperWidget,
+                        // Error content below stepper
+                        Expanded(
+                          child: KycLayout(
+                            title: 'Error',
+                            stepperSteps: null, // Stepper already shown above
+                            stepperIndex: null,
+                            skipScaffold: true, // Skip Scaffold since we're already in one
+                            child: Center(
+                              child: Text(
+                                store.error!,
+                                style: const TextStyle(color: Colors.red),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              
+              // Show loader BELOW stepper when fetching get-context
+              if (store.loadingWithAuth) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Column(
+                      children: [
+                        // Fixed height stepper container
+                        stepperWidget,
+                        // Loader below stepper
+                        const Expanded(child: Loader(message: 'Loading...')),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
               final pageTitle = (activeFields is Map
                       ? activeFields['title'] ?? activeFields['pageTitle']
                       : null)
                   ?.toString() ??
                   'Start your KYC';
-              final stepperIndex = _getStepperIndex(store, isAuthenticated);
 
-              return KycLayout(
-                title: pageTitle,
-                stepperIndex: stepperIndex,
-                leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
-                    ? IconButton(
-                        onPressed: _backLoading
-                            ? null
-                            : () => Navigator.of(context).maybePop(),
-                        icon: _backLoading
-                            ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: KycTheme.primary),
-                              )
-                            : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
-                      )
-                    : null,
-                trailing: isAuthenticated
-                    ? IconButton(
-                        onPressed: _logoutLoading ? null : _handleLogout,
-                        icon: _logoutLoading
-                            ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: KycTheme.primary),
-                              )
-                            : const Icon(Icons.logout, color: KycTheme.textPrimary),
-                      )
-                    : null,
-                child: _buildForm(
-                  fieldList,
-                  activeFields,
-                  submitButton,
-                  store,
-                  isAuthenticated,
+              return Scaffold(
+                backgroundColor: KycTheme.background,
+                body: SafeArea(
+                  child: Column(
+                    children: [
+                      // Fixed height stepper container (always visible at top)
+                      stepperWidget,
+                      // Main content below stepper (takes remaining space)
+                      Expanded(
+                        child: KycLayout(
+                          title: pageTitle,
+                          stepperSteps: null, // Stepper already shown above
+                          stepperIndex: null,
+                          skipScaffold: true, // Skip Scaffold since we're already in one
+                          leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
+                              ? IconButton(
+                                  onPressed: _backLoading
+                                      ? null
+                                      : () => Navigator.of(context).maybePop(),
+                                  icon: _backLoading
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2, color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
+                                )
+                              : null,
+                          trailing: isAuthenticated
+                              ? IconButton(
+                                  onPressed: _logoutLoading ? null : _handleLogout,
+                                  icon: _logoutLoading
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2, color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                )
+                              : null,
+                          child: _buildForm(
+                            fieldList,
+                            activeFields,
+                            submitButton,
+                            store,
+                            isAuthenticated,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -841,8 +988,39 @@ class _HomePageState extends State<HomePage> {
 
     // Hide sirf "confirm OTP" / re-enter OTP type field – design: one OTP entry
     // Account number jaise "Confirm Account Number" fields ko HIDE mat karo
+    // Filter step-specific fields: no mobile inputs on mobile_otp, no email input on email_otp
+    final isMobileOtpScreen = position == 'mobile_otp';
+    final isEmailOtpScreen = position == 'email_otp';
+
     final visibleFieldsForDisplay = visibleFields.where((f) {
       if (f is! Map) return false;
+
+      // On mobile_otp screen: HIDE all mobile/phone input fields
+      if (isMobileOtpScreen) {
+        final fieldName = (f['name']?.toString() ?? '').toLowerCase();
+        if (fieldName == 'mobile' ||
+            fieldName == 'phone' ||
+            fieldName == 'mobile_number' ||
+            fieldName == 'phone_number' ||
+            fieldName.contains('mobile') ||
+            fieldName.contains('phone')) {
+          return false; // Hide mobile input fields
+        }
+      }
+
+      // On email_otp screen: HIDE email input field (OTP only; no email field below)
+      if (isEmailOtpScreen) {
+        final fieldName = (f['name']?.toString() ?? '').toLowerCase();
+        final type = (f['type']?.toString() ?? '').toLowerCase();
+        final isOtpField = type == 'otp' || fieldName == 'otp' || fieldName == 'otp_code';
+        if (!isOtpField &&
+            (fieldName == 'email' ||
+                fieldName == 'email_id' ||
+                fieldName == 'emailid' ||
+                fieldName.contains('email'))) {
+          return false; // Hide email input on OTP verify screen
+        }
+      }
 
       // Agar OTP field identified hai aur yeh field usi OTP ko validateWith kar rahi hai
       // (confirm OTP / re-enter OTP), tabhi hide karo
@@ -887,6 +1065,7 @@ class _HomePageState extends State<HomePage> {
       child: Form(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
           children: [
             ...visibleFieldsForDisplay.map((field) {
               if (field is! Map) return const SizedBox.shrink();
@@ -915,6 +1094,7 @@ class _HomePageState extends State<HomePage> {
                 padding: const EdgeInsets.only(bottom: 20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     FormFieldWidget(
                       name: name,
@@ -1080,31 +1260,69 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// OTP verify card as per design: "We have sent you an OTP via sms on +91 XXX Edit", 6 boxes, Resend, Verify, Aadhaar note
+  /// OTP verify card: separate UI for email_otp vs mobile_otp (Figma)
   Widget _buildOtpVerifyCard(Map otpField, dynamic activeFields) {
     final otpName = otpField['name']?.toString() ?? 'otp';
     final formData = _formNotifier.formData;
-    final mobile = formData['mobile'] ?? formData['phone'] ?? formData['mobile_number'] ?? '';
-    final sentToText = (otpField['sentToText']?.toString() ?? '').isNotEmpty
-        ? otpField['sentToText'].toString()
-        : 'We have sent you an OTP via sms on +91 ${mobile.toString().trim().isEmpty ? 'XXXXX' : mobile}';
+    final store = context.read<AppStore>();
+    final position = (store.fieldsWithAuth as Map?)?['context']?['position']?.toString().toLowerCase() ?? '';
+    final isEmailOtp = position == 'email_otp';
+    final isMobileOtp = position == 'mobile_otp';
+
+    // Step-specific copy: no mobile/SMS wording on email_otp
+    final String sentToText;
+    final VoidCallback? onEdit;
+    if (isEmailOtp) {
+      final email = formData['email'] ?? formData['email_id'] ?? formData['emailId'] ?? '';
+      final displayEmail = email.toString().trim();
+      sentToText = (otpField['sentToText']?.toString() ?? '').isNotEmpty
+          ? otpField['sentToText'].toString()
+          : 'We have sent you an OTP on ${displayEmail.isEmpty ? 'your email' : displayEmail}';
+      onEdit = () {
+        debugPrint('[HomePage] Edit email clicked - navigating back to email step');
+        _formNotifier.handleChange(otpName, '');
+        context.go('/${widget.company}/${widget.workflowName}');
+      };
+    } else {
+      final mobile = formData['mobile'] ?? formData['phone'] ?? formData['mobile_number'] ?? '';
+      final displayMobile = mobile.toString().trim();
+      sentToText = (otpField['sentToText']?.toString() ?? '').isNotEmpty
+          ? otpField['sentToText'].toString()
+          : 'We have sent you an OTP via sms on +91 ${displayMobile.isEmpty ? 'XXXXX' : displayMobile}';
+      onEdit = isMobileOtp
+          ? () {
+              debugPrint('[HomePage] Edit mobile clicked - navigating back to mobile step');
+              _formNotifier.handleChange(otpName, '');
+              context.go('/${widget.company}/${widget.workflowName}');
+            }
+          : null;
+    }
+
+    Map<String, dynamic>? otpExpiry;
+    if (otpField.containsKey('otpExpiry') && otpField['otpExpiry'] is Map) {
+      otpExpiry = Map<String, dynamic>.from(otpField['otpExpiry'] as Map);
+      debugPrint('[HomePage] OTP expiry config: $otpExpiry');
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
       children: [
         OtpVerifySection(
           sentToText: sentToText,
-          onEdit: () {
-            // Optional: go back or clear to edit mobile – can be wired to step back
-          },
+          onEdit: onEdit,
           onVerify: (otp) {
             _formNotifier.handleChange(otpName, otp);
             _handleCommonSubmit(false);
           },
           onResendOtp: () {
-            // Optional: call resend OTP API – can be wired when API supports
+            debugPrint('[HomePage] Resend OTP clicked');
+            _formNotifier.handleChange(otpName, '');
+            _handleCommonSubmit(false);
           },
-          resendCooldownSeconds: 300,
+          otpExpiry: otpExpiry,
           verifyLoading: _submitLoading,
+          useSixBoxes: false, // Email OTP: single input per Figma (no 6 boxes)
         ),
         const SizedBox(height: 20),
         KycNoteBox(

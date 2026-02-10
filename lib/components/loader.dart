@@ -8,19 +8,19 @@ class Loader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.black54,
+      color: Colors.black.withOpacity(0.3), // Lighter, more transparent background
       child: Center(
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 40),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
           margin: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.3),
-                blurRadius: 40,
-                spreadRadius: 2,
+                color: Colors.black.withOpacity(0.2),
+                blurRadius: 20,
+                spreadRadius: 1,
               ),
             ],
           ),
@@ -28,20 +28,20 @@ class Loader extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox(
-                width: 60,
-                height: 60,
+                width: 40,
+                height: 40,
                 child: CircularProgressIndicator(
-                  strokeWidth: 4,
+                  strokeWidth: 3,
                   valueColor: AlwaysStoppedAnimation<Color>(
                     Colors.deepPurple.shade400,
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               Text(
                 message,
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 14,
                   fontWeight: FontWeight.w600,
                   color: Colors.deepPurple.shade400,
                 ),
