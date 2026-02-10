@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -29,7 +30,7 @@ class WebViewPage extends StatefulWidget {
   State<WebViewPage> createState() => _WebViewPageState();
 }
 
-class _WebViewPageState extends State<WebViewPage> {
+class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   InAppWebViewController? _webViewController;
   bool _isLoading = true;
   String _currentUrl = '';
@@ -43,10 +44,17 @@ class _WebViewPageState extends State<WebViewPage> {
   /// Params captured from completion/success URLs (e.g. success=yes, transaction_id=...)
   /// Passed to get-context API so backend marks step as complete
   final Map<String, String> _completionParams = {};
+  // Popup window (Digio etc.) for reverse_pennydrop
+  int? _popupWindowId;
+  // Track if a UPI app was opened so we can auto-refresh on return
+  bool _upiAppLaunched = false;
+  // Periodic polling timer to auto-refresh Reverse Penny Drop page after UPI payment
+  Timer? _reversePennyPollTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentUrl = widget.url;
 
     final initialUri = Uri.tryParse(widget.url);
@@ -64,6 +72,25 @@ class _WebViewPageState extends State<WebViewPage> {
     }
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _reversePennyPollTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When returning from a UPI app during reverse_pennydrop, auto-reload the WebView
+    if (state == AppLifecycleState.resumed &&
+        _isReversePennyDropFlow &&
+        _upiAppLaunched) {
+      _upiAppLaunched = false;
+      _reloadWebView();
+      _startReversePennyPolling();
+    }
+  }
+
   bool _isIpvOrFaceFinderUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return false;
@@ -74,6 +101,37 @@ class _WebViewPageState extends State<WebViewPage> {
         path.contains('ipv') ||
         path.contains('face') ||
         path.contains('facefinder');
+  }
+
+  bool _isReversePennyDropUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host.contains('meon.co.in') && path.contains('/reverse_pennydrop/');
+  }
+
+  bool get _isReversePennyDropFlow =>
+      _isReversePennyDropUrl(widget.url) || _isReversePennyDropUrl(_currentUrl);
+
+  void _startReversePennyPolling() {
+    if (_reversePennyPollTimer != null) return;
+    // Poll every 5 seconds to let the page re-evaluate payment status and redirect when ready
+    _reversePennyPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_isReversePennyDropFlow || _redirectHandled || !mounted) {
+        _reversePennyPollTimer?.cancel();
+        _reversePennyPollTimer = null;
+        return;
+      }
+      // Only reload while we're on the reverse_pennydrop page; once we leave it, stop polling.
+      if (_isReversePennyDropUrl(_currentUrl)) {
+        debugPrint('[WebView] Reverse Penny Drop polling reload: $_currentUrl');
+        _reloadWebView();
+      } else {
+        _reversePennyPollTimer?.cancel();
+        _reversePennyPollTimer = null;
+      }
+    });
   }
 
   Future<void> _requestPermissionsAndReload() async {
@@ -143,8 +201,19 @@ class _WebViewPageState extends State<WebViewPage> {
         !host.contains('api.') &&
         !host.contains('accounts.');
 
-    // Known completion params that indicate step completion (eSign, RPD, etc.)
-    final completionParamKeys = ['esign', 'success', 'transaction_id', 'verifyCompleted'];
+    // Known completion params that indicate step completion or carry
+    // important status for external flows (eSign, RPD, Reverse Penny Drop, AA CAMS, etc.)
+    final completionParamKeys = [
+      'esign',
+      'success',
+      'transaction_id',
+      'verifycompleted',
+      'reversepennydrop',
+      'account_aggregator',
+      'ecres',
+      'resdate',
+      'fi',
+    ];
     final hasCompletionParams = uri.queryParameters.keys.any((key) => 
         completionParamKeys.contains(key.toLowerCase()));
 
@@ -176,6 +245,9 @@ class _WebViewPageState extends State<WebViewPage> {
       'upi://',
       'paytmmp://',
       'paytm://',
+      // Digio sometimes uses custom "ppe://" scheme for PhonePe.
+      // Treat it as external so we can remap to "phonepe://" later.
+      'ppe://',
       'phonepe://',
       'gpay://',
       'tez://',
@@ -194,6 +266,11 @@ class _WebViewPageState extends State<WebViewPage> {
   /// Opens supported payment / deep-link URLs in external apps using url_launcher.
   Future<bool> _handleExternalUrl(String url) async {
     try {
+      // Map Digio's custom PhonePe scheme "ppe://" to the real "phonepe://"
+      if (url.toLowerCase().startsWith('ppe://')) {
+        url = 'phonepe://' + url.substring('ppe://'.length);
+      }
+
       debugPrint('[WebView] Opening external URL: $url');
 
       // Google Pay special handling: try multiple possible schemes
@@ -221,6 +298,18 @@ class _WebViewPageState extends State<WebViewPage> {
       final uri = Uri.parse(url);
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
+        // If this is a UPI deep-link during reverse_pennydrop, remember so we can auto-refresh on return
+        final lower = url.toLowerCase();
+        if (_isReversePennyDropFlow &&
+            (lower.startsWith('upi://') ||
+                lower.startsWith('phonepe://') ||
+                lower.startsWith('paytmmp://') ||
+                lower.startsWith('paytm://') ||
+                lower.startsWith('gpay://') ||
+                lower.startsWith('tez://') ||
+                lower.startsWith('bhim://'))) {
+          _upiAppLaunched = true;
+        }
         return true;
       }
 
@@ -443,17 +532,54 @@ class _WebViewPageState extends State<WebViewPage> {
             : null,
       ),
       body: SafeArea(
-        child: InAppWebView(
-          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-          initialSettings: InAppWebViewSettings(
-            javaScriptEnabled: true,
-            mediaPlaybackRequiresUserGesture: false,
-            allowsInlineMediaPlayback: true,
-            useHybridComposition: true,
-          ),
-          onWebViewCreated: (controller) {
-            _webViewController = controller;
-          },
+        child: Stack(
+          children: [
+            // Main WebView
+            InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                // Allow JS popups / window.open only for reverse_pennydrop flow
+                javaScriptCanOpenWindowsAutomatically: _isReversePennyDropFlow,
+                supportMultipleWindows: _isReversePennyDropFlow,
+                mediaPlaybackRequiresUserGesture: false,
+                allowsInlineMediaPlayback: true,
+                useHybridComposition: true,
+              ),
+              onWebViewCreated: (controller) {
+                _webViewController = controller;
+              },
+              // Handle popup windows (window.open) – important for reverse_pennydrop bank flow
+              onCreateWindow: (controller, createWindowAction) async {
+                final popupUri = createWindowAction.request.url;
+                final popupUrl = popupUri?.toString() ?? '';
+                debugPrint('[WebView] onCreateWindow: $popupUrl');
+
+                if (!_isReversePennyDropFlow) {
+                  return false;
+                }
+
+                // Digio often calls window.open('') / about:blank first.
+                // When a windowId is provided, create an overlay WebView bound to it.
+                if (createWindowAction.windowId != null) {
+                  setState(() {
+                    _popupWindowId = createWindowAction.windowId;
+                  });
+                  return true; // popup handled by overlay InAppWebView with windowId
+                }
+
+                // If there's a real URL but no windowId (rare), open inside same WebView.
+                if (popupUri != null &&
+                    popupUrl.isNotEmpty &&
+                    popupUrl != 'about:blank') {
+                  await _webViewController?.loadUrl(
+                    urlRequest: URLRequest(url: popupUri),
+                  );
+                  return true;
+                }
+
+                return false;
+              },
           shouldOverrideUrlLoading: (controller, navigationAction) async {
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.ALLOW;
@@ -475,7 +601,15 @@ class _WebViewPageState extends State<WebViewPage> {
 
             return NavigationActionPolicy.ALLOW;
           },
-          onLoadStart: (controller, url) async {
+              onCloseWindow: (controller) {
+                // Popup window closed – hide overlay
+                if (_popupWindowId != null) {
+                  setState(() {
+                    _popupWindowId = null;
+                  });
+                }
+              },
+              onLoadStart: (controller, url) async {
             if (url != null && !_redirectHandled) {
               setState(() {
                 _isLoading = true;
@@ -516,14 +650,14 @@ class _WebViewPageState extends State<WebViewPage> {
               }
             }
           },
-          onLoadError: (controller, url, code, message) {
+              onLoadError: (controller, url, code, message) {
             debugPrint('[WebView] Load error ($code): $message, url=$url');
             // Ignore unknown URL scheme errors which are expected for external payment intents
             if (code == -10 && message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
               return;
             }
           },
-          onLoadStop: (controller, url) async {
+              onLoadStop: (controller, url) async {
             if (url != null) {
               setState(() {
                 _isLoading = false;
@@ -546,13 +680,59 @@ class _WebViewPageState extends State<WebViewPage> {
               await _onPageFinished(url.toString());
             }
           },
-          onPermissionRequest: (controller, request) async {
+              onPermissionRequest: (controller, request) async {
             debugPrint('[WebView] Permission requested (camera/mic): ${request.resources}');
-            return PermissionResponse(
-              resources: request.resources,
-              action: PermissionResponseAction.GRANT,
-            );
-          },
+                return PermissionResponse(
+                  resources: request.resources,
+                  action: PermissionResponseAction.GRANT,
+                );
+              },
+            ),
+
+            // Popup overlay WebView for reverse_pennydrop (Digio window.open)
+            if (_popupWindowId != null)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black54,
+                  alignment: Alignment.center,
+                  child: FractionallySizedBox(
+                    widthFactor: 0.95,
+                    heightFactor: 0.9,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: InAppWebView(
+                        windowId: _popupWindowId,
+                        initialSettings: InAppWebViewSettings(
+                          javaScriptEnabled: true,
+                          mediaPlaybackRequiresUserGesture: false,
+                          allowsInlineMediaPlayback: true,
+                          useHybridComposition: true,
+                        ),
+                        shouldOverrideUrlLoading:
+                            (controller, navigationAction) async {
+                          final uri = navigationAction.request.url;
+                          if (uri == null) {
+                            return NavigationActionPolicy.ALLOW;
+                          }
+                          final url = uri.toString();
+                          debugPrint(
+                              '[WebView][Popup] Navigation request: $url');
+                          if (_shouldHandleExternally(url)) {
+                            final handled = await _handleExternalUrl(url);
+                            if (handled) {
+                              debugPrint(
+                                  '[WebView][Popup] External URL handled by app, cancelling WebView navigation');
+                              return NavigationActionPolicy.CANCEL;
+                            }
+                          }
+                          return NavigationActionPolicy.ALLOW;
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

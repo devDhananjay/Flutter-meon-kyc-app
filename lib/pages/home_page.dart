@@ -125,6 +125,32 @@ class _HomePageState extends State<HomePage> {
         await _checkAndHandleRedirect(store);
       } else if (hasCompletionParams) {
         debugPrint('[HomePage] Step completed (success/transaction_id/esign) - skipping redirect to prevent loop');
+
+        // SPECIAL CASE: eSign final step
+        // After /get-context?...&esign=yes, backend may need one more plain get-context
+        // call to flip is_admin=true. Do that immediately so user sees KYC Completed
+        // page without needing to refresh/app-restart.
+        if (widget.queryParams['esign'] == 'yes') {
+          debugPrint('[HomePage] eSign completed - refreshing context to check admin status');
+          await store.fetchWorkflowFieldsWithAuth(
+            widget.company,
+            widget.workflowName,
+            '',
+          );
+
+          final refreshed = store.fieldsWithAuth;
+          if (refreshed is Map && refreshed['is_admin'] == true) {
+            debugPrint('[HomePage] KYC completed (is_admin: true) after eSign - fetching user details');
+            await store.fetchUserDetails();
+            if (mounted && store.userDetails != null) {
+              context.go('/${widget.company}/${widget.workflowName}/completed');
+              return;
+            } else if (mounted && store.errorUserDetails != null) {
+              debugPrint('[HomePage] Error fetching user details after eSign: ${store.errorUserDetails}');
+              Fluttertoast.showToast(msg: 'Error loading completion details');
+            }
+          }
+        }
       }
     } else {
       await store.fetchWorkflowFields(widget.company, widget.workflowName);
