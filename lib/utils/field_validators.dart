@@ -7,11 +7,27 @@ String? _required(dynamic value, String fieldName) {
   return null;
 }
 
+// String? _mobile(dynamic value) {
+//   if (value == null || value.toString().trim().isEmpty) return null;
+//   return RegExp(r'^[6-9]\d{9}$').hasMatch(value.toString().trim())
+//       ? null
+//       : 'Please enter a valid 10-digit mobile number';
+// }
+
 String? _mobile(dynamic value) {
   if (value == null || value.toString().trim().isEmpty) return null;
-  return RegExp(r'^[6-9]\d{9}$').hasMatch(value.toString().trim())
+  
+  String trimmedValue = value.toString().trim();
+  
+  // Check length first
+  if (trimmedValue.length != 10) {
+    return 'Please enter a valid 10-digit mobile number';
+  }
+  
+  // Then check pattern
+  return RegExp(r'^[6-9]\d{9}$').hasMatch(trimmedValue)
       ? null
-      : 'Please enter a valid 10-digit Indian mobile number';
+      : 'Please enter a valid 10-digit mobile number';
 }
 
 String? _email(dynamic value) {
@@ -108,7 +124,12 @@ List<String> validateFieldWithConditions(
     final otherValue = formData[validateWithKey];
     final otherFilled = otherValue != null && otherValue.toString().trim().isNotEmpty;
     if (otherFilled && value != formData[validateWithKey]) {
-      final label = validateWithKey.replaceAll('_', ' ');
+      // Try to get displayName from field list, fallback to formatted key name
+      String label = validateWithKey.replaceAll('_', ' ');
+      // Capitalize first letter of each word for better readability
+      label = label.split(' ').map((word) => word.isEmpty 
+          ? '' 
+          : word[0].toUpperCase() + word.substring(1).toLowerCase()).join(' ');
       errors.add('Value should be same as $label');
     }
   }

@@ -86,12 +86,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
         ? 'XXXX-XXXX-${aadhaar.substring(aadhaar.length - 4)}'
         : 'N/A';
 
-    // Get stepper steps from AppStore (uses dynamic API data)
-    final stepperSteps = store.getStepperSteps();
-    final currentPositionIndex = store.getCurrentStepIndex();
-    
-    // Use position from store
-    _currentPosition = store.currentPosition;
+    // Stepper not shown on KYC completed page - removed stepper-related code
     
     final completedSteps = _getCompletedSteps(data);
 
@@ -100,38 +95,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Stepper at the top (always visible)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border(
-                  bottom: BorderSide(color: Colors.grey.shade200),
-                ),
-              ),
-              child: store.loadingStepperWorkflow
-                  ? const SizedBox(
-                      height: 40,
-                      child: Center(
-                        child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    )
-                  : stepperSteps.isNotEmpty
-                      ? _buildStepper(stepperSteps, currentPositionIndex)
-                      : const SizedBox(
-                          height: 40,
-                          child: Center(
-                            child: Text(
-                              'No steps available',
-                              style: TextStyle(color: Colors.grey, fontSize: 12),
-                            ),
-                          ),
-                        ),
-            ),
+            // Stepper removed - not shown on KYC completed page
             // Main content
             Expanded(
               child: SingleChildScrollView(
@@ -376,9 +340,9 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                // Step label (format moduleName)
+                // Step label (format label)
                 Text(
-                  KycStepperBar.formatModuleName(stepName),
+                  KycStepperBar.formatLabel(stepName),
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,

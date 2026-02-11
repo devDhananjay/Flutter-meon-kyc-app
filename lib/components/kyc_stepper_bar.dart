@@ -36,21 +36,9 @@ class KycStepperBar extends StatefulWidget {
     'esign',
   ];
 
-  /// Format moduleName to readable step label (e.g., "mobile" -> "Mobile Verify")
-  static String formatModuleName(String moduleName) {
-    final lower = moduleName.toLowerCase();
-    const labelMap = {
-      'mobile': 'Mobile Verify',
-      'mobile_otp': 'Mobile Verify',
-      'email': 'Email Verify',
-      'email_otp': 'Email Verify',
-      'detailspan': 'Pan Details',
-      'pan': 'Pan Details',
-      'personal_details': 'Personal Details',
-      'nominee': 'Add Nominee',
-    };
-    if (labelMap.containsKey(lower)) return labelMap[lower]!;
-    return moduleName
+  /// Format label to readable step label (capitalize first letter of each word)
+  static String formatLabel(String label) {
+    return label
         .replaceAll('_', ' ')
         .split(' ')
         .map((word) => word.isEmpty ? '' : word[0].toUpperCase() + word.substring(1).toLowerCase())
@@ -137,9 +125,10 @@ class _KycStepperBarState extends State<KycStepperBar> {
             final idx = i ~/ 2;
             final isPast = idx < currentIndex;
             final isActive = idx == currentIndex;
+            // Show real label from API (data.label) with basic formatting (capitalize words)
             final stepLabel = widget.steps.isEmpty
-                ? list[idx]
-                : KycStepperBar.formatModuleName(list[idx]);
+                ? KycStepperBar.formatLabel(list[idx])
+                : KycStepperBar.formatLabel(list[idx]);
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Column(
@@ -159,11 +148,11 @@ class _KycStepperBarState extends State<KycStepperBar> {
                     ),
                     child: Center(
                       child: isPast
-                          ? const Icon(Icons.check, size: 20, color: Colors.white)
+                          ? const Icon(Icons.check, size: 15, color: Colors.white)
                           : Text(
                               '${idx + 1}',
                               style: TextStyle(
-                                fontSize: 16,
+                                fontSize: 12,
                                 fontWeight: FontWeight.w600,
                                 color: isActive || isPast
                                     ? Colors.white
@@ -179,7 +168,7 @@ class _KycStepperBarState extends State<KycStepperBar> {
                       child: Text(
                         stepLabel,
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 8,
                           fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
                           color: isActive || isPast
                               ? KycTheme.textPrimary

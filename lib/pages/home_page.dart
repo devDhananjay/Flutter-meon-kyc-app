@@ -338,7 +338,7 @@ class _HomePageState extends State<HomePage> {
             Fluttertoast.showToast(
               msg: firstError.toString(),
               toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.BOTTOM,
+              gravity: ToastGravity.TOP,
               backgroundColor: Colors.red.shade700,
               textColor: Colors.white,
             );
@@ -346,7 +346,7 @@ class _HomePageState extends State<HomePage> {
             Fluttertoast.showToast(
               msg: 'Please fill all required fields correctly',
               toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.BOTTOM,
+              gravity: ToastGravity.TOP,
               backgroundColor: Colors.red.shade700,
               textColor: Colors.white,
             );
@@ -479,7 +479,7 @@ class _HomePageState extends State<HomePage> {
             Fluttertoast.showToast(
               msg: firstError.toString(),
               toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.BOTTOM,
+              gravity: ToastGravity.TOP,
               backgroundColor: Colors.red.shade700,
               textColor: Colors.white,
             );
@@ -487,7 +487,7 @@ class _HomePageState extends State<HomePage> {
             Fluttertoast.showToast(
               msg: 'Please fill all required fields correctly',
               toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.BOTTOM,
+              gravity: ToastGravity.TOP,
               backgroundColor: Colors.red.shade700,
               textColor: Colors.white,
             );
@@ -869,11 +869,19 @@ class _HomePageState extends State<HomePage> {
                 );
               }
 
-              final pageTitle = (activeFields is Map
-                      ? activeFields['title'] ?? activeFields['pageTitle']
-                      : null)
-                  ?.toString() ??
-                  'Start your KYC';
+              // Get page title from context.page.data.label or context.page.name, fallback to title/pageTitle
+              final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+              final page = ctx?['page'] as Map?;
+              final pageData = page?['data'] as Map?;
+              final pageLabel = pageData?['label']?.toString();
+              final pageName = page?['name']?.toString();
+              
+              final pageTitle = pageLabel ?? 
+                                pageName ?? 
+                                (activeFields is Map
+                                    ? activeFields['title'] ?? activeFields['pageTitle']
+                                    : null)?.toString() ??
+                                'Start your KYC';
 
               return Scaffold(
                 backgroundColor: KycTheme.background,
@@ -1116,6 +1124,14 @@ class _HomePageState extends State<HomePage> {
               final editableFields = _formNotifier.editableFieldsList;
               final disable = editableFields.any((e) => e is Map && e['name'] == name);
               
+              // Check if this is email field on email step
+              final isEmailStep = position == 'email';
+              final isEmailField = (name.toLowerCase() == 'email' || 
+                                    name.toLowerCase() == 'email_id' || 
+                                    name.toLowerCase() == 'emailid' ||
+                                    name.toLowerCase().contains('email')) &&
+                                   type == 'text';
+              
               return Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: Column(
@@ -1164,6 +1180,23 @@ class _HomePageState extends State<HomePage> {
                       workflowKey: (store.fieldsWithAuth as Map?)?['context']?['workflow_key']?.toString(),
                       disable: disable,
                     ),
+                    // Add "Sign in with Google" button below email field on email step
+                    if (isEmailStep && isEmailField) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          // TODO: Implement Google Sign-In functionality
+                          Fluttertoast.showToast(msg: 'Google Sign-In coming soon');
+                        },
+                        icon: const Icon(Icons.g_mobiledata, size: 20),
+                        label: const Text('Sign in with Google'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                          side: BorderSide(color: KycTheme.primary),
+                          foregroundColor: KycTheme.primary,
+                        ),
+                      ),
+                    ],
                     // Add "Fetch Bank Details" button below IFSC field
                     if (isIfscField) ...[
                       const SizedBox(height: 12),

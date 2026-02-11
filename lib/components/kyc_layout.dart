@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 import 'package:meon_kyc/components/documents_handy_section.dart';
 import 'package:meon_kyc/components/kyc_stepper_bar.dart';
+import 'package:meon_kyc/utils/assets.dart';
 
 /// KYC screen layout from Figma: logo, optional stepper, content, documents section
 class KycLayout extends StatelessWidget {
@@ -131,27 +132,49 @@ class KycLayout extends StatelessWidget {
     );
   }
 
-  Widget _buildTopBar(BuildContext? context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      child: Row(
-        children: [
-          if (leading != null) leading!,
-          Expanded(
-            child: Text(
-              'STOXBOX',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: KycTheme.primary,
-                letterSpacing: 1.2,
-              ),
-            ),
+Widget _buildTopBar(BuildContext? context) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+    child: Row(
+      children: [
+        if (leading != null) leading!,
+        Expanded(
+          child: Image.asset(
+            AppAssets.stoxboxLogo,
+            height: 30,
+            fit: BoxFit.contain,
           ),
-          if (trailing != null) trailing!,
-        ],
-      ),
-    );
-  }
+        ),
+        if (trailing != null) trailing!,
+      ],
+    ),
+  );
+}
+
+  // Widget _buildTopBar(BuildContext? context) {
+  //   return Padding(
+  //     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+  //     child: Row(
+  //       children: [
+  //         if (leading != null) leading!,
+  //         Expanded(
+  //           child: Text(
+  //             'STOXBOX',  
+  //             // EnvConfig.companyName,
+  //             textAlign: TextAlign.center,
+  //             style: TextStyle(
+  //               fontSize: 20,
+  //               fontWeight: FontWeight.w700,
+  //               color: KycTheme.primary,
+  //               letterSpacing: 1.2,
+  //             ),
+  //           ),
+  //         ),
+  //         if (trailing != null) trailing!,
+  //       ],
+  //     ),
+  //   );
+  // }
+
+  
 }

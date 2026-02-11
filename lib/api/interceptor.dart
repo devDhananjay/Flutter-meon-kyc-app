@@ -14,8 +14,9 @@ class ApiInterceptor {
     var response = await fn();
     debugPrint('[ApiInterceptor] Response status: ${response.statusCode}');
     if (response.statusCode == 401 || response.statusCode == 422) {
-      debugPrint('[ApiInterceptor] 401/422 - attempting refresh');
+      debugPrint('[ApiInterceptor] 401/422 - token expired or invalid, attempting refresh');
       if (_isRefreshing) {
+        debugPrint('[ApiInterceptor] Refresh already in progress - waiting then retrying');
         await _waitForRefresh();
         return fn();
       }
@@ -23,14 +24,18 @@ class ApiInterceptor {
       try {
         final refreshed = await _refreshToken();
         if (refreshed) {
+          debugPrint('[ApiInterceptor] Refresh success - retrying original request with new token');
           response = await fn();
+          debugPrint('[ApiInterceptor] Retry response status: ${response.statusCode}');
         } else {
+          debugPrint('[ApiInterceptor] Refresh failed - clearing session');
           await StorageService.clearAll();
-          Fluttertoast.showToast(msg: 'Token is Expired');
+          Fluttertoast.showToast(msg: 'Session expired. Please sign in again.');
         }
-      } catch (e) {
+      } catch (e, st) {
+        debugPrint('[ApiInterceptor] Refresh exception: $e\n$st');
         await StorageService.clearAll();
-        Fluttertoast.showToast(msg: 'Token is Expired');
+        Fluttertoast.showToast(msg: 'Session expired. Please sign in again.');
         rethrow;
       } finally {
         _isRefreshing = false;
@@ -49,24 +54,48 @@ class ApiInterceptor {
 
   static Future<bool> _refreshToken() async {
     final refreshToken = await StorageService.getRefreshToken();
-    if (refreshToken == null || refreshToken.isEmpty) return false;
+    if (refreshToken == null || refreshToken.isEmpty) {
+      debugPrint('[ApiInterceptor] No refresh token in storage - cannot refresh');
+      return false;
+    }
 
+    final url = '${EnvConfig.baseUrl}/api/user/refresh';
+    debugPrint('[ApiInterceptor] Calling refresh API: $url');
     final res = await http.post(
-      Uri.parse('${EnvConfig.baseUrl}/api/user/refresh'),
-      headers: {'Authorization': 'Bearer $refreshToken'},
+      Uri.parse(url),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $refreshToken',
+      },
     );
 
-    if (res.statusCode == 401 || res.statusCode == 422) return false;
+    debugPrint('[ApiInterceptor] Refresh API response: ${res.statusCode}');
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      debugPrint('[ApiInterceptor] Refresh failed: ${res.body.length > 200 ? res.body.substring(0, 200) + '...' : res.body}');
+      return false;
+    }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>?;
-    final accessToken = data?['access_token'] as String?;
-    final newRefresh = data?['refresh_token'] as String?;
+    Map<String, dynamic>? data;
+    try {
+      data = jsonDecode(res.body) as Map<String, dynamic>?;
+    } catch (e) {
+      debugPrint('[ApiInterceptor] Refresh response parse error: $e');
+      return false;
+    }
 
-    if (accessToken != null) {
+    // Support both "access_token" and "token" keys
+    final accessToken = data?['access_token'] as String? ?? data?['token'] as String?;
+    final newRefresh = data?['refresh_token'] as String? ?? data?['refresh'] as String?;
+
+    if (accessToken != null && accessToken.isNotEmpty) {
       await StorageService.setAccessToken(accessToken);
-      if (newRefresh != null) await StorageService.setRefreshToken(newRefresh);
+      if (newRefresh != null && newRefresh.isNotEmpty) {
+        await StorageService.setRefreshToken(newRefresh);
+      }
+      debugPrint('[ApiInterceptor] New access token stored successfully');
       return true;
     }
+    debugPrint('[ApiInterceptor] Refresh response missing access_token/token');
     return false;
   }
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
+import 'package:meon_kyc/theme/kyc_theme.dart';
 
 class FormFieldWidget extends StatefulWidget {
   final String name;
@@ -202,6 +203,42 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     );
   }
 
+  Widget? _getFieldIcon() {
+    final name = widget.name.toLowerCase();
+    final type = widget.type.toLowerCase();
+    final validation = widget.validation?.toString().toLowerCase() ?? '';
+    
+    // Email fields
+    if (name.contains('email') || validation == 'email') {
+      return const Icon(Icons.email_outlined, color: KycTheme.textSecondary);
+    }
+    // Phone/Mobile fields
+    if (name.contains('phone') || name.contains('mobile') || validation == 'mobile') {
+      return const Icon(Icons.phone_outlined, color: KycTheme.textSecondary);
+    }
+    // Date fields
+    if (type == 'date') {
+      return const Icon(Icons.calendar_today_outlined, color: KycTheme.textSecondary);
+    }
+    // OTP fields
+    if (type == 'otp' || name.contains('otp') || validation == 'otp') {
+      return const Icon(Icons.lock_outline, color: KycTheme.textSecondary);
+    }
+    // Password fields
+    if (type == 'password') {
+      return const Icon(Icons.lock_outline, color: KycTheme.textSecondary);
+    }
+    // Number fields
+    if (type == 'number' || validation == 'number') {
+      return const Icon(Icons.numbers_outlined, color: KycTheme.textSecondary);
+    }
+    // File upload fields
+    if (type == 'file') {
+      return const Icon(Icons.upload_file_outlined, color: KycTheme.textSecondary);
+    }
+    return null;
+  }
+
   Widget _buildText() {
     if (_textController == null) {
       _textController = TextEditingController(text: widget.value?.toString() ?? '');
@@ -217,6 +254,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           decoration: InputDecoration(
             hintText: 'Enter ${widget.displayName}',
             border: const OutlineInputBorder(),
+            prefixIcon: _getFieldIcon(),
           ),
         ),
       ],
@@ -239,6 +277,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           decoration: InputDecoration(
             hintText: 'Enter ${widget.displayName}',
             border: const OutlineInputBorder(),
+            prefixIcon: _getFieldIcon(),
           ),
         ),
       ],
@@ -283,6 +322,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           decoration: InputDecoration(
             hintText: 'Enter ${widget.displayName}',
             border: const OutlineInputBorder(),
+            prefixIcon: _getFieldIcon(),
             suffixIcon: IconButton(
               icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility),
               onPressed: () => setState(() => _showPassword = !_showPassword),
@@ -350,7 +390,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                   }
                 },
           child: InputDecorator(
-            decoration: const InputDecoration(border: OutlineInputBorder()),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              prefixIcon: _getFieldIcon(),
+            ),
             child: Text(
               widget.value?.toString() ?? 'Select date',
               style: TextStyle(

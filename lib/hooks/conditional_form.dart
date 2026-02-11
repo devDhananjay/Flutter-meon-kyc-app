@@ -109,8 +109,23 @@ class ConditionalFormNotifier extends ChangeNotifier {
       processedValue = _processValue(name, value, type, validationType, validateWith);
     }
     formData[name] = processedValue;
-    if (validateWith != null && value != formData[validateWith]) {
-      errors[name] = 'Value should be same as ${validateWith.replaceAll('_', ' ')}';
+    if (validateWith != null && validateWith.isNotEmpty && value != formData[validateWith]) {
+      // Get displayName from the validateWith field if available, otherwise format the key
+      String label = validateWith.replaceAll('_', ' ');
+      // Try to find the validateWith field in _fields to get its displayName
+      final validateWithField = _fields?.cast<Map<String, dynamic>?>().firstWhere(
+        (f) => f?['name']?.toString() == validateWith,
+        orElse: () => null,
+      );
+      if (validateWithField != null && validateWithField['displayName'] != null) {
+        label = validateWithField['displayName'].toString();
+      } else {
+        // Capitalize first letter of each word for better readability
+        label = label.split(' ').map((word) => word.isEmpty 
+            ? '' 
+            : word[0].toUpperCase() + word.substring(1).toLowerCase()).join(' ');
+      }
+      errors[name] = 'Value should be same as $label';
     } else {
       errors.remove(name);
     }

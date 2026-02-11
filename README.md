@@ -88,7 +88,7 @@ lib/
 - `/:company/:workflowName` – KYC form page
 - `/404` – Page not found
 
-Example: `https://yourapp.com/kediacapital/demat` opens the KYC form for company `kediacapital` and workflow `demat`.
+Example: `https://yourapp.com/meon/demat` opens the KYC form for company `meon` and workflow `demat`.
 
 ## Dependencies
 
