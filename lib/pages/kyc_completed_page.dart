@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:meon_kyc/components/kyc_stepper_bar.dart';
+import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 
 class KycCompletedPage extends StatefulWidget {
-  const KycCompletedPage({super.key});
+  final String company;
+  final String workflowName;
+
+  const KycCompletedPage({
+    super.key,
+    required this.company,
+    required this.workflowName,
+  });
 
   @override
   State<KycCompletedPage> createState() => _KycCompletedPageState();
@@ -53,16 +62,18 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                    userDetails['workflow_id']?.toString();
     }
     
-    // Get company from store
+    // Get company and workflowName from store
     _company = store.company ?? 'mandotsecurities';
+    final workflowName = store.workflowName ?? 'bp_flow';
     
-    debugPrint('[KycCompletedPage] Stepper data - company: $_company, workflowId: $_workflowId, position: $_currentPosition');
+    debugPrint('[KycCompletedPage] Stepper data - company: $_company, workflowName: $workflowName, workflowId: $_workflowId, position: $_currentPosition');
     
     // Fetch stepper workflow if we have workflowId and it's not already loaded
-    if (_workflowId != null && _workflowId!.isNotEmpty && _company != null) {
+    if (_workflowId != null && _workflowId!.isNotEmpty) {
       if (store.stepperWorkflow == null && !store.loadingStepperWorkflow) {
-        debugPrint('[KycCompletedPage] Fetching stepper workflow: $_company / $_workflowId');
-        store.fetchStepperWorkflow(_company!, _workflowId!);
+        debugPrint('[KycCompletedPage] Fetching stepper workflow: $workflowName / $_workflowId');
+        // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
+        store.fetchStepperWorkflow(workflowName, _workflowId!);
       }
     } else {
       debugPrint('[KycCompletedPage] Missing workflowId or company. workflowId: $_workflowId, company: $_company');
@@ -93,11 +104,12 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // Stepper removed - not shown on KYC completed page
-            // Main content
-            Expanded(
+            Column(
+              children: [
+                // Main content
+                Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -259,10 +271,48 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                 ),
               ),
             ),
+              ],
+            ),
+            Positioned(
+              top: 0,
+              right: 0,
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: IconButton(
+                  icon: const Icon(Icons.logout, color: KycTheme.textPrimary),
+                  onPressed: () => _showLogoutConfirmation(context),
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _showLogoutConfirmation(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    await StorageService.clearAll();
+    if (!context.mounted) return;
+    context.read<AppStore>().resetState();
+    context.go('/${widget.company}/${widget.workflowName}');
   }
 
   Widget _buildStepper(List<String> steps, int? currentPositionIndex) {

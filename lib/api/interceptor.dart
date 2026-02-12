@@ -30,12 +30,18 @@ class ApiInterceptor {
         } else {
           debugPrint('[ApiInterceptor] Refresh failed - clearing session');
           await StorageService.clearAll();
-          Fluttertoast.showToast(msg: 'Session expired. Please sign in again.');
+          Fluttertoast.showToast(
+            msg: 'Session expired. Please sign in again.',
+            gravity: ToastGravity.TOP,
+          );
         }
       } catch (e, st) {
         debugPrint('[ApiInterceptor] Refresh exception: $e\n$st');
         await StorageService.clearAll();
-        Fluttertoast.showToast(msg: 'Session expired. Please sign in again.');
+        Fluttertoast.showToast(
+          msg: 'Session expired. Please sign in again.',
+          gravity: ToastGravity.TOP,
+        );
         rethrow;
       } finally {
         _isRefreshing = false;

@@ -50,6 +50,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _upiAppLaunched = false;
   // Periodic polling timer to auto-refresh Reverse Penny Drop page after UPI payment
   Timer? _reversePennyPollTimer;
+  // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
+  bool _esignScrollAdjusted = false;
 
   @override
   void initState() {
@@ -158,6 +160,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       Fluttertoast.showToast(
         msg: 'Permissions granted. Reloading...',
         toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
       );
       if (!_hasReloadedAfterPermissions && _webViewController != null) {
         _hasReloadedAfterPermissions = true;
@@ -171,6 +174,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         msg: 'Camera & microphone required for face verification',
         toastLength: Toast.LENGTH_LONG,
         backgroundColor: Colors.orange,
+        gravity: ToastGravity.TOP,
       );
     }
   }
@@ -182,6 +186,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       Fluttertoast.showToast(
         msg: 'Page reloaded',
         toastLength: Toast.LENGTH_SHORT,
+        gravity: ToastGravity.TOP,
       );
     } catch (e) {
       debugPrint('[WebView] Error reloading: $e');
@@ -353,7 +358,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           if (mounted) {
             if (store.errorWithAuth != null) {
               debugPrint('[WebView] Error after get-context API: ${store.errorWithAuth}');
-              Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Error loading data');
+              Fluttertoast.showToast(
+                msg: store.errorWithAuth ?? 'Error loading data',
+                gravity: ToastGravity.TOP,
+              );
             } else {
               debugPrint('[WebView] get-context API completed successfully - navigating back');
             }
@@ -370,7 +378,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       } catch (e) {
         debugPrint('[WebView] Exception calling get-context API: $e');
         if (mounted) {
-          Fluttertoast.showToast(msg: 'Error: ${e.toString()}');
+          Fluttertoast.showToast(
+            msg: 'Error: ${e.toString()}',
+            gravity: ToastGravity.TOP,
+          );
           // Fallback: navigate with params
           final query = queryParams.isEmpty
               ? ''
@@ -482,10 +493,35 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Injects JavaScript to prevent automatic scroll jumps on input focus.
+  /// This keeps the WebView from auto-scrolling when the keyboard opens;
+  /// users can still scroll manually.
+  Future<void> _injectNoAutoScrollJs(InAppWebViewController controller) async {
+    const script = r'''
+      (function() {
+        try {
+          window.addEventListener("focusin", function(e) {
+            try {
+              if (!e || !e.target) return;
+              var el = e.target;
+              el.scrollIntoView = function() {};
+            } catch (_) {}
+          }, true);
+        } catch (e) {}
+      })();
+    ''';
+    try {
+      await controller.evaluateJavascript(source: script);
+    } catch (e) {
+      debugPrint('[WebView] Error injecting no-auto-scroll JS: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -545,6 +581,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 mediaPlaybackRequiresUserGesture: false,
                 allowsInlineMediaPlayback: true,
                 useHybridComposition: true,
+                // Disable pinch-zoom to keep layout stable
+                supportZoom: false,
               ),
               onWebViewCreated: (controller) {
                 _webViewController = controller;
@@ -665,6 +703,28 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               });
               debugPrint('[WebView] Page finished: $url');
 
+              // For eSign pages, nudge initial scroll slightly so
+              // important inputs are not hidden under the keyboard.
+              try {
+                final uri = Uri.tryParse(url.toString());
+                if (uri != null) {
+                  final host = uri.host.toLowerCase();
+                  final isCloudesign = host.contains('cloudesign');
+                  final isNsdlEsign = host.contains('esign.egov.proteantech.in') ||
+                      host.startsWith('esign.');
+                  if (!_esignScrollAdjusted && (isCloudesign || isNsdlEsign)) {
+                    _esignScrollAdjusted = true;
+                    // Use native scrollTo first (more reliable), then JS fallback
+                    await controller.scrollTo(x: 0, y: 260);
+                    await controller.evaluateJavascript(
+                      source: 'try { window.scrollTo(0, 260); } catch(e) {}',
+                    );
+                  }
+                }
+              } catch (e) {
+                debugPrint('[WebView] Error adjusting scroll for eSign: $e');
+              }
+
               if (_isIpvOrFaceFinderUrl(url.toString()) &&
                   _permissionsRequested &&
                   !_hasReloadedAfterPermissions) {
@@ -678,6 +738,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               }
 
               await _onPageFinished(url.toString());
+              await _injectNoAutoScrollJs(controller);
             }
           },
               onPermissionRequest: (controller, request) async {
@@ -707,6 +768,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           mediaPlaybackRequiresUserGesture: false,
                           allowsInlineMediaPlayback: true,
                           useHybridComposition: true,
+                          supportZoom: false,
                         ),
                         shouldOverrideUrlLoading:
                             (controller, navigationAction) async {
@@ -727,7 +789,29 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           }
                           return NavigationActionPolicy.ALLOW;
                         },
+                        onLoadStop: (controller, url) async {
+                          if (url != null) {
+                            await _injectNoAutoScrollJs(controller);
+                          }
+                        },
                       ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // Fullscreen loader overlay while the page is loading
+            if (_isLoading)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.white,
+                  alignment: Alignment.center,
+                  child: const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      color: KycTheme.primary,
                     ),
                   ),
                 ),

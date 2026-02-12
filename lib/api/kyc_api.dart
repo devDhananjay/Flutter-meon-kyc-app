@@ -75,6 +75,9 @@ class KycAPI {
   }
 
   static Future<http.Response> getStepperWorkflow(String company, String workflowId) async {
+    // Admin stepper workflow API (used only for step labels)
+    // Backend route (from curl): /kycadmin_getWorkflow/{workflowName}/{workflowId}
+    // "company" arg here is actually workflowName (e.g. bp_flow)
     return _client.post('/kycadmin_getWorkflow/$company/$workflowId', body: {});
   }
 }

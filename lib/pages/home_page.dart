@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -20,7 +21,9 @@ import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/hooks/conditional_form.dart';
 import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/store/app_store.dart';
+import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class HomePage extends StatefulWidget {
   final String company;
@@ -45,6 +48,8 @@ class _HomePageState extends State<HomePage> {
   bool _backLoading = false;
   String _submitError = '';
   String _submitSuccess = '';
+  bool _termsAccepted = false; // Terms & Conditions checkbox (mobile step)
+  bool _showTermsError = false; // Show validation message under T&C checkbox
 
   @override
   void initState() {
@@ -95,8 +100,9 @@ class _HomePageState extends State<HomePage> {
       
       // Fetch stepper workflow if we have workflowId
       if (workflowId != null && workflowId.isNotEmpty) {
-        debugPrint('[HomePage] Fetching stepper workflow: ${widget.company} / $workflowId');
-        await store.fetchStepperWorkflow(widget.company, workflowId);
+        debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
+        // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
+        await store.fetchStepperWorkflow(widget.workflowName, workflowId);
       }
       
       // Check if KYC is completed (is_admin: true)
@@ -110,7 +116,7 @@ class _HomePageState extends State<HomePage> {
           return;
         } else if (mounted && store.errorUserDetails != null) {
           debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
-          Fluttertoast.showToast(msg: 'Error loading completion details');
+          Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
         }
       }
       
@@ -147,7 +153,7 @@ class _HomePageState extends State<HomePage> {
               return;
             } else if (mounted && store.errorUserDetails != null) {
               debugPrint('[HomePage] Error fetching user details after eSign: ${store.errorUserDetails}');
-              Fluttertoast.showToast(msg: 'Error loading completion details');
+              Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
             }
           }
         }
@@ -198,7 +204,7 @@ class _HomePageState extends State<HomePage> {
             // Check for errors
             if (store.errorWithAuth != null) {
               debugPrint('[HomePage] Error after verify get-context: ${store.errorWithAuth}');
-              Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Error');
+              Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Error', gravity: ToastGravity.TOP);
             } else {
               debugPrint('[HomePage] Verify get-context completed successfully - data loaded in app');
             }
@@ -230,12 +236,54 @@ class _HomePageState extends State<HomePage> {
           finalUrl = '${EnvConfig.baseUrl}$relativeUrl';
         }
         
-        debugPrint('[HomePage] Opening WebView for redirect (msg: $msg): $finalUrl');
+        final friendlyTitle = _deriveWebViewTitle(msg, finalUrl);
+        debugPrint('[HomePage] Opening WebView for redirect (msg: $msg, title: $friendlyTitle): $finalUrl');
         final encodedUrl = Uri.encodeComponent(finalUrl);
-        final title = Uri.encodeComponent(msg.isNotEmpty ? msg : 'External Verification');
+        final title = Uri.encodeComponent(friendlyTitle);
         context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
       }
     }
+  }
+
+  /// Derives a user-friendly WebView title based on redirect message and URL.
+  /// Avoids showing internal messages like "redirect on render diverge" to the user.
+  String _deriveWebViewTitle(String msg, String url) {
+    String? module;
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      final host = uri.host.toLowerCase();
+      final path = uri.path.toLowerCase();
+      final query = uri.query.toLowerCase();
+
+      if (path.contains('esign') ||
+          query.contains('esign')) {
+        module = 'Proceed to eSign';
+      } else if (host.contains('digilocker') ||
+          path.contains('digilocker') ||
+          query.contains('digilocker')) {
+        module = 'Digilocker';
+      } else if (path.contains('reverse_pennydrop') ||
+          path.contains('reversepennydrop') ||
+          query.contains('reverse_pennydrop')) {
+        module = 'Bank Verification';
+      } else if (path.contains('account_aggregator') ||
+          query.contains('account_aggregator')) {
+        module = 'Account Aggregator';
+      } else if (host.contains('ipv') ||
+          path.contains('ipv') ||
+          path.contains('face')) {
+        module = 'Video KYC';
+      }
+    }
+
+    if (module != null) return module;
+
+    final lowerMsg = msg.toLowerCase();
+    if (lowerMsg.isNotEmpty && !lowerMsg.startsWith('redirect on ')) {
+      return msg;
+    }
+
+    return 'External Verification';
   }
 
   int _getStepperIndex(AppStore store, bool isAuth) {
@@ -324,6 +372,38 @@ class _HomePageState extends State<HomePage> {
   Future<void> _handleSubmit(bool skipValidation) async {
     _submitError = '';
     _submitSuccess = '';
+    final store = context.read<AppStore>();
+
+    // Enforce Terms & Conditions on mobile login step
+    if (!skipValidation) {
+      final withAuth = store.fieldsWithAuth as Map?;
+      final ctx = withAuth?['context'] as Map?;
+
+      String position = ctx?['position']?.toString().toLowerCase() ?? '';
+      String label = ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+
+      if (position.isEmpty || label.isEmpty) {
+        final workflow = store.fields as Map?;
+        position = (workflow?['position']?.toString() ?? position).toLowerCase();
+        label = (workflow?['data']?['label']?.toString() ?? label).toLowerCase();
+      }
+
+      debugPrint('[HomePage] _handleSubmit position=$position label=$label');
+
+      final isMobileScreen = position == 'mobile' && label == 'mobile';
+      if (isMobileScreen && !_termsAccepted) {
+        setState(() => _showTermsError = true);
+        Fluttertoast.showToast(
+          msg: 'Please accept the Terms & Conditions to continue',
+          toastLength: Toast.LENGTH_LONG,
+          gravity: ToastGravity.TOP,
+          backgroundColor: Colors.red.shade700,
+          textColor: Colors.white,
+        );
+        return;
+      }
+    }
+
     if (!skipValidation) {
       final isValid = _formNotifier.validate();
       if (!isValid) {
@@ -360,7 +440,6 @@ class _HomePageState extends State<HomePage> {
     setState(() => _submitLoading = true);
 
     try {
-      final store = context.read<AppStore>();
       final data = await _prepareFormData(skipValidation);
       debugPrint('[HomePage] Form data (Send OTP): $data');
       final activeFields = _getActiveFields(store);
@@ -402,7 +481,7 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e, st) {
       debugPrint('[HomePage] Send OTP / Submit Exception: $e\n$st');
-      Fluttertoast.showToast(msg: e.toString());
+      Fluttertoast.showToast(msg: e.toString(), gravity: ToastGravity.TOP);
     } finally {
       if (mounted) setState(() => _submitLoading = false);
       debugPrint('[HomePage] Send OTP / Submit DONE');
@@ -426,7 +505,7 @@ class _HomePageState extends State<HomePage> {
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
           await _clearCookiesAndRefresh();
-          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.');
+          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           return;
         }
         // Small delay for smooth UI transition
@@ -442,10 +521,10 @@ class _HomePageState extends State<HomePage> {
           }
         }
       } else {
-        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed');
+        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed', gravity: ToastGravity.TOP);
       }
     } catch (_) {
-      Fluttertoast.showToast(msg: 'Submission failed');
+      Fluttertoast.showToast(msg: 'Submission failed', gravity: ToastGravity.TOP);
     }
   }
 
@@ -464,6 +543,38 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _handleCommonSubmit(bool skipValidation) async {
     debugPrint('[HomePage] _handleCommonSubmit CALLED - skipValidation=$skipValidation');
+    final store = context.read<AppStore>();
+
+    // Enforce Terms & Conditions on mobile step for authenticated flows
+    if (!skipValidation) {
+      final withAuth = store.fieldsWithAuth as Map?;
+      final ctx = withAuth?['context'] as Map?;
+
+      String position = ctx?['position']?.toString().toLowerCase() ?? '';
+      String label = ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+
+      if (position.isEmpty || label.isEmpty) {
+        final workflow = store.fields as Map?;
+        position = (workflow?['position']?.toString() ?? position).toLowerCase();
+        label = (workflow?['data']?['label']?.toString() ?? label).toLowerCase();
+      }
+
+      debugPrint('[HomePage] _handleCommonSubmit position=$position label=$label');
+
+      final isMobileScreen = position == 'mobile' && label == 'mobile';
+      if (isMobileScreen && !_termsAccepted) {
+        setState(() => _showTermsError = true);
+        Fluttertoast.showToast(
+          msg: 'Please accept the Terms & Conditions to continue',
+          toastLength: Toast.LENGTH_LONG,
+          gravity: ToastGravity.TOP,
+          backgroundColor: Colors.red.shade700,
+          textColor: Colors.white,
+        );
+        return;
+      }
+    }
+
     if (!skipValidation) {
       final isValid = _formNotifier.validate();
       debugPrint('[HomePage] Form validation result: $isValid');
@@ -500,12 +611,11 @@ class _HomePageState extends State<HomePage> {
     debugPrint('[HomePage] _handleCommonSubmit START');
     setState(() => _submitLoading = true);
     try {
-      final store = context.read<AppStore>();
       final withAuth = store.fieldsWithAuth as Map?;
       final ctx = withAuth?['context'] as Map?;
       final pathSegment = _getKycPostPathSegment(ctx);
       if (pathSegment.isEmpty) {
-        Fluttertoast.showToast(msg: 'Invalid step. Please refresh.');
+        Fluttertoast.showToast(msg: 'Invalid step. Please refresh.', gravity: ToastGravity.TOP);
         if (mounted) setState(() => _submitLoading = false);
         return;
       }
@@ -572,7 +682,7 @@ class _HomePageState extends State<HomePage> {
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
           await _clearCookiesAndRefresh();
-          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.');
+          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           if (mounted) setState(() => _submitLoading = false);
           return;
         }
@@ -590,11 +700,11 @@ class _HomePageState extends State<HomePage> {
           }
         }
       } else {
-        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed');
+        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed', gravity: ToastGravity.TOP);
         if (mounted) setState(() => _submitLoading = false);
       }
     } catch (e) {
-      Fluttertoast.showToast(msg: e.toString());
+      Fluttertoast.showToast(msg: e.toString(), gravity: ToastGravity.TOP);
       if (mounted) setState(() => _submitLoading = false);
     }
   }
@@ -715,17 +825,17 @@ class _HomePageState extends State<HomePage> {
             // Notify listeners to rebuild UI
             _formNotifier.notifyListeners();
             
-            Fluttertoast.showToast(msg: 'Bank details fetched successfully');
+            Fluttertoast.showToast(msg: 'Bank details fetched successfully', gravity: ToastGravity.TOP);
             debugPrint('[HomePage] Auto-filled ${updates.length} bank fields - UI should update now');
           }
         }
       } else {
         debugPrint('[HomePage] IFSC lookup failed: ${res.statusCode}');
-        Fluttertoast.showToast(msg: 'Invalid IFSC code');
+        Fluttertoast.showToast(msg: 'Invalid IFSC code', gravity: ToastGravity.TOP);
       }
     } catch (e) {
       debugPrint('[HomePage] IFSC lookup error: $e');
-      Fluttertoast.showToast(msg: 'Failed to fetch bank details');
+      Fluttertoast.showToast(msg: 'Failed to fetch bank details', gravity: ToastGravity.TOP);
     }
   }
 
@@ -762,11 +872,11 @@ class _HomePageState extends State<HomePage> {
       // Step 6: Refresh UI - navigate to same route to trigger rebuild
       if (mounted) {
         context.go('/${widget.company}/${widget.workflowName}');
-        Fluttertoast.showToast(msg: 'Logged out successfully');
+        Fluttertoast.showToast(msg: 'Logged out successfully', gravity: ToastGravity.TOP);
       }
     } catch (e) {
       debugPrint('[HomePage] Logout error: $e');
-      Fluttertoast.showToast(msg: 'Error during logout');
+      Fluttertoast.showToast(msg: 'Error during logout', gravity: ToastGravity.TOP);
     } finally {
       if (mounted) setState(() => _logoutLoading = false);
     }
@@ -881,7 +991,7 @@ class _HomePageState extends State<HomePage> {
                                 (activeFields is Map
                                     ? activeFields['title'] ?? activeFields['pageTitle']
                                     : null)?.toString() ??
-                                'Start your KYC';
+                                'Start your KYC or pickup where you left off';
 
               return Scaffold(
                 backgroundColor: KycTheme.background,
@@ -952,10 +1062,25 @@ class _HomePageState extends State<HomePage> {
     AppStore store,
     bool isAuth,
   ) {
-    // Check if this is segments screen
-    final ctx = (store.fieldsWithAuth as Map?)?['context'];
-    final position = ctx?['position']?.toString()?.toLowerCase();
+    // Check if this is segments screen / mobile screen
+    final withAuth = store.fieldsWithAuth as Map?;
+    final ctx = withAuth?['context'] as Map?;
+
+    String? position = ctx?['position']?.toString()?.toLowerCase();
+    String? pageLabel = ctx?['page']?['data']?['label']?.toString()?.toLowerCase();
+
+    // Fallback for unauthenticated flow where context may be null:
+    // use workflow root from store.fields (get-workflow-details response)
+    if (position == null || position.isEmpty || pageLabel == null || pageLabel.isEmpty) {
+      final workflow = store.fields as Map?;
+      position = (workflow?['position']?.toString() ?? position ?? '').toLowerCase();
+      pageLabel = (workflow?['data']?['label']?.toString() ?? pageLabel ?? '').toLowerCase();
+    }
+
+    debugPrint('[HomePage] _buildForm position=$position pageLabel=$pageLabel');
+
     final isSegmentsScreen = position == 'segments';
+
     
     // Show segments selection UI for segments screen
     if (isSegmentsScreen) {
@@ -984,7 +1109,7 @@ class _HomePageState extends State<HomePage> {
               () {
                 // Set brokerage_plan in form data when user clicks Done
                 _formNotifier.handleChange('brokerage_plan', 'Brokerage Plan');
-                Fluttertoast.showToast(msg: 'Brokerage Plan selected');
+                Fluttertoast.showToast(msg: 'Brokerage Plan selected', gravity: ToastGravity.TOP);
               },
             );
           },
@@ -1078,6 +1203,47 @@ class _HomePageState extends State<HomePage> {
       });
     }
 
+    // Extract Aadhaar image (Digilocker success) from "aadhar_image" field
+    Uint8List? aadharImageBytes;
+    String? aadharImageUrl;
+    bool hasAadharImage = false;
+
+    final bool isDigilockerScreen = position == 'digilocker' || pageLabel == 'digilocker';
+    if (isDigilockerScreen) {
+      final aadharField = visibleFieldsForDisplay.cast<Map?>().firstWhere(
+        (f) {
+          if (f == null) return false;
+          final n = (f['name']?.toString() ?? '').toLowerCase();
+          return n == 'aadhar_image' || n == 'aadhaar_image';
+        },
+        orElse: () => null,
+      );
+
+      if (aadharField != null) {
+        final aName = aadharField['name']?.toString() ?? '';
+        final rawValue = _formNotifier.formData[aName] ?? aadharField['value'];
+        final valueStr = rawValue?.toString() ?? '';
+        if (valueStr.isNotEmpty) {
+          if (valueStr.startsWith('http')) {
+            aadharImageUrl = valueStr;
+          } else {
+            String base64Data = valueStr.trim();
+            final match = RegExp(r'data:image/[^;]+;base64,', caseSensitive: false).firstMatch(base64Data);
+            if (match != null) {
+              base64Data = base64Data.substring(match.end);
+            }
+            try {
+              aadharImageBytes = base64Decode(base64Data);
+            } catch (_) {
+              aadharImageBytes = null;
+            }
+          }
+        }
+        hasAadharImage =
+            aadharImageBytes != null || (aadharImageUrl != null && aadharImageUrl!.isNotEmpty);
+      }
+    }
+
     // Generic submit button: sirf tab dikhao jab OTP field nahi hai
     // Agar OTP field hai (chahe kitni bhi aur fields ho), sirf OtpVerifySection ka "Verify OTP" button use hoga
     final showGenericSubmit = otpField == null;
@@ -1101,10 +1267,61 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (hasAadharImage) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 4 / 3,
+                  child: aadharImageBytes != null
+                      ? Image.memory(
+                          aadharImageBytes!,
+                          fit: BoxFit.cover,
+                        )
+                      : Image.network(
+                          aadharImageUrl!,
+                          fit: BoxFit.cover,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            final expected = loadingProgress.expectedTotalBytes;
+                            final value = expected != null
+                                ? loadingProgress.cumulativeBytesLoaded / expected
+                                : null;
+                            return Center(
+                              child: CircularProgressIndicator(
+                                value: value,
+                                strokeWidth: 2,
+                                color: KycTheme.primary,
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) => Container(
+                            color: Colors.grey.shade200,
+                            alignment: Alignment.center,
+                            child: const Text(
+                              'Preview not available',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: KycTheme.textSecondary,
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
             ...visibleFieldsForDisplay.map((field) {
               if (field is! Map) return const SizedBox.shrink();
               final name = field['name']?.toString() ?? '';
               final type = field['type']?.toString() ?? 'text';
+              final lowerName = name.toLowerCase();
+              final isAadharImageField =
+                  lowerName == 'aadhar_image' || lowerName == 'aadhaar_image';
+              if (isAadharImageField && hasAadharImage) {
+                // Image already rendered at top of form; hide underlying field
+                return const SizedBox.shrink();
+              }
               if (otpField != null && name == otpFieldName) {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 20),
@@ -1125,7 +1342,11 @@ class _HomePageState extends State<HomePage> {
               final disable = editableFields.any((e) => e is Map && e['name'] == name);
               
               // Check if this is email field on email step
-              final isEmailStep = position == 'email';
+              // Support multiple position keys / labels: "email", "email_id", "emailid"
+              final isEmailStep = position == 'email' ||
+                  position == 'emailid' ||
+                  position == 'email_id' ||
+                  label == 'email';
               final isEmailField = (name.toLowerCase() == 'email' || 
                                     name.toLowerCase() == 'email_id' || 
                                     name.toLowerCase() == 'emailid' ||
@@ -1186,7 +1407,7 @@ class _HomePageState extends State<HomePage> {
                       OutlinedButton.icon(
                         onPressed: () {
                           // TODO: Implement Google Sign-In functionality
-                          Fluttertoast.showToast(msg: 'Google Sign-In coming soon');
+                          Fluttertoast.showToast(msg: 'Google Sign-In coming soon', gravity: ToastGravity.TOP);
                         },
                         icon: const Icon(Icons.g_mobiledata, size: 20),
                         label: const Text('Sign in with Google'),
@@ -1206,7 +1427,7 @@ class _HomePageState extends State<HomePage> {
                           if (ifscValue.length == 11) {
                             _fetchBankDetailsByIfsc(ifscValue);
                           } else {
-                            Fluttertoast.showToast(msg: 'Please enter valid 11-digit IFSC code');
+                            Fluttertoast.showToast(msg: 'Please enter valid 11-digit IFSC code', gravity: ToastGravity.TOP);
                           }
                         },
                         icon: const Icon(Icons.search, size: 20),
@@ -1222,10 +1443,67 @@ class _HomePageState extends State<HomePage> {
                 ),
               );
             }),
+            // Terms & Conditions and Aadhaar note (mobile login step only)
+            // Show only when API page label AND position both indicate "mobile"
+            if (pageLabel == 'mobile') ...[
+              const SizedBox(height: 15),
+              CheckboxListTile(
+                value: _termsAccepted,
+                onChanged: (v) => setState(() {
+                  _termsAccepted = v ?? false;
+                  if (_termsAccepted) {
+                    _showTermsError = false;
+                  }
+                }),
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: KycTheme.primary,
+                contentPadding: const EdgeInsets.only(right: 12),
+                dense: true,
+                title: RichText(
+                  text: TextSpan(
+                    style: TextStyle(fontSize: 12, color: KycTheme.textPrimary, height: 1.4),
+                    children: [
+                      const TextSpan(text: 'Please accept the '),
+                      TextSpan(
+                        text: 'Terms and Conditions',
+                        style: const TextStyle(
+                          color: KycTheme.primary,
+                          fontWeight: FontWeight.w600,
+                          decoration: TextDecoration.underline,
+                        ),
+                        recognizer: TapGestureRecognizer()..onTap = () => _showTermsModal(context),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_showTermsError && !_termsAccepted) ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 16.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.error_outline, size: 16, color: Colors.red.shade700),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Please accept the Terms & Conditions to continue',
+                          style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              _buildAadhaarNote(),
+              const SizedBox(height: 16),
+            ],
             if (showGenericSubmit) const SizedBox(height: 24),
             if (showGenericSubmit)
             ElevatedButton(
-              onPressed: _submitLoading
+              onPressed: _submitLoading || _isSendOtpDisabled(position)
                   ? null
                   : () {
                       debugPrint('[HomePage] Submit button clicked! isAuth=$isAuth, position=$position');
@@ -1315,6 +1593,108 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Disable Send OTP on mobile step until 10 digits entered
+  bool _isSendOtpDisabled(String? position) {
+    if (position != 'mobile') return false;
+    final mobile = _formNotifier.formData['mobile'] ?? 
+        _formNotifier.formData['phone'] ?? 
+        _formNotifier.formData['mobile_number'] ?? '';
+    final digits = mobile.toString().replaceAll(RegExp(r'\D'), '');
+    return digits.length != 10 || !RegExp(r'^[6-9]').hasMatch(digits);
+  }
+
+  void _showTermsModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Terms & Conditions',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'By signing up, You agree that BP Equities Pvt. Ltd. / StoxBox representative may contact you telephonically in connection with the services or your registration on the platform or to introduce new product/ service offerings.',
+                style: TextStyle(fontSize: 14, height: 1.5),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAadhaarNote() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F0FF), // light purple #F3F0FF
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE0DCF5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, color: Colors.purple),
+          const SizedBox(width: 12),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(fontSize: 13, color: KycTheme.textPrimary, height: 1.4),
+                children: [
+                  const TextSpan(
+                    text:
+                        'Note: Online account opening requires your number to be linked with Aadhaar. You can check if your mobile number is linked to Aadhaar ',
+                  ),
+                  TextSpan(
+                    text: 'here',
+                    style: const TextStyle(
+                      color: KycTheme.primary,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.underline,
+                    ),
+                    recognizer: TapGestureRecognizer()
+                      ..onTap = () async {
+                        final uri = Uri.parse('https://resident.uidai.gov.in/verify');
+                        if (await canLaunchUrl(uri)) {
+                          await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        }
+                      },
+                  ),
+                  const TextSpan(
+                    text:
+                        '. If your mobile number isn\'t linked to Aadhaar, please open your account offline.',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

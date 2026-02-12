@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
@@ -239,6 +240,15 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     return null;
   }
 
+  bool get _isMobileField {
+    final name = widget.name.toLowerCase();
+    final validation = widget.validation?.toString().toLowerCase() ?? '';
+    return validation == 'mobile' ||
+        name == 'mobile' ||
+        name == 'mobile_number' ||
+        name == 'phone';
+  }
+
   Widget _buildText() {
     if (_textController == null) {
       _textController = TextEditingController(text: widget.value?.toString() ?? '');
@@ -250,11 +260,20 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _textController,
           enabled: !widget.disable,
+          keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
+          maxLength: _isMobileField ? 10 : null,
+          inputFormatters: _isMobileField
+              ? [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(10),
+                ]
+              : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: 'Enter ${widget.displayName}',
+            hintText: '${widget.displayName}',
             border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
+            counterText: _isMobileField ? '' : null,
           ),
         ),
       ],
@@ -275,7 +294,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           keyboardType: TextInputType.number,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: 'Enter ${widget.displayName}',
+            hintText: '${widget.displayName}',
             border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
           ),
@@ -298,7 +317,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           maxLines: widget.rows ?? 3,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: 'Enter ${widget.displayName}',
+            hintText: '${widget.displayName}',
             border: const OutlineInputBorder(),
             alignLabelWithHint: true,
           ),
@@ -320,7 +339,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           obscureText: !_showPassword,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: 'Enter ${widget.displayName}',
+            hintText: '${widget.displayName}',
             border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
             suffixIcon: IconButton(

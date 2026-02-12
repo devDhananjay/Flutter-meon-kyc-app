@@ -16,25 +16,36 @@ class KycStepperBar extends StatefulWidget {
     this.currentIndex = 0,
   });
 
-  static const List<String> defaultSteps = [
-    'mobile',
-    'mobile_otp',
-    'email',
-    'email_otp',
-    'segments',
-    'detailspan',
-    'kradetails',
-    'digilocker',
-    'personal_details',
-    'nominee',
-    'reverse_pennydrop',
-    'bank_details',
-    'account_aggregator',
-    'liveimage',
-    'bank_upload',
-    'pdf',
-    'esign',
-  ];
+static const List<String> defaultSteps = [
+  'mobile',
+  'mobile_otp',
+  'email',
+  'email_otp',
+  'segments',
+  'detailspan',
+  'kra_fetch_new',
+  'kradetails',
+  'digilocker',
+  'pan',
+  'personal_details',
+  'nominee',
+  'additional_nominee',
+  'additional_nominee_second',
+  'nominee_mobile',
+  'mobile_otp',
+  'reverse_pennydrop',
+  'bank',
+  'bank_details',
+  'account_aggregator',
+  'liveimage',
+  'pan_upload',
+  'sign_upload',
+  'income_proof',
+  'bank_upload',
+  'pdf',
+  'esign',
+  'complete',
+];
 
   /// Format label to readable step label (capitalize first letter of each word)
   static String formatLabel(String label) {
@@ -52,8 +63,8 @@ class KycStepperBar extends StatefulWidget {
 class _KycStepperBarState extends State<KycStepperBar> {
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _scrollContainerKey = GlobalKey();
-  static const double _stepWidth = 158.0; // circle + padding + label
-  static const double _connectorWidth = 48.0;
+  // Keep a key per step so we can measure its position and center it
+  final List<GlobalKey> _stepKeys = [];
 
   @override
   void dispose() {
@@ -66,12 +77,30 @@ class _KycStepperBarState extends State<KycStepperBar> {
     final idx = widget.currentIndex.clamp(0, steps.length - 1);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final box = _scrollContainerKey.currentContext?.findRenderObject() as RenderBox?;
-      final viewportWidth = box?.size.width ?? 0;
+      if (idx < 0 || idx >= _stepKeys.length) return;
+
+      final containerBox =
+          _scrollContainerKey.currentContext?.findRenderObject() as RenderBox?;
+      final stepBox = _stepKeys[idx].currentContext?.findRenderObject() as RenderBox?;
+
+      if (containerBox == null || stepBox == null) return;
+
+      final viewportWidth = containerBox.size.width;
       if (viewportWidth <= 0) return;
-      // Center of step at idx: each step is _stepWidth + _connectorWidth (except last has no connector)
-      final stepCenter = idx * (_stepWidth + _connectorWidth) + _stepWidth / 2;
-      final targetOffset = (stepCenter - viewportWidth / 2).clamp(0.0, _scrollController.position.maxScrollExtent);
+
+      // Center of the active step in global coordinates
+      final stepCenterGlobal =
+          stepBox.localToGlobal(Offset(stepBox.size.width / 2, 0)).dx;
+      final containerLeftGlobal =
+          containerBox.localToGlobal(Offset.zero).dx;
+      final stepCenterInViewport = stepCenterGlobal - containerLeftGlobal;
+
+      // How much we need to scroll so that step center aligns with viewport center
+      final delta = stepCenterInViewport - viewportWidth / 2;
+      final targetOffset =
+          (_scrollController.offset + delta)
+              .clamp(0.0, _scrollController.position.maxScrollExtent);
+
       _scrollController.animateTo(
         targetOffset,
         duration: const Duration(milliseconds: 300),
@@ -83,12 +112,25 @@ class _KycStepperBarState extends State<KycStepperBar> {
   @override
   void initState() {
     super.initState();
+    _stepKeys.clear();
+    final steps = widget.steps.isEmpty ? KycStepperBar.defaultSteps : widget.steps;
+    _stepKeys.addAll(List.generate(steps.length, (_) => GlobalKey()));
     _scrollToCenterActive();
   }
 
   @override
   void didUpdateWidget(KycStepperBar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.steps.length != widget.steps.length) {
+      _stepKeys
+        ..clear()
+        ..addAll(List.generate(
+            (widget.steps.isEmpty
+                    ? KycStepperBar.defaultSteps
+                    : widget.steps)
+                .length,
+            (_) => GlobalKey()));
+    }
     if (oldWidget.currentIndex != widget.currentIndex) {
       _scrollToCenterActive();
     }
@@ -132,6 +174,7 @@ class _KycStepperBarState extends State<KycStepperBar> {
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Column(
+                key: _stepKeys.length > idx ? _stepKeys[idx] : null,
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [

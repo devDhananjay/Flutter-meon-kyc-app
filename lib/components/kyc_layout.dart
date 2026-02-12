@@ -28,6 +28,51 @@ class KycLayout extends StatelessWidget {
     this.skipScaffold = false,
   });
 
+  /// Builds the page title section.
+  /// Special handling for the "Start your KYC" hero title from Figma:
+  /// first line bold 24, second line subtitle 14.
+  Widget _buildTitleSection() {
+    if (title == null) return const SizedBox.shrink();
+
+    final rawTitle = title!.trim();
+    final lower = rawTitle.toLowerCase();
+
+    final hasStartKyc = lower.contains('start your kyc');
+    final hasPickupCopy = lower.contains('pickup where you left off');
+
+    if (hasStartKyc && hasPickupCopy) {
+      // Split into two lines: "Start your KYC" + "or pickup where you left off"
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: const [
+          Text(
+            'Start your KYC',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: KycTheme.textPrimary,
+            ),
+          ),
+          SizedBox(height: 4),
+          Text(
+            'or pickup where you left off',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              color: KycTheme.textSecondary,
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Default single-line title for all other pages
+    return const Text(
+      '',
+      // This placeholder will be replaced below; kept here to satisfy const usage.
+    );
+  }
+
   Widget _buildContent() {
     if (skipScaffold) {
       // When skipping scaffold, return scrollable content directly (no Expanded)
@@ -44,14 +89,23 @@ class KycLayout extends StatelessWidget {
               _buildTopBar(null),
               if (title != null) ...[
                 const SizedBox(height: 16),
-                Text(
-                  title!,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: KycTheme.textPrimary,
+                // Custom hero layout for "Start your KYC", default title for others
+                if (title != null && title!
+                    .toLowerCase()
+                    .contains('start your kyc') &&
+                    title!
+                        .toLowerCase()
+                        .contains('pickup where you left off'))
+                  _buildTitleSection()
+                else
+                  Text(
+                    title!,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: KycTheme.textPrimary,
+                    ),
                   ),
-                ),
                 const SizedBox(height: 8),
               ],
               child,
@@ -87,14 +141,23 @@ class KycLayout extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (title != null) ...[
-                    Text(
-                      title!,
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: KycTheme.textPrimary,
+                    // Custom hero layout for "Start your KYC", default title for others
+                    if (title != null && title!
+                        .toLowerCase()
+                        .contains('start your kyc') &&
+                        title!
+                            .toLowerCase()
+                            .contains('pickup where you left off'))
+                      _buildTitleSection()
+                    else
+                      Text(
+                        title!,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: KycTheme.textPrimary,
+                        ),
                       ),
-                    ),
                     const SizedBox(height: 8),
                   ],
                   child,
@@ -134,14 +197,15 @@ class KycLayout extends StatelessWidget {
 
 Widget _buildTopBar(BuildContext? context) {
   return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+    // Reduced vertical padding so the logo + logout bar takes less height
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
     child: Row(
       children: [
         if (leading != null) leading!,
         Expanded(
           child: Image.asset(
             AppAssets.stoxboxLogo,
-            height: 30,
+            height: 24, // Slightly smaller logo to match Figma
             fit: BoxFit.contain,
           ),
         ),

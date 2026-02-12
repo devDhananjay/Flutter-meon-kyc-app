@@ -45,52 +45,101 @@ class _OtpInputState extends State<OtpInput> {
     }
     final finalValue = _controller.text;
     widget.onChanged?.call(finalValue);
-    if (finalValue.length == widget.length) {
+    // Removed minimum length condition - onComplete fires whenever there's any input
+    if (finalValue.isNotEmpty) {
       widget.onComplete?.call(finalValue);
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: _controller,
-      focusNode: _focusNode,
-      keyboardType: TextInputType.number,
-      textAlign: TextAlign.center,
-      maxLength: widget.length,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(widget.length),
-      ],
-      onChanged: _onChanged,
-      decoration: InputDecoration(
-        counterText: '',
-        contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
-        filled: true,
-        fillColor: KycTheme.surface,
-        hintText: 'Enter OTP',
-        hintStyle: TextStyle(
-          color: KycTheme.textSecondary,
-          fontSize: 16,
-        ),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: KycTheme.border, width: 1.5),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: KycTheme.primary, width: 2),
-        ),
+Widget build(BuildContext context) {
+  return TextField(
+    controller: _controller,
+    focusNode: _focusNode,
+    keyboardType: TextInputType.number,
+    textAlign: TextAlign.center,
+    maxLength: widget.length,
+    inputFormatters: [
+      FilteringTextInputFormatter.digitsOnly,
+      LengthLimitingTextInputFormatter(widget.length),
+    ],
+    onChanged: _onChanged,
+    decoration: InputDecoration(
+      isDense: true, // Add this - reduces internal padding
+      counterText: '',
+      contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 12),
+      filled: true,
+      fillColor: KycTheme.surface,
+      hintText: 'Enter OTP',
+      hintStyle: const TextStyle(
+        color: KycTheme.textSecondary,
+        fontSize: 15,
+        letterSpacing: 0,
       ),
-      style: const TextStyle(
-        fontSize: 24,
-        fontWeight: FontWeight.w600,
-        color: KycTheme.textPrimary,
-        letterSpacing: 8,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: KycTheme.border, width: 1.5),
       ),
-    );
-  }
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: KycTheme.primary, width: 2),
+      ),
+    ),
+    style: const TextStyle(
+      fontSize: 17,
+      fontWeight: FontWeight.w600,
+      color: KycTheme.textPrimary,
+      letterSpacing: 8,
+    ),
+  );
+}
+
+  // @override
+  // Widget build(BuildContext context) {
+  //   return TextField(
+  //     controller: _controller,
+  //     focusNode: _focusNode,
+  //     keyboardType: TextInputType.number,
+  //     textAlign: TextAlign.center,
+  //     textAlignVertical: TextAlignVertical.center, // Center text vertically
+  //     maxLength: widget.length,
+  //     inputFormatters: [
+  //       FilteringTextInputFormatter.digitsOnly,
+  //       LengthLimitingTextInputFormatter(widget.length),
+  //     ],
+  //     onChanged: _onChanged,
+  //     decoration: InputDecoration(
+  //       counterText: '',
+  //       contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14), // Proper padding for centering
+  //       filled: true,
+  //       fillColor: KycTheme.surface,
+  //       hintText: 'Enter OTP',
+  //       hintStyle: TextStyle(
+  //         color: KycTheme.textSecondary,
+  //         fontSize: 14,
+  //       ),
+  //       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+  //       enabledBorder: OutlineInputBorder(
+  //         borderRadius: BorderRadius.circular(12),
+  //         borderSide: const BorderSide(color: KycTheme.border, width: 1.5),
+  //       ),
+  //       focusedBorder: OutlineInputBorder(
+  //         borderRadius: BorderRadius.circular(12),
+  //         borderSide: const BorderSide(color: KycTheme.primary, width: 2),
+  //       ),
+  //     ),
+  //     style: const TextStyle(
+  //       fontSize: 24,
+  //       fontWeight: FontWeight.w600,
+  //       color: KycTheme.textPrimary,
+  //       letterSpacing: 8,
+  //       height: 1.0, // Normal height for text
+  //     ),
+  //   );
+  // }
+
+  
 }
 
 /// Six separate OTP boxes (used for email_otp per Figma)

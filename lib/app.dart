@@ -56,7 +56,11 @@ class MeonKycApp extends StatelessWidget {
           ),
           GoRoute(
             path: '/:company/:workflowName/completed',
-            builder: (context, state) => const KycCompletedPage(),
+            builder: (context, state) {
+              final company = state.pathParameters['company'] ?? EnvConfig.companyName;
+              final workflowName = state.pathParameters['workflowName'] ?? EnvConfig.workflowName;
+              return KycCompletedPage(company: company, workflowName: workflowName);
+            },
           ),
           GoRoute(
             path: '/404',

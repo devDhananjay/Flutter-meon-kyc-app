@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:meon_kyc/api/api_client.dart';
+import 'package:meon_kyc/api/kyc_api.dart';
 
 class AppStore extends ChangeNotifier {
   // Params
@@ -210,7 +211,18 @@ class AppStore extends ChangeNotifier {
       }
     }
     
-    return steps;
+    // Filter out backend-only / admin steps that should not appear in user stepper
+    const hiddenSteps = <String>{
+      'cdsl_upload',
+      'nse',
+      'bse',
+      'kra_new',
+      'backoffice',
+    };
+    
+    return steps
+        .where((s) => !hiddenSteps.contains(s.toLowerCase().trim()))
+        .toList();
   }
 
   /// Get current step index based on Position and Page ID
@@ -286,14 +298,16 @@ class AppStore extends ChangeNotifier {
     return index == -1 ? null : index;
   }
 
-  Future<void> fetchStepperWorkflow(String company, String workflowId) async {
-    debugPrint('[AppStore] fetchStepperWorkflow START: $company / $workflowId');
+  /// Fetch stepper workflow metadata.
+  /// Backend route is: /kycadmin_getWorkflow/{workflowName}/{workflowId}
+  Future<void> fetchStepperWorkflow(String workflowName, String workflowId) async {
+    debugPrint('[AppStore] fetchStepperWorkflow START: $workflowName / $workflowId');
     _loadingStepperWorkflow = true;
     _errorStepperWorkflow = null;
     notifyListeners();
+
     try {
-      final client = ApiClient();
-      final res = await client.post('/kycadmin_getWorkflow/$company/$workflowId', body: {});
+      final res = await KycAPI.getStepperWorkflow(workflowName, workflowId);
       debugPrint('[AppStore] fetchStepperWorkflow Response: ${res.statusCode}');
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final data = _parseJson(res.body);
