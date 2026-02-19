@@ -1108,6 +1108,40 @@ class _HomePageState extends State<HomePage> {
                 );
               }
 
+              // Show error if get-context API failed
+              if (store.errorWithAuth != null) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Column(
+                      children: [
+                        // Fixed height stepper container
+                        stepperWidget,
+                        // Error content below stepper
+                        Expanded(
+                          child: KycLayout(
+                            title: 'Error',
+                            stepperSteps: null, // Stepper already shown above
+                            stepperIndex: null,
+                            skipScaffold: true, // Skip Scaffold since we're already in one
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Text(
+                                  store.errorWithAuth!,
+                                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
               // Get page title from context.page.data.label or context.page.name, fallback to title/pageTitle
               final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
               final page = ctx?['page'] as Map?;

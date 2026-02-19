@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -48,6 +49,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   int? _popupWindowId;
   // Track if a UPI app was opened so we can auto-refresh on return
   bool _upiAppLaunched = false;
+  // Track if any payment app was launched (for iOS auto-reload)
+  bool _paymentAppLaunched = false;
   // Periodic polling timer to auto-refresh Reverse Penny Drop page after UPI payment
   Timer? _reversePennyPollTimer;
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
@@ -83,13 +86,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When returning from a UPI app during reverse_pennydrop, auto-reload the WebView
-    if (state == AppLifecycleState.resumed &&
-        _isReversePennyDropFlow &&
-        _upiAppLaunched) {
-      _upiAppLaunched = false;
-      _reloadWebView();
-      _startReversePennyPolling();
+    // When returning from a payment app, auto-reload the WebView
+    if (state == AppLifecycleState.resumed) {
+      if (_isReversePennyDropFlow && _upiAppLaunched) {
+        _upiAppLaunched = false;
+        _reloadWebView();
+        _startReversePennyPolling();
+      } else if (_paymentAppLaunched) {
+        // For iOS: auto-reload when returning from any payment app
+        _paymentAppLaunched = false;
+        debugPrint('[WebView] App resumed after payment - reloading WebView');
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _reloadWebView();
+        });
+      }
     }
   }
 
@@ -271,57 +281,132 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Opens supported payment / deep-link URLs in external apps using url_launcher.
   Future<bool> _handleExternalUrl(String url) async {
     try {
+      String finalUrl = url;
+      bool isIntentUrl = false;
+      
+      // Handle Android intent: URLs - extract the actual UPI URL
+      // Format: intent:upi://pay?...#Intent;scheme=upi;package=...;end
+      // Or: intent:upi://pay?...
+      if (Platform.isAndroid && url.toLowerCase().startsWith('intent:')) {
+        isIntentUrl = true;
+        debugPrint('[WebView] Android intent URL detected: $url');
+        // Extract the part after "intent:" and before "#Intent" (if present)
+        String intentContent = url.substring('intent:'.length);
+        int intentIndex = intentContent.indexOf('#Intent');
+        if (intentIndex != -1) {
+          intentContent = intentContent.substring(0, intentIndex);
+        }
+        // Remove any trailing semicolons
+        intentContent = intentContent.replaceAll(RegExp(r';+$'), '');
+        finalUrl = intentContent.trim();
+        debugPrint('[WebView] Extracted UPI URL from intent: $finalUrl');
+      }
+      
       // Map Digio's custom PhonePe scheme "ppe://" to the real "phonepe://"
-      if (url.toLowerCase().startsWith('ppe://')) {
-        url = 'phonepe://' + url.substring('ppe://'.length);
+      if (finalUrl.toLowerCase().startsWith('ppe://')) {
+        finalUrl = 'phonepe://' + finalUrl.substring('ppe://'.length);
       }
 
-      debugPrint('[WebView] Opening external URL: $url');
+      debugPrint('[WebView] Opening external URL: $finalUrl');
+
+      // For UPI/payment URLs, try launching directly without canLaunchUrl check
+      // (canLaunchUrl is unreliable for UPI schemes)
+      final lowerUrl = finalUrl.toLowerCase();
+      final isPaymentUrl = lowerUrl.startsWith('upi://') ||
+          lowerUrl.startsWith('phonepe://') ||
+          lowerUrl.startsWith('paytmmp://') ||
+          lowerUrl.startsWith('paytm://') ||
+          lowerUrl.startsWith('gpay://') ||
+          lowerUrl.startsWith('tez://') ||
+          lowerUrl.startsWith('bhim://') ||
+          lowerUrl.startsWith('googlepay://');
+
+      if (isPaymentUrl || isIntentUrl) {
+        try {
+          final uri = Uri.parse(finalUrl);
+          debugPrint('[WebView] Attempting to launch payment URL: $finalUrl');
+          await launchUrl(
+            uri,
+            mode: LaunchMode.externalApplication,
+          );
+          _markPaymentAppLaunched(finalUrl);
+          debugPrint('[WebView] Successfully launched payment URL');
+          return true;
+        } catch (e) {
+          debugPrint('[WebView] Error launching payment URL directly: $e');
+          // Fallback: try with canLaunchUrl check
+          try {
+            final uri = Uri.parse(finalUrl);
+            if (await canLaunchUrl(uri)) {
+              await launchUrl(uri, mode: LaunchMode.externalApplication);
+              _markPaymentAppLaunched(finalUrl);
+              return true;
+            }
+          } catch (_) {
+            debugPrint('[WebView] Fallback launch also failed');
+          }
+        }
+      }
 
       // Google Pay special handling: try multiple possible schemes
-      if (url.contains('gpay') || url.contains('tez') || url.contains('google.payments')) {
+      if (finalUrl.contains('gpay') || finalUrl.contains('tez') || finalUrl.contains('google.payments')) {
         final gpaySchemes = [
-          url,
-          url.replaceAll('gpay://', 'tez://'),
-          url.replaceAll('tez://', 'gpay://'),
-          url.replaceAll('google.payments://', 'gpay://'),
+          finalUrl,
+          finalUrl.replaceAll('gpay://', 'tez://'),
+          finalUrl.replaceAll('tez://', 'gpay://'),
+          finalUrl.replaceAll('google.payments://', 'gpay://'),
         ];
 
         for (final scheme in gpaySchemes) {
           try {
             final uri = Uri.parse(scheme);
-            if (await canLaunchUrl(uri)) {
-              await launchUrl(uri, mode: LaunchMode.externalApplication);
-              return true;
-            }
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+            _markPaymentAppLaunched(finalUrl);
+            return true;
           } catch (_) {
             // Try next scheme
           }
         }
       }
 
-      final uri = Uri.parse(url);
+      // For other URLs, use canLaunchUrl check
+      final uri = Uri.parse(finalUrl);
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-        // If this is a UPI deep-link during reverse_pennydrop, remember so we can auto-refresh on return
-        final lower = url.toLowerCase();
-        if (_isReversePennyDropFlow &&
-            (lower.startsWith('upi://') ||
-                lower.startsWith('phonepe://') ||
-                lower.startsWith('paytmmp://') ||
-                lower.startsWith('paytm://') ||
-                lower.startsWith('gpay://') ||
-                lower.startsWith('tez://') ||
-                lower.startsWith('bhim://'))) {
-          _upiAppLaunched = true;
-        }
+        _markPaymentAppLaunched(finalUrl);
         return true;
       }
 
+      debugPrint('[WebView] Could not launch URL: $finalUrl');
       return false;
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('[WebView] Error opening external URL: $e');
+      debugPrint('[WebView] Stack trace: $stackTrace');
       return false;
+    }
+  }
+
+  /// Marks that a payment app was launched (for auto-reload on return)
+  void _markPaymentAppLaunched(String url) {
+    final lower = url.toLowerCase();
+    final isPaymentUrl = lower.startsWith('upi://') ||
+        lower.startsWith('phonepe://') ||
+        lower.startsWith('paytmmp://') ||
+        lower.startsWith('paytm://') ||
+        lower.startsWith('gpay://') ||
+        lower.startsWith('tez://') ||
+        lower.startsWith('bhim://') ||
+        lower.startsWith('googlepay://');
+    
+    if (isPaymentUrl) {
+      if (_isReversePennyDropFlow) {
+        _upiAppLaunched = true;
+      } else {
+        // For iOS: mark any payment app launch so we can reload on return
+        if (Platform.isIOS) {
+          _paymentAppLaunched = true;
+        }
+      }
     }
   }
 
@@ -625,6 +710,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             final url = uri.toString();
             debugPrint('[WebView] Navigation request: $url');
 
+            // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
+            if (Platform.isAndroid && url.toLowerCase().startsWith('intent:')) {
+              debugPrint('[WebView] Intent URL detected - handling externally');
+              await _handleExternalUrl(url);
+              return NavigationActionPolicy.CANCEL;
+            }
+
             if (_shouldHandleExternally(url)) {
               final handled = await _handleExternalUrl(url);
               if (handled) {
@@ -779,6 +871,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           final url = uri.toString();
                           debugPrint(
                               '[WebView][Popup] Navigation request: $url');
+                          
+                          // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
+                          if (Platform.isAndroid && url.toLowerCase().startsWith('intent:')) {
+                            debugPrint('[WebView][Popup] Intent URL detected - handling externally');
+                            await _handleExternalUrl(url);
+                            return NavigationActionPolicy.CANCEL;
+                          }
+                          
                           if (_shouldHandleExternally(url)) {
                             final handled = await _handleExternalUrl(url);
                             if (handled) {
@@ -788,6 +888,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             }
                           }
                           return NavigationActionPolicy.ALLOW;
+                        },
+                        onLoadError: (controller, url, code, message) {
+                          debugPrint('[WebView][Popup] Load error ($code): $message, url=$url');
+                          // Ignore unknown URL scheme errors for intent URLs (expected on Android)
+                          if (code == -10 && message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
+                            debugPrint('[WebView][Popup] Ignoring ERR_UNKNOWN_URL_SCHEME (intent URL handled externally)');
+                            return;
+                          }
                         },
                         onLoadStop: (controller, url) async {
                           if (url != null) {

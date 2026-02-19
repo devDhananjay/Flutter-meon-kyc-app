@@ -107,7 +107,19 @@ class AppStore extends ChangeNotifier {
           
           debugPrint('[AppStore] fetchWorkflowFieldsWithAuth OK');
         } else {
-          _errorWithAuth = (data is Map ? data['msg']?.toString() : null) ?? res.body;
+          // Extract error message from nested error object first, then fallback to top-level msg
+          String? errorMsg;
+          if (data is Map) {
+            // Check for nested error.msg first (e.g., "Missing account details...")
+            final errorObj = data['error'];
+            if (errorObj is Map && errorObj['msg'] != null) {
+              errorMsg = errorObj['msg']?.toString();
+            } else {
+              // Fallback to top-level msg
+              errorMsg = data['msg']?.toString();
+            }
+          }
+          _errorWithAuth = errorMsg ?? res.body;
           debugPrint('[AppStore] fetchWorkflowFieldsWithAuth ERROR (success: false): $_errorWithAuth');
         }
       } else {
