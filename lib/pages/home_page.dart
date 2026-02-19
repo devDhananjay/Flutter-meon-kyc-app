@@ -444,32 +444,104 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] Form data (Send OTP): $data');
       final activeFields = _getActiveFields(store);
       final fieldList = (activeFields?['fields'] as List?) ?? [];
-      final hasFile = fieldList.any((f) => f is Map && f['type'] == 'file');
+      final hasFile = fieldList.any((f) => f is Map && f['type'] == 'file') ||
+                      data.values.any((v) => v is File);
+      
+      // Check saveFilesAPI flag from context.page (check both fieldsWithAuth and fields)
+      final withAuth = store.fieldsWithAuth as Map?;
+      final workflow = store.fields as Map?;
+      final ctx = (withAuth?['context'] ?? workflow?['context']) as Map?;
+      final page = ctx?['page'] as Map?;
+      final saveFilesAPI = page?['saveFilesAPI'] == true;
+      debugPrint('[HomePage] _handleSubmit saveFilesAPI flag: $saveFilesAPI');
+      
       final endpoint = '/api/get-user/${widget.company}/${widget.workflowName}';
       final fullUrl = '${EnvConfig.baseUrl}$endpoint';
       debugPrint('[HomePage] _handleSubmit hasFile=$hasFile');
       debugPrint('[HomePage] _handleSubmit FULL URL: $fullUrl');
       debugPrint('[HomePage] _handleSubmit ENDPOINT: $endpoint');
 
-      if (hasFile) {
-        final req = http.MultipartRequest(
-          'POST',
-          Uri.parse(fullUrl),
-        );
+      // If saveFilesAPI is true, upload files separately first
+      if (hasFile && saveFilesAPI) {
+        debugPrint('[HomePage] _handleSubmit saveFilesAPI=true: Uploading files separately to /api/upload_files_new');
+        final filesToUpload = <String, File>{};
+        
+        // Extract files from data
         for (final e in data.entries) {
-          final v = e.value;
-          if (v is File) {
-            req.files.add(await http.MultipartFile.fromPath(e.key, v.path));
-          } else if (v is bool) {
-            req.fields[e.key] = v.toString();
-          } else if (v != null) {
-            req.fields[e.key] = v.toString();
+          if (e.value is File) {
+            filesToUpload[e.key] = e.value as File;
           }
         }
+        
+        // Upload each file separately to /api/upload_files_new
+        for (final entry in filesToUpload.entries) {
+          final fileKey = entry.key; // e.g., signature_upload, pan_upload, etc.
+          final file = entry.value;
+          
+          try {
+            debugPrint('[HomePage] _handleSubmit Uploading file: $fileKey = ${file.path}');
+            final client = ApiClient();
+            final uploadRes = await client.postMultipart(
+              () async {
+                final uploadReq = http.MultipartRequest(
+                  'POST',
+                  Uri.parse('${EnvConfig.baseUrl}/api/upload_files_new'),
+                );
+                uploadReq.headers['accept'] = '*/*';
+                uploadReq.files.add(await http.MultipartFile.fromPath(fileKey, file.path));
+                return uploadReq;
+              },
+              skipRefreshOn401: true,
+            );
+            debugPrint('[HomePage] _handleSubmit File upload response for $fileKey: ${uploadRes.statusCode}');
+            
+            if (uploadRes.statusCode < 200 || uploadRes.statusCode >= 300) {
+              debugPrint('[HomePage] _handleSubmit File upload failed for $fileKey: ${uploadRes.body}');
+              Fluttertoast.showToast(
+                msg: 'Failed to upload $fileKey',
+                gravity: ToastGravity.TOP,
+              );
+              if (mounted) setState(() => _submitLoading = false);
+              return;
+            }
+          } catch (e) {
+            debugPrint('[HomePage] _handleSubmit Error uploading file $fileKey: $e');
+            Fluttertoast.showToast(
+              msg: 'Error uploading file: $e',
+              gravity: ToastGravity.TOP,
+            );
+            if (mounted) setState(() => _submitLoading = false);
+            return;
+          }
+        }
+        
+        // Remove files from data after successful upload
+        for (final key in filesToUpload.keys) {
+          data.remove(key);
+        }
+        debugPrint('[HomePage] _handleSubmit Files uploaded successfully, continuing with form submission');
+      }
+
+      if (hasFile && !saveFilesAPI) {
+        // Use multipart/form-data for file uploads (existing flow when saveFilesAPI=false)
         final client = ApiClient();
-        final res = await client.postMultipart(req);
+        final res = await client.postMultipart(() async {
+          final req = http.MultipartRequest('POST', Uri.parse(fullUrl));
+          for (final e in data.entries) {
+            final v = e.value;
+            if (v is File) {
+              req.files.add(await http.MultipartFile.fromPath(e.key, v.path));
+            } else if (v is bool) {
+              req.fields[e.key] = v.toString();
+            } else if (v != null) {
+              req.fields[e.key] = v.toString();
+            }
+          }
+          return req;
+        });
         await _handleSubmitResponse(res, store);
       } else {
+        // Use JSON for non-file submissions (or after files uploaded separately)
         final headers = {'Content-Type': 'application/json'};
         final res = await KycAPI.submitKyc(
           widget.company,
@@ -625,6 +697,11 @@ class _HomePageState extends State<HomePage> {
       data['save'] = true;
       debugPrint('[HomePage] _handleCommonSubmit data: $data pathSegment: $pathSegment');
       
+      // Check saveFilesAPI flag from context.page
+      final page = ctx?['page'] as Map?;
+      final saveFilesAPI = page?['saveFilesAPI'] == true;
+      debugPrint('[HomePage] saveFilesAPI flag: $saveFilesAPI');
+      
       // Check if form has file fields - if yes, use multipart/form-data
       final activeFields = _getActiveFields(store);
       final fieldList = (activeFields?['fields'] as List?) ?? [];
@@ -638,36 +715,88 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] _handleCommonSubmit FULL URL: $fullUrl');
       debugPrint('[HomePage] _handleCommonSubmit ENDPOINT: $endpoint');
       
-      final http.Response res;
-      if (hasFile) {
-        // Use multipart/form-data for file uploads
-        debugPrint('[HomePage] Using multipart/form-data (file upload detected)');
-        final req = http.MultipartRequest('POST', Uri.parse(fullUrl));
+      // If saveFilesAPI is true, upload files separately first
+      if (hasFile && saveFilesAPI) {
+        debugPrint('[HomePage] saveFilesAPI=true: Uploading files separately to /api/upload_files_new');
+        final filesToUpload = <String, File>{};
         
-        // Add Authorization header
-        final token = await StorageService.getAccessToken();
-        if (token != null) {
-          req.headers['Authorization'] = 'Bearer $token';
-        }
-        
-        // Add all fields to multipart request
+        // Extract files from data
         for (final e in data.entries) {
-          final v = e.value;
-          if (v is File) {
-            // Add file
-            req.files.add(await http.MultipartFile.fromPath(e.key, v.path));
-            debugPrint('[HomePage] Added file: ${e.key} = ${v.path}');
-          } else if (v is bool) {
-            req.fields[e.key] = v.toString();
-          } else if (v != null && v.toString().isNotEmpty) {
-            req.fields[e.key] = v.toString();
+          if (e.value is File) {
+            filesToUpload[e.key] = e.value as File;
           }
         }
         
-        res = await client.postMultipart(req);
+        // Upload each file separately to /api/upload_files_new (token set in ApiClient; 401 triggers refresh + retry)
+        for (final entry in filesToUpload.entries) {
+          final fileKey = entry.key; // e.g., signature_upload, pan_upload, etc.
+          final file = entry.value;
+          
+          try {
+            debugPrint('[HomePage] Uploading file: $fileKey = ${file.path}');
+            final uploadRes = await client.postMultipart(
+              () async {
+                final uploadReq = http.MultipartRequest(
+                  'POST',
+                  Uri.parse('${EnvConfig.baseUrl}/api/upload_files_new'),
+                );
+                uploadReq.headers['accept'] = '*/*';
+                uploadReq.files.add(await http.MultipartFile.fromPath(fileKey, file.path));
+                return uploadReq;
+              },
+              skipRefreshOn401: true,
+            );
+            debugPrint('[HomePage] File upload response for $fileKey: ${uploadRes.statusCode}');
+            
+            if (uploadRes.statusCode < 200 || uploadRes.statusCode >= 300) {
+              debugPrint('[HomePage] File upload failed for $fileKey: ${uploadRes.body}');
+              Fluttertoast.showToast(
+                msg: 'Failed to upload $fileKey',
+                gravity: ToastGravity.TOP,
+              );
+              if (mounted) setState(() => _submitLoading = false);
+              return;
+            }
+          } catch (e) {
+            debugPrint('[HomePage] Error uploading file $fileKey: $e');
+            Fluttertoast.showToast(
+              msg: 'Error uploading file: $e',
+              gravity: ToastGravity.TOP,
+            );
+            if (mounted) setState(() => _submitLoading = false);
+            return;
+          }
+        }
+        
+        // Remove files from data after successful upload
+        for (final key in filesToUpload.keys) {
+          data.remove(key);
+        }
+        debugPrint('[HomePage] Files uploaded successfully, continuing with form submission');
+      }
+      
+      final http.Response res;
+      if (hasFile && !saveFilesAPI) {
+        // Use multipart/form-data for file uploads (existing flow when saveFilesAPI=false)
+        debugPrint('[HomePage] Using multipart/form-data (file upload detected, saveFilesAPI=false)');
+        res = await client.postMultipart(() async {
+          final req = http.MultipartRequest('POST', Uri.parse(fullUrl));
+          for (final e in data.entries) {
+            final v = e.value;
+            if (v is File) {
+              req.files.add(await http.MultipartFile.fromPath(e.key, v.path));
+              debugPrint('[HomePage] Added file: ${e.key} = ${v.path}');
+            } else if (v is bool) {
+              req.fields[e.key] = v.toString();
+            } else if (v != null && v.toString().isNotEmpty) {
+              req.fields[e.key] = v.toString();
+            }
+          }
+          return req;
+        });
       } else {
-        // Use JSON for non-file submissions
-        debugPrint('[HomePage] Using application/json (no files)');
+        // Use JSON for non-file submissions (or after files uploaded separately)
+        debugPrint('[HomePage] Using application/json (no files or files already uploaded)');
         res = await client.post(
           endpoint,
           body: data,

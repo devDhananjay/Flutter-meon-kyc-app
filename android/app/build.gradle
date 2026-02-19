@@ -24,7 +24,8 @@ if (flutterVersionName == null) {
 
 android {
     namespace "com.meon.kyc"
-    compileSdk 34
+    // Compile against latest SDK required by plugins (backward compatible)
+    compileSdk 36
     ndkVersion flutter.ndkVersion
 
     compileOptions {
@@ -42,8 +43,8 @@ android {
 
     defaultConfig {
         applicationId "com.meon.kyc"
-        minSdk 21
-        targetSdk 34
+        minSdkVersion flutter.minSdkVersion
+      targetSdk 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }

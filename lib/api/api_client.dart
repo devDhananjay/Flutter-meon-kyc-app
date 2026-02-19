@@ -24,23 +24,41 @@ class ApiClient {
     return ApiInterceptor.request(() => _base.post(path, body: body, headers: headers));
   }
 
-  Future<http.Response> postMultipart(http.MultipartRequest request) async {
-    final url = request.url.toString();
-    debugPrint('[API MULTIPART] Request: $url');
-    debugPrint('[API MULTIPART] fields: ${request.fields}');
-    final token = await StorageService.getAccessToken();
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
+  /// Sends a multipart request. [createRequest] is called each time (e.g. on retry after 401)
+  /// so that a fresh request is built and the latest token from storage is used.
+  /// Set [skipRefreshOn401] to true for endpoints like upload_files where 401 should not
+  /// trigger token refresh (same token as other APIs is used; no retry/refresh).
+  Future<http.Response> postMultipart(
+    Future<http.MultipartRequest> Function() createRequest, {
+    bool skipRefreshOn401 = false,
+  }) async {
+    Future<http.Response> send() async {
+      final request = await createRequest();
+      final url = request.url.toString();
+      debugPrint('[API MULTIPART] Request: $url');
+      debugPrint('[API MULTIPART] fields: ${request.fields}');
+      final token = await StorageService.getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        debugPrint('[API MULTIPART] Authorization header set (token length: ${token.length})');
+      } else {
+        debugPrint('[API MULTIPART] WARNING: No access token in storage');
+      }
+      try {
+        final stream = await request.send();
+        final res = await http.Response.fromStream(stream);
+        final bodyPreview = res.body.length > 600 ? '${res.body.substring(0, 600)}...' : res.body;
+        debugPrint('[API MULTIPART] Response ${res.statusCode}: $url\n$bodyPreview');
+        return res;
+      } catch (e, st) {
+        debugPrint('[API MULTIPART] Error: $url\n$e\n$st');
+        rethrow;
+      }
     }
-    try {
-      final stream = await request.send();
-      final res = await http.Response.fromStream(stream);
-      final bodyPreview = res.body.length > 600 ? '${res.body.substring(0, 600)}...' : res.body;
-      debugPrint('[API MULTIPART] Response ${res.statusCode}: $url\n$bodyPreview');
-      return res;
-    } catch (e, st) {
-      debugPrint('[API MULTIPART] Error: $url\n$e\n$st');
-      rethrow;
+
+    if (skipRefreshOn401) {
+      return send();
     }
+    return ApiInterceptor.request(send);
   }
 }
