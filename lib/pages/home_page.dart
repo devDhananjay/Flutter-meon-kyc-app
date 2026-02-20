@@ -130,30 +130,46 @@ class _HomePageState extends State<HomePage> {
       if (mounted && !hasCompletionParams) {
         await _checkAndHandleRedirect(store);
       } else if (hasCompletionParams) {
-        debugPrint('[HomePage] Step completed (success/transaction_id/esign) - skipping redirect to prevent loop');
+        debugPrint('[HomePage] Step completed (success/transaction_id/esign) - refreshing context to get updated state');
 
-        // SPECIAL CASE: eSign final step
-        // After /get-context?...&esign=yes, backend may need one more plain get-context
-        // call to flip is_admin=true. Do that immediately so user sees KYC Completed
-        // page without needing to refresh/app-restart.
-        if (widget.queryParams['esign'] == 'yes') {
-          debugPrint('[HomePage] eSign completed - refreshing context to check admin status');
-          await store.fetchWorkflowFieldsWithAuth(
-            widget.company,
-            widget.workflowName,
-            '',
-          );
+        // Refresh context without completion params to get updated state and check for redirects
+        // This ensures user moves to next step after IPV/RPD/eSign completion
+        await store.fetchWorkflowFieldsWithAuth(
+          widget.company,
+          widget.workflowName,
+          '', // Call without completion params to get fresh state
+        );
 
-          final refreshed = store.fieldsWithAuth;
-          if (refreshed is Map && refreshed['is_admin'] == true) {
-            debugPrint('[HomePage] KYC completed (is_admin: true) after eSign - fetching user details');
-            await store.fetchUserDetails();
-            if (mounted && store.userDetails != null) {
-              context.go('/${widget.company}/${widget.workflowName}/completed');
-              return;
-            } else if (mounted && store.errorUserDetails != null) {
-              debugPrint('[HomePage] Error fetching user details after eSign: ${store.errorUserDetails}');
-              Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
+        if (mounted && store.errorWithAuth != null) {
+          debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth}');
+          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Error refreshing page', gravity: ToastGravity.TOP);
+          return;
+        }
+
+        // Check if KYC is completed (is_admin: true)
+        final refreshed = store.fieldsWithAuth;
+        if (refreshed is Map && refreshed['is_admin'] == true) {
+          debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
+          await store.fetchUserDetails();
+          if (mounted && store.userDetails != null) {
+            context.go('/${widget.company}/${widget.workflowName}/completed');
+            return;
+          } else if (mounted && store.errorUserDetails != null) {
+            debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
+            Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
+            return;
+          }
+        }
+
+        // After refreshing context, check for redirects (backend may redirect to next step)
+        if (mounted) {
+          await _checkAndHandleRedirect(store);
+          // If no redirect, navigate to refresh the page with updated data
+          if (mounted) {
+            final response = store.fieldsWithAuth;
+            if (response is! Map || response['redirect'] != true) {
+              debugPrint('[HomePage] Navigating to refresh page after step completion');
+              context.go('/${widget.company}/${widget.workflowName}');
             }
           }
         }

@@ -55,6 +55,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   Timer? _reversePennyPollTimer;
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
   bool _esignScrollAdjusted = false;
+  // Track if we already handled RPD success (to avoid double-close)
+  bool _rpdSuccessHandled = false;
 
   @override
   void initState() {
@@ -70,10 +72,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       debugPrint('[WebView] Initial params from URL: state=$_preservedState, client_token=$_preservedClientToken, auto=$_preservedAuto');
     }
 
+    // For Android: Request permissions BEFORE loading IPV page to ensure camera/mic work
+    // For iOS: Permissions can be requested after load (works fine)
     if (_isIpvOrFaceFinderUrl(widget.url)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _requestPermissionsAndReload();
-      });
+      if (Platform.isAndroid) {
+        // Request permissions immediately on Android before WebView loads
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _requestPermissionsBeforeLoad();
+        });
+      } else {
+        // iOS: Request after load (existing behavior)
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _requestPermissionsAndReload();
+        });
+      }
     }
   }
 
@@ -146,6 +158,48 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     });
   }
 
+  /// Request permissions BEFORE loading WebView (Android-specific)
+  Future<void> _requestPermissionsBeforeLoad() async {
+    if (_permissionsRequested) return;
+    _permissionsRequested = true;
+
+    debugPrint('[WebView] Requesting permissions BEFORE load (Android) for IPV/Face Finder');
+
+    final permissions = [
+      Permission.camera,
+      Permission.microphone,
+      Permission.location,
+    ];
+
+    final results = await Future.wait(
+      permissions.map((p) => p.request()),
+    );
+
+    bool allGranted = results.every((status) =>
+        status == PermissionStatus.granted || status == PermissionStatus.limited);
+
+    if (allGranted) {
+      debugPrint('[WebView] All permissions granted before load - WebView will load with camera access');
+      // On Android, reload WebView after permissions granted to ensure camera/mic initialize properly
+      if (_webViewController != null && !_hasReloadedAfterPermissions) {
+        _hasReloadedAfterPermissions = true;
+        Future.delayed(const Duration(milliseconds: 300), () {
+          debugPrint('[WebView] Reloading WebView after Android permissions granted');
+          _webViewController?.reload();
+        });
+      }
+    } else {
+      debugPrint('[WebView] Some permissions denied before load');
+      Fluttertoast.showToast(
+        msg: 'Camera, microphone & location required for face verification',
+        toastLength: Toast.LENGTH_LONG,
+        backgroundColor: Colors.orange,
+        gravity: ToastGravity.TOP,
+      );
+    }
+  }
+
+  /// Request permissions AFTER WebView loads (iOS or fallback)
   Future<void> _requestPermissionsAndReload() async {
     if (_permissionsRequested) return;
     _permissionsRequested = true;
@@ -181,7 +235,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     } else {
       debugPrint('[WebView] Some permissions denied');
       Fluttertoast.showToast(
-        msg: 'Camera & microphone required for face verification',
+        msg: 'Camera, microphone & location required for face verification',
         toastLength: Toast.LENGTH_LONG,
         backgroundColor: Colors.orange,
         gravity: ToastGravity.TOP,
@@ -578,6 +632,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+
   /// Injects JavaScript to prevent automatic scroll jumps on input focus.
   /// This keeps the WebView from auto-scrolling when the keyboard opens;
   /// users can still scroll manually.
@@ -668,6 +723,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 useHybridComposition: true,
                 // Disable pinch-zoom to keep layout stable
                 supportZoom: false,
+                // Android-specific: Enable camera/microphone/location access in WebView
+                allowFileAccess: true,
+                allowFileAccessFromFileURLs: true,
+                allowUniversalAccessFromFileURLs: true,
+                thirdPartyCookiesEnabled: true,
+                // Enable geolocation for IPV/Face Finder (required for location-based verification)
+                geolocationEnabled: true,
               ),
               onWebViewCreated: (controller) {
                 _webViewController = controller;
@@ -729,6 +791,36 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             // Works for RPD, DigiLocker, and other segments - any URL with params before final workflow URL
             _captureCompletionParamsIfApplicable(url);
 
+            // Reverse Penny Drop: if completion params appear in URL, close WebView immediately (no timer needed)
+            if (_isReversePennyDropUrl(url) && !_redirectHandled && !_rpdSuccessHandled) {
+              final uri = Uri.tryParse(url);
+              if (uri != null && uri.queryParameters.isNotEmpty) {
+                final completionParamKeys = [
+                  'success',
+                  'transaction_id',
+                  'reversepennydrop',
+                  'esign',
+                ];
+                final hasCompletionParams = uri.queryParameters.keys.any((key) => 
+                    completionParamKeys.contains(key.toLowerCase()));
+                if (hasCompletionParams) {
+                  debugPrint('[WebView] RPD completion params detected in URL - closing WebView');
+                  _rpdSuccessHandled = true;
+                  _completionParams.addAll(uri.queryParameters);
+                  if (!_completionParams.containsKey('success')) {
+                    _completionParams['success'] = 'yes';
+                  }
+                  await _handleRedirectComplete(
+                    state: uri.queryParameters['state'] ?? _preservedState,
+                    clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
+                    auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                    verifyCompleted: false,
+                  );
+                  return NavigationActionPolicy.CANCEL;
+                }
+              }
+            }
+
             return NavigationActionPolicy.ALLOW;
           },
               onCloseWindow: (controller) {
@@ -737,6 +829,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                   setState(() {
                     _popupWindowId = null;
                   });
+                  // Reverse Penny Drop: after Digio popup closes, reload main page so it fetches success state with params
+                  if (_isReversePennyDropFlow && _webViewController != null && !_redirectHandled && !_rpdSuccessHandled) {
+                    Future.delayed(const Duration(milliseconds: 500), () async {
+                      if (!mounted || _redirectHandled || _rpdSuccessHandled) return;
+                      debugPrint('[WebView] RPD popup closed - reloading main page to fetch success state with params');
+                      await _webViewController?.reload();
+                    });
+                  }
                 }
               },
               onLoadStart: (controller, url) async {
@@ -773,10 +873,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 }
               }
 
+              // Request permissions on load (iOS or if Android permissions weren't requested before)
               if (_isIpvOrFaceFinderUrl(url.toString()) && !_permissionsRequested) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _requestPermissionsAndReload();
-                });
+                if (Platform.isAndroid) {
+                  // Android: Request if not already done (should have been done in initState)
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _requestPermissionsBeforeLoad();
+                  });
+                } else {
+                  // iOS: Request after load (works fine)
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _requestPermissionsAndReload();
+                  });
+                }
               }
             }
           },
@@ -831,6 +940,35 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
               await _onPageFinished(url.toString());
               await _injectNoAutoScrollJs(controller);
+
+              // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
+              if (_isReversePennyDropUrl(url.toString()) && !_redirectHandled && !_rpdSuccessHandled) {
+                final uri = Uri.tryParse(url.toString());
+                if (uri != null && uri.queryParameters.isNotEmpty) {
+                  final completionParamKeys = [
+                    'success',
+                    'transaction_id',
+                    'reversepennydrop',
+                    'esign',
+                  ];
+                  final hasCompletionParams = uri.queryParameters.keys.any((key) => 
+                      completionParamKeys.contains(key.toLowerCase()));
+                  if (hasCompletionParams) {
+                    debugPrint('[WebView] RPD completion params detected in URL onLoadStop - closing WebView');
+                    _rpdSuccessHandled = true;
+                    _completionParams.addAll(uri.queryParameters);
+                    if (!_completionParams.containsKey('success')) {
+                      _completionParams['success'] = 'yes';
+                    }
+                    await _handleRedirectComplete(
+                      state: uri.queryParameters['state'] ?? _preservedState,
+                      clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
+                      auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                      verifyCompleted: false,
+                    );
+                  }
+                }
+              }
             }
           },
               onPermissionRequest: (controller, request) async {
@@ -839,6 +977,38 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                   resources: request.resources,
                   action: PermissionResponseAction.GRANT,
                 );
+              },
+              // Handle geolocation permission requests (required for IPV on Android)
+              onGeolocationPermissionsShowPrompt: (controller, origin) async {
+                debugPrint('[WebView] Geolocation permission requested for: $origin');
+                // Check if location permission is already granted
+                final locationStatus = await Permission.location.status;
+                if (locationStatus.isGranted || locationStatus.isLimited) {
+                  debugPrint('[WebView] Location permission already granted - allowing geolocation');
+                  return GeolocationPermissionShowPromptResponse(
+                    origin: origin,
+                    allow: true,
+                    retain: true,
+                  );
+                } else {
+                  debugPrint('[WebView] Location permission not granted - requesting...');
+                  final result = await Permission.location.request();
+                  if (result.isGranted || result.isLimited) {
+                    debugPrint('[WebView] Location permission granted - allowing geolocation');
+                    return GeolocationPermissionShowPromptResponse(
+                      origin: origin,
+                      allow: true,
+                      retain: true,
+                    );
+                  } else {
+                    debugPrint('[WebView] Location permission denied - denying geolocation');
+                    return GeolocationPermissionShowPromptResponse(
+                      origin: origin,
+                      allow: false,
+                      retain: false,
+                    );
+                  }
+                }
               },
             ),
 
@@ -861,6 +1031,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           allowsInlineMediaPlayback: true,
                           useHybridComposition: true,
                           supportZoom: false,
+                          // Enable geolocation for popup WebView as well
+                          geolocationEnabled: true,
                         ),
                         shouldOverrideUrlLoading:
                             (controller, navigationAction) async {
