@@ -45,6 +45,7 @@ class _HomePageState extends State<HomePage> {
   late ConditionalFormNotifier _formNotifier;
   bool _submitLoading = false;
   bool _logoutLoading = false;
+  bool _refreshLoading = false;
   bool _backLoading = false;
   String _submitError = '';
   String _submitSuccess = '';
@@ -1279,15 +1280,43 @@ class _HomePageState extends State<HomePage> {
               final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
               final page = ctx?['page'] as Map?;
               final pageData = page?['data'] as Map?;
-              final pageLabel = pageData?['label']?.toString();
+              final rawPageLabel = pageData?['label']?.toString();
               final pageName = page?['name']?.toString();
-              
-              final pageTitle = pageLabel ?? 
-                                pageName ?? 
-                                (activeFields is Map
-                                    ? activeFields['title'] ?? activeFields['pageTitle']
-                                    : null)?.toString() ??
-                                'Start your KYC or pickup where you left off';
+              final rawPosition = ctx?['position']?.toString();
+
+              String? pageTitle;
+
+              if (ctx == null) {
+                // No context yet (first unauthenticated screen) – show hero title.
+                pageTitle = 'Start your KYC or pickup where you left off';
+              } else {
+                // Prefer human-friendly titles from context / activeFields.
+                String? pageLabel = rawPageLabel;
+
+                // If backend label is same as technical position (e.g. "personal_details"),
+                // don't show it as a title – stepper already shows the step name.
+                if (rawPageLabel != null &&
+                    rawPosition != null &&
+                    rawPageLabel.toLowerCase().trim() == rawPosition.toLowerCase().trim()) {
+                  pageLabel = null;
+                }
+
+                pageTitle = pageLabel ??
+                    pageName ??
+                    (activeFields is Map
+                        ? activeFields['title'] ?? activeFields['pageTitle']
+                        : null)?.toString();
+
+                // If title still looks like a technical key (all lowercase/underscores),
+                // hide it and rely on the stepper only.
+                if (pageTitle != null) {
+                  final simple = pageTitle.trim();
+                  final isCodeStyle = RegExp(r'^[a-z0-9_]+$').hasMatch(simple);
+                  if (isCodeStyle) {
+                    pageTitle = null;
+                  }
+                }
+              }
 
               // Show \"Documents to keep Handy\" only on first 4 steps of the stepper
               // (Enter Mobile, Mobile OTP, Email, Email OTP)
@@ -1299,20 +1328,47 @@ class _HomePageState extends State<HomePage> {
                   child: showStepper
                       ? Column(
                           children: [
-                            // Logout button row above stepper (when authenticated)
+                            // Refresh + Logout row above stepper (when authenticated)
                             if (isAuthenticated)
                               Align(
                                 alignment: Alignment.centerRight,
-                                child: IconButton(
-                                  onPressed: _logoutLoading ? null : _handleLogout,
-                                  icon: _logoutLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2, color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      onPressed: _refreshLoading
+                                          ? null
+                                          : () async {
+                                              setState(() => _refreshLoading = true);
+                                              try {
+                                                await _loadWorkflow();
+                                              } finally {
+                                                if (mounted) {
+                                                  setState(() => _refreshLoading = false);
+                                                }
+                                              }
+                                            },
+                                      icon: _refreshLoading
+                                          ? const SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2, color: KycTheme.primary),
+                                            )
+                                          : const Icon(Icons.refresh, color: KycTheme.textPrimary),
+                                    ),
+                                    IconButton(
+                                      onPressed: _logoutLoading ? null : _handleLogout,
+                                      icon: _logoutLoading
+                                          ? const SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2, color: KycTheme.primary),
+                                            )
+                                          : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                    ),
+                                  ],
                                 ),
                               ),
                             stepperWidget,
@@ -1355,16 +1411,43 @@ class _HomePageState extends State<HomePage> {
                             if (isAuthenticated)
                               Align(
                                 alignment: Alignment.centerRight,
-                                child: IconButton(
-                                  onPressed: _logoutLoading ? null : _handleLogout,
-                                  icon: _logoutLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2, color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      onPressed: _refreshLoading
+                                          ? null
+                                          : () async {
+                                              setState(() => _refreshLoading = true);
+                                              try {
+                                                await _loadWorkflow();
+                                              } finally {
+                                                if (mounted) {
+                                                  setState(() => _refreshLoading = false);
+                                                }
+                                              }
+                                            },
+                                      icon: _refreshLoading
+                                          ? const SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2, color: KycTheme.primary),
+                                            )
+                                          : const Icon(Icons.refresh, color: KycTheme.textPrimary),
+                                    ),
+                                    IconButton(
+                                      onPressed: _logoutLoading ? null : _handleLogout,
+                                      icon: _logoutLoading
+                                          ? const SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2, color: KycTheme.primary),
+                                            )
+                                          : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                    ),
+                                  ],
                                 ),
                               ),
                             Expanded(

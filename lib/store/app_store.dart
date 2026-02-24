@@ -273,7 +273,6 @@ class AppStore extends ChangeNotifier {
           final data = workflowValue['data'] as Map?;
           final label = data?['label']?.toString()?.toLowerCase().trim();
           if (label == positionLower || label?.startsWith(positionLower) == true) {
-            debugPrint('[AppStore] Position "$_currentPosition" + Page ID "$pageId" matched step "${steps[keyIndex]}" at index: $keyIndex');
             return keyIndex;
           }
         }
@@ -301,12 +300,7 @@ class AppStore extends ChangeNotifier {
       );
     }
     
-    if (index != -1) {
-      debugPrint('[AppStore] Position "$_currentPosition" matched step "${steps[index]}" at index: $index');
-    } else {
-      debugPrint('[AppStore] Position "$_currentPosition" not found in steps: $steps');
-    }
-    
+    // Index may be -1 if no matching step is found; return null in that case.
     return index == -1 ? null : index;
   }
 

@@ -194,11 +194,24 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   Widget _buildLabel(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        '$text${widget.mandatory ? ' *' : ''}',
-        style: TextStyle(
-          fontWeight: FontWeight.w500,
-          color: widget.mandatory ? Colors.red.shade700 : null,
+      child: RichText(
+        text: TextSpan(
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: KycTheme.textPrimary,
+          ),
+          children: [
+            TextSpan(text: text),
+            if (widget.mandatory)
+              TextSpan(
+                text: ' *',
+                style: TextStyle(
+                  color: Colors.red.shade700,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+          ],
         ),
       ),
     );
