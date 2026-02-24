@@ -1049,8 +1049,12 @@ class _HomePageState extends State<HomePage> {
               // Get stepper data
               final stepperIndex = _getStepperIndex(store, isAuthenticated);
               final stepperSteps = _getStepperSteps(store);
+              // Stepper visible only from 2nd step (mobile_otp) onwards; hidden on first step (mobile number entry)
+              final ctxForStepper = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+              final currentPosition = (ctxForStepper?['position']?.toString() ?? '').toLowerCase();
+              final showStepper = currentPosition.isNotEmpty && currentPosition != 'mobile';
 
-              // Build stepper widget with fixed height container (always visible)
+              // Build stepper widget with fixed height container (visible only from step 2 onwards)
               final stepperWidget = Container(
                 height: 100, // Fixed height for stepper (circle + label + padding)
                 color: Colors.white, // Ensure background color
@@ -1060,19 +1064,19 @@ class _HomePageState extends State<HomePage> {
                 ),
               );
 
-              // Handle loading states - show loader BELOW stepper
+              // Handle loading states - full screen when no stepper, else loader below stepper
               if (store.loading) {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
-                    child: Column(
-                      children: [
-                        // Fixed height stepper container
-                        stepperWidget,
-                        // Loader below stepper
-                        const Expanded(child: Loader(message: 'Loading...')),
-                      ],
-                    ),
+                    child: showStepper
+                        ? Column(
+                            children: [
+                              stepperWidget,
+                              const Expanded(child: Loader(message: 'Loading...')),
+                            ],
+                          )
+                        : const Loader(message: 'Loading...'),
                   ),
                 );
               }
@@ -1081,17 +1085,32 @@ class _HomePageState extends State<HomePage> {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
-                    child: Column(
-                      children: [
-                        // Fixed height stepper container
-                        stepperWidget,
-                        // Error content below stepper
-                        Expanded(
-                          child: KycLayout(
+                    child: showStepper
+                        ? Column(
+                            children: [
+                              stepperWidget,
+                              Expanded(
+                                child: KycLayout(
+                                  title: 'Error',
+                                  stepperSteps: null,
+                                  stepperIndex: null,
+                                  skipScaffold: true,
+                                  child: Center(
+                                    child: Text(
+                                      store.error!,
+                                      style: const TextStyle(color: Colors.red),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : KycLayout(
                             title: 'Error',
-                            stepperSteps: null, // Stepper already shown above
+                            stepperSteps: null,
                             stepperIndex: null,
-                            skipScaffold: true, // Skip Scaffold since we're already in one
+                            skipScaffold: true,
                             child: Center(
                               child: Text(
                                 store.error!,
@@ -1100,26 +1119,23 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
                   ),
                 );
               }
               
-              // Show loader BELOW stepper when fetching get-context
+              // Show loader BELOW stepper when fetching get-context (full screen when first step)
               if (store.loadingWithAuth) {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
-                    child: Column(
-                      children: [
-                        // Fixed height stepper container
-                        stepperWidget,
-                        // Loader below stepper
-                        const Expanded(child: Loader(message: 'Loading...')),
-                      ],
-                    ),
+                    child: showStepper
+                        ? Column(
+                            children: [
+                              stepperWidget,
+                              const Expanded(child: Loader(message: 'Loading...')),
+                            ],
+                          )
+                        : const Loader(message: 'Loading...'),
                   ),
                 );
               }
@@ -1129,17 +1145,35 @@ class _HomePageState extends State<HomePage> {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
-                    child: Column(
-                      children: [
-                        // Fixed height stepper container
-                        stepperWidget,
-                        // Error content below stepper
-                        Expanded(
-                          child: KycLayout(
+                    child: showStepper
+                        ? Column(
+                            children: [
+                              stepperWidget,
+                              Expanded(
+                                child: KycLayout(
+                                  title: 'Error',
+                                  stepperSteps: null,
+                                  stepperIndex: null,
+                                  skipScaffold: true,
+                                  child: Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16.0),
+                                      child: Text(
+                                        store.errorWithAuth!,
+                                        style: const TextStyle(color: Colors.red, fontSize: 16),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : KycLayout(
                             title: 'Error',
-                            stepperSteps: null, // Stepper already shown above
+                            stepperSteps: null,
                             stepperIndex: null,
-                            skipScaffold: true, // Skip Scaffold since we're already in one
+                            skipScaffold: true,
                             child: Center(
                               child: Padding(
                                 padding: const EdgeInsets.all(16.0),
@@ -1151,9 +1185,6 @@ class _HomePageState extends State<HomePage> {
                               ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
                   ),
                 );
               }
@@ -1175,56 +1206,90 @@ class _HomePageState extends State<HomePage> {
               return Scaffold(
                 backgroundColor: KycTheme.background,
                 body: SafeArea(
-                  child: Column(
-                    children: [
-                      // Fixed height stepper container (always visible at top)
-                      stepperWidget,
-                      // Main content below stepper (takes remaining space)
-                      Expanded(
-                        child: KycLayout(
-                          title: pageTitle,
-                          stepperSteps: null, // Stepper already shown above
-                          stepperIndex: null,
-                          skipScaffold: true, // Skip Scaffold since we're already in one
-                          leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
-                              ? IconButton(
-                                  onPressed: _backLoading
-                                      ? null
-                                      : () => Navigator.of(context).maybePop(),
-                                  icon: _backLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2, color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
-                                )
-                              : null,
-                          trailing: isAuthenticated
-                              ? IconButton(
-                                  onPressed: _logoutLoading ? null : _handleLogout,
-                                  icon: _logoutLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2, color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
-                                )
-                              : null,
-                          child: _buildForm(
-                            fieldList,
-                            activeFields,
-                            submitButton,
-                            store,
-                            isAuthenticated,
-                          ),
+                  child: showStepper
+                      ? Column(
+                          children: [
+                            stepperWidget,
+                            Expanded(
+                              child: KycLayout(
+                                title: pageTitle,
+                                stepperSteps: null,
+                                stepperIndex: null,
+                                skipScaffold: true,
+                                leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
+                                    ? IconButton(
+                                        onPressed: _backLoading
+                                            ? null
+                                            : () => Navigator.of(context).maybePop(),
+                                        icon: _backLoading
+                                            ? const SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child: CircularProgressIndicator(
+                                                    strokeWidth: 2, color: KycTheme.primary),
+                                              )
+                                            : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
+                                      )
+                                    : null,
+                                trailing: (isAuthenticated && showStepper)
+                                    ? IconButton(
+                                        onPressed: _logoutLoading ? null : _handleLogout,
+                                        icon: _logoutLoading
+                                            ? const SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child: CircularProgressIndicator(
+                                                    strokeWidth: 2, color: KycTheme.primary),
+                                              )
+                                            : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                      )
+                                    : null,
+                                child: _buildForm(
+                                  fieldList,
+                                  activeFields,
+                                  submitButton,
+                                  store,
+                                  isAuthenticated,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            Expanded(
+                              child: KycLayout(
+                                title: pageTitle,
+                                stepperSteps: null,
+                                stepperIndex: null,
+                                skipScaffold: true,
+                                leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
+                                    ? IconButton(
+                                        onPressed: _backLoading
+                                            ? null
+                                            : () => Navigator.of(context).maybePop(),
+                                        icon: _backLoading
+                                            ? const SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child: CircularProgressIndicator(
+                                                    strokeWidth: 2, color: KycTheme.primary),
+                                              )
+                                            : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
+                                      )
+                                    : null,
+                                trailing: null,
+                                child: _buildForm(
+                                  fieldList,
+                                  activeFields,
+                                  submitButton,
+                                  store,
+                                  isAuthenticated,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ],
-                  ),
                 ),
               );
             },
@@ -1426,6 +1491,7 @@ class _HomePageState extends State<HomePage> {
     // Generic submit button: sirf tab dikhao jab OTP field nahi hai
     // Agar OTP field hai (chahe kitni bhi aur fields ho), sirf OtpVerifySection ka "Verify OTP" button use hoga
     final showGenericSubmit = otpField == null;
+    final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -1693,12 +1759,14 @@ class _HomePageState extends State<HomePage> {
                       }
                     },
               style: ElevatedButton.styleFrom(
-                backgroundColor: KycTheme.primary,
+                backgroundColor: isMobileStep
+                    ? const Color(0xFFE0CCFF)
+                    : KycTheme.primary,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-                  child: _submitLoading
+              child: _submitLoading
                   ? const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -1714,9 +1782,13 @@ class _HomePageState extends State<HomePage> {
                   : Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(submitButton?['buttonName'] ?? 'Submit'),
-                        const SizedBox(width: 8),
-                        const Icon(Icons.arrow_forward, size: 20),
+                        Text(isMobileStep
+                            ? 'Send OTP'
+                            : (submitButton?['buttonName'] ?? 'Submit')),
+                        if (!isMobileStep) ...[
+                          const SizedBox(width: 8),
+                          const Icon(Icons.arrow_forward, size: 20, color: Colors.white),
+                        ],
                       ],
                     ),
             ),
@@ -1832,14 +1904,14 @@ class _HomePageState extends State<HomePage> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF3F0FF), // light purple #F3F0FF
+        color: const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE0DCF5)),
+        border: Border.all(color: KycTheme.border),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.info_outline, color: Colors.purple),
+          // Icon(Icons.info_outline, size: 20, color: KycTheme.textSecondary),
           const SizedBox(width: 12),
           Expanded(
             child: RichText(

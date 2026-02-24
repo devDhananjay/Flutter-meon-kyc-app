@@ -270,9 +270,24 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: '${widget.displayName}',
+            hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
             border: const OutlineInputBorder(),
-            prefixIcon: _getFieldIcon(),
+            prefixIcon: _isMobileField
+                ? null
+                : _getFieldIcon(),
+            prefix: _isMobileField
+                ? Padding(
+                    padding: const EdgeInsets.only(left: 16, right: 12),
+                    child: Text(
+                      '+91',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: KycTheme.textSecondary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  )
+                : null,
             counterText: _isMobileField ? '' : null,
           ),
         ),

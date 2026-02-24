@@ -77,19 +77,25 @@ class KycLayout extends StatelessWidget {
     if (skipScaffold) {
       // When skipping scaffold, return scrollable content directly (no Expanded)
       // This prevents overflow when used inside Expanded widget
+      final isFirstStep = title != null &&
+          title!.toLowerCase().contains('start your kyc') &&
+          title!.toLowerCase().contains('pickup where you left off');
       return SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        padding: EdgeInsets.fromLTRB(
+          20,
+          16,
+          20,
+          isFirstStep ? 32 : 16,
+        ),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Top bar: logo (STOXBOX) - always show (has logo and leading/trailing buttons)
               _buildTopBar(null),
               if (title != null) ...[
-                const SizedBox(height: 16),
-                // Custom hero layout for "Start your KYC", default title for others
+                const SizedBox(height: 20),
                 if (title != null && title!
                     .toLowerCase()
                     .contains('start your kyc') &&
@@ -106,7 +112,7 @@ class KycLayout extends StatelessWidget {
                       color: KycTheme.textPrimary,
                     ),
                   ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
               ],
               child,
               if (showDocumentsSection) ...[

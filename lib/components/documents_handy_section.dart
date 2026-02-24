@@ -5,13 +5,31 @@ import 'package:meon_kyc/theme/kyc_theme.dart';
 class DocumentsHandySection extends StatelessWidget {
   const DocumentsHandySection({super.key});
 
-  static const List<({String label, IconData icon})> _items = [
+  static const List<({String label, IconData icon})> _itemsLeft = [
     (label: 'PAN Card', icon: Icons.badge_outlined),
-    (label: 'Bank Proof', icon: Icons.account_balance_outlined),
     (label: 'Income Proof', icon: Icons.receipt_long_outlined),
-    (label: 'Signature', icon: Icons.draw_outlined),
     (label: 'Nominee Proof', icon: Icons.people_outline),
   ];
+  static const List<({String label, IconData icon})> _itemsRight = [
+    (label: 'Bank Proof', icon: Icons.account_balance_outlined),
+    (label: 'Signature', icon: Icons.draw_outlined),
+  ];
+
+  Widget _buildDocItem(({String label, IconData icon}) e) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Icon(Icons.check_circle, size: 20, color: KycTheme.success),
+          const SizedBox(width: 8),
+          Text(
+            e.label,
+            style: TextStyle(fontSize: 14, color: KycTheme.textPrimary),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -37,35 +55,28 @@ class DocumentsHandySection extends StatelessWidget {
           Text(
             'Documents to keep Handy',
             style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
               color: KycTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: _items.map((e) {
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.check_circle,
-                    size: 18,
-                    color: KycTheme.success,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    e.label,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: KycTheme.textSecondary,
-                    ),
-                  ),
-                ],
-              );
-            }).toList(),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _itemsLeft.map((e) => _buildDocItem(e)).toList(),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _itemsRight.map((e) => _buildDocItem(e)).toList(),
+                ),
+              ),
+            ],
           ),
         ],
       ),
