@@ -11,6 +11,11 @@ class KycTheme {
   static const Color primaryDark = Color(0xFF581C87);
   static const Color primaryLight = Color(0xFF7C3AED);
 
+  // Header & Send OTP button (spec)
+  static const Color headerDarkPurple = Color(0xFF6B21A8);
+  static const Color buttonEnabledPurple = Color(0xFF6C5CE7);
+  static const Color buttonDisabledPurple = Color(0xFFD5CFF5);
+
   // Neutrals
   static const Color background = Color(0xFFF8FAFC);
   static const Color surface = Colors.white;
@@ -18,6 +23,44 @@ class KycTheme {
   static const Color textSecondary = Color(0xFF64748B);
   static const Color border = Color(0xFFE2E8F0);
   static const Color success = Color(0xFF22C55E);
+
+  // Figma-aligned spacing (8px grid)
+  static const double spacingXs = 4;
+  static const double spacingSm = 8;
+  static const double spacingMd = 12;
+  static const double spacingLg = 16;
+  static const double spacingXl = 20;
+  static const double spacing2xl = 24;
+  static const double spacing3xl = 32;
+
+  // Figma-aligned radius
+  static const double radiusSm = 8;
+  static const double radiusMd = 12;
+  static const double radiusLg = 16;
+
+  // Figma typography (step titles / body)
+  static const double fontSizeCaption = 12;
+  static const double fontSizeBody = 14;
+  static const double fontSizeBodyLg = 16;
+  static const double fontSizeTitleSm = 18;
+  static const double fontSizeTitle = 22;
+  static const double fontSizeHero = 24;
+
+  // Card shadow (Figma-style subtle)
+  static List<BoxShadow> get cardShadow => [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.06),
+          blurRadius: 12,
+          offset: const Offset(0, 4),
+        ),
+      ];
+  static List<BoxShadow> get cardShadowSm => [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.04),
+          blurRadius: 8,
+          offset: const Offset(0, 2),
+        ),
+      ];
 
   // Status bar style
   static const SystemUiOverlayStyle statusBar = SystemUiOverlayStyle(

@@ -50,6 +50,7 @@ class _HomePageState extends State<HomePage> {
   String _submitSuccess = '';
   bool _termsAccepted = false; // Terms & Conditions checkbox (mobile step)
   bool _showTermsError = false; // Show validation message under T&C checkbox
+  bool _showMobileError = false; // Show error below mobile input when invalid on submit
 
   @override
   void initState() {
@@ -285,6 +286,8 @@ class _HomePageState extends State<HomePage> {
       } else if (path.contains('account_aggregator') ||
           query.contains('account_aggregator')) {
         module = 'Account Aggregator';
+      } else if (host.contains('standardjourney.camsfinserv.com')) {
+        module = 'Account Aggregator';
       } else if (host.contains('ipv') ||
           path.contains('ipv') ||
           path.contains('face')) {
@@ -299,7 +302,7 @@ class _HomePageState extends State<HomePage> {
       return msg;
     }
 
-    return 'External Verification';
+    return 'Verification';
   }
 
   int _getStepperIndex(AppStore store, bool isAuth) {
@@ -407,16 +410,37 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] _handleSubmit position=$position label=$label');
 
       final isMobileScreen = position == 'mobile' && label == 'mobile';
-      if (isMobileScreen && !_termsAccepted) {
-        setState(() => _showTermsError = true);
-        Fluttertoast.showToast(
-          msg: 'Please accept the Terms & Conditions to continue',
-          toastLength: Toast.LENGTH_LONG,
-          gravity: ToastGravity.TOP,
-          backgroundColor: Colors.red.shade700,
-          textColor: Colors.white,
-        );
-        return;
+      if (isMobileScreen) {
+        if (!_termsAccepted) {
+          setState(() {
+            _showTermsError = true;
+            _showMobileError = false;
+          });
+          Fluttertoast.showToast(
+            msg: 'Please accept the Terms & Conditions to continue',
+            toastLength: Toast.LENGTH_LONG,
+            gravity: ToastGravity.TOP,
+            backgroundColor: Colors.red.shade700,
+            textColor: Colors.white,
+          );
+          return;
+        }
+        final mobile = _formNotifier.formData['mobile'] ?? _formNotifier.formData['phone'] ?? _formNotifier.formData['mobile_number'] ?? '';
+        final digits = mobile.toString().replaceAll(RegExp(r'\D'), '');
+        if (digits.length != 10 || !RegExp(r'^[6-9]').hasMatch(digits)) {
+          setState(() {
+            _showMobileError = true;
+            _showTermsError = false;
+          });
+          Fluttertoast.showToast(
+            msg: 'Please enter a valid 10-digit mobile number',
+            toastLength: Toast.LENGTH_LONG,
+            gravity: ToastGravity.TOP,
+            backgroundColor: Colors.red.shade700,
+            textColor: Colors.white,
+          );
+          return;
+        }
       }
     }
 
@@ -578,8 +602,13 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _handleSubmitResponse(http.Response res, AppStore store) async {
     debugPrint('[HomePage] _handleSubmitResponse status=${res.statusCode} body=${res.body.length > 300 ? res.body.substring(0, 300) + "..." : res.body}');
+    Map<String, dynamic>? body;
     try {
-      final body = jsonDecode(res.body) as Map<String, dynamic>?;
+      body = jsonDecode(res.body) as Map<String, dynamic>?;
+    } catch (_) {
+      body = null;
+    }
+    try {
       if (res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true) {
         final token = body?['access_token'] as String?;
         final refresh = body?['refresh_token'] as String?;
@@ -609,11 +638,36 @@ class _HomePageState extends State<HomePage> {
           }
         }
       } else {
-        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed', gravity: ToastGravity.TOP);
+        final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
+        Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
       }
     } catch (_) {
       Fluttertoast.showToast(msg: 'Submission failed', gravity: ToastGravity.TOP);
     }
+  }
+
+  /// Extract user-facing error message from API response body.
+  /// Supports common keys: msg, message, error, detail (string or list).
+  static String _errorMessageFromResponse(int statusCode, String bodyStr) {
+    if (bodyStr.trim().isEmpty) {
+      return statusCode >= 400 ? 'Request failed. Please try again.' : 'Submission failed';
+    }
+    try {
+      final body = jsonDecode(bodyStr) as Map<String, dynamic>?;
+      if (body == null) return bodyStr.length <= 200 ? bodyStr : 'Submission failed';
+      final msg = body['msg'] ?? body['message'] ?? body['error'];
+      if (msg != null) {
+        if (msg is String) return msg;
+        if (msg is List && msg.isNotEmpty) return msg.first.toString();
+      }
+      final detail = body['detail'];
+      if (detail is String) return detail;
+      if (detail is List && detail.isNotEmpty) return detail.first.toString();
+    } catch (_) {
+      // Non-JSON body (e.g. plain text error)
+      if (bodyStr.length <= 200) return bodyStr.trim();
+    }
+    return statusCode >= 400 ? 'Request failed. Please try again.' : 'Submission failed';
   }
 
   /// Builds kyc-post-v2 path segment from get-context page: page.name + page.id (e.g. mobile_otp2, email3).
@@ -650,16 +704,37 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] _handleCommonSubmit position=$position label=$label');
 
       final isMobileScreen = position == 'mobile' && label == 'mobile';
-      if (isMobileScreen && !_termsAccepted) {
-        setState(() => _showTermsError = true);
-        Fluttertoast.showToast(
-          msg: 'Please accept the Terms & Conditions to continue',
-          toastLength: Toast.LENGTH_LONG,
-          gravity: ToastGravity.TOP,
-          backgroundColor: Colors.red.shade700,
-          textColor: Colors.white,
-        );
-        return;
+      if (isMobileScreen) {
+        if (!_termsAccepted) {
+          setState(() {
+            _showTermsError = true;
+            _showMobileError = false;
+          });
+          Fluttertoast.showToast(
+            msg: 'Please accept the Terms & Conditions to continue',
+            toastLength: Toast.LENGTH_LONG,
+            gravity: ToastGravity.TOP,
+            backgroundColor: Colors.red.shade700,
+            textColor: Colors.white,
+          );
+          return;
+        }
+        final mobile = _formNotifier.formData['mobile'] ?? _formNotifier.formData['phone'] ?? _formNotifier.formData['mobile_number'] ?? '';
+        final digits = mobile.toString().replaceAll(RegExp(r'\D'), '');
+        if (digits.length != 10 || !RegExp(r'^[6-9]').hasMatch(digits)) {
+          setState(() {
+            _showMobileError = true;
+            _showTermsError = false;
+          });
+          Fluttertoast.showToast(
+            msg: 'Please enter a valid 10-digit mobile number',
+            toastLength: Toast.LENGTH_LONG,
+            gravity: ToastGravity.TOP,
+            backgroundColor: Colors.red.shade700,
+            textColor: Colors.white,
+          );
+          return;
+        }
       }
     }
 
@@ -709,8 +784,12 @@ class _HomePageState extends State<HomePage> {
       }
       
       final data = await _prepareFormData(skipValidation);
-      // Always add "save": true for authenticated submissions (helps backend track saves)
-      data['save'] = true;
+      // Do NOT send save: true for OTP verification steps (mobile_otp, email_otp) — backend validates OTP only then
+      final position = ctx?['position']?.toString().toLowerCase() ?? '';
+      final isOtpVerifyStep = position == 'mobile_otp' || position == 'email_otp';
+      if (!isOtpVerifyStep) {
+        data['save'] = true;
+      }
       debugPrint('[HomePage] _handleCommonSubmit data: $data pathSegment: $pathSegment');
       
       // Check saveFilesAPI flag from context.page
@@ -819,8 +898,14 @@ class _HomePageState extends State<HomePage> {
           headers: {'Content-Type': 'application/json'},
         );
       }
-      final body = jsonDecode(res.body) as Map<String, dynamic>?;
-      if (res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true) {
+      Map<String, dynamic>? body;
+      try {
+        body = jsonDecode(res.body) as Map<String, dynamic>?;
+      } catch (_) {
+        body = null;
+      }
+      final isSuccess = res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true;
+      if (isSuccess) {
         StorageService.setUserStep(body?['step']?.toString() ?? '');
         _formNotifier.resetForm();
         // Keep loading indicator visible during get-context call for smooth transition
@@ -845,11 +930,12 @@ class _HomePageState extends State<HomePage> {
           }
         }
       } else {
-        Fluttertoast.showToast(msg: body?['msg']?.toString() ?? 'Submission failed', gravity: ToastGravity.TOP);
+        final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
+        Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
         if (mounted) setState(() => _submitLoading = false);
       }
     } catch (e) {
-      Fluttertoast.showToast(msg: e.toString(), gravity: ToastGravity.TOP);
+      Fluttertoast.showToast(msg: 'Something went wrong. Please try again.', gravity: ToastGravity.TOP);
       if (mounted) setState(() => _submitLoading = false);
     }
   }
@@ -1203,12 +1289,32 @@ class _HomePageState extends State<HomePage> {
                                     : null)?.toString() ??
                                 'Start your KYC or pickup where you left off';
 
+              // Show \"Documents to keep Handy\" only on first 4 steps of the stepper
+              // (Enter Mobile, Mobile OTP, Email, Email OTP)
+              final showDocumentsSection = stepperIndex <= 3;
+
               return Scaffold(
                 backgroundColor: KycTheme.background,
                 body: SafeArea(
                   child: showStepper
                       ? Column(
                           children: [
+                            // Logout button row above stepper (when authenticated)
+                            if (isAuthenticated)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: IconButton(
+                                  onPressed: _logoutLoading ? null : _handleLogout,
+                                  icon: _logoutLoading
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2, color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                ),
+                              ),
                             stepperWidget,
                             Expanded(
                               child: KycLayout(
@@ -1216,6 +1322,7 @@ class _HomePageState extends State<HomePage> {
                                 stepperSteps: null,
                                 stepperIndex: null,
                                 skipScaffold: true,
+                                showDocumentsSection: showDocumentsSection,
                                 leading: (isAuthenticated && (submitButton?['backShowButton'] ?? false))
                                     ? IconButton(
                                         onPressed: _backLoading
@@ -1231,19 +1338,7 @@ class _HomePageState extends State<HomePage> {
                                             : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
                                       )
                                     : null,
-                                trailing: (isAuthenticated && showStepper)
-                                    ? IconButton(
-                                        onPressed: _logoutLoading ? null : _handleLogout,
-                                        icon: _logoutLoading
-                                            ? const SizedBox(
-                                                width: 24,
-                                                height: 24,
-                                                child: CircularProgressIndicator(
-                                                    strokeWidth: 2, color: KycTheme.primary),
-                                              )
-                                            : const Icon(Icons.logout, color: KycTheme.textPrimary),
-                                      )
-                                    : null,
+                                trailing: null,
                                 child: _buildForm(
                                   fieldList,
                                   activeFields,
@@ -1257,6 +1352,21 @@ class _HomePageState extends State<HomePage> {
                         )
                       : Column(
                           children: [
+                            if (isAuthenticated)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: IconButton(
+                                  onPressed: _logoutLoading ? null : _handleLogout,
+                                  icon: _logoutLoading
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2, color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                                ),
+                              ),
                             Expanded(
                               child: KycLayout(
                                 title: pageTitle,
@@ -1279,6 +1389,7 @@ class _HomePageState extends State<HomePage> {
                                       )
                                     : null,
                                 trailing: null,
+                                showDocumentsSection: showDocumentsSection,
                                 child: _buildForm(
                                   fieldList,
                                   activeFields,
@@ -1329,18 +1440,18 @@ class _HomePageState extends State<HomePage> {
     // Show segments selection UI for segments screen
     if (isSegmentsScreen) {
       return Container(
-        padding: const EdgeInsets.all(24),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        padding: const EdgeInsets.fromLTRB(
+          KycTheme.spacing3xl,
+          KycTheme.spacing2xl,
+          KycTheme.spacing3xl,
+          KycTheme.spacing2xl,
+        ),
         decoration: BoxDecoration(
           color: KycTheme.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(color: KycTheme.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
+          boxShadow: KycTheme.cardShadow,
         ),
         child: SegmentsSelection(
           formData: _formNotifier.formData,
@@ -1494,18 +1605,13 @@ class _HomePageState extends State<HomePage> {
     final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
 
     return Container(
-      padding: const EdgeInsets.all(24),
+      // No outer margin so width matches "Documents to keep Handy" card
+      padding: EdgeInsets.all(isMobileStep ? 20 : KycTheme.spacing2xl),
       decoration: BoxDecoration(
         color: KycTheme.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(KycTheme.radiusLg),
         border: Border.all(color: KycTheme.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        boxShadow: KycTheme.cardShadow,
       ),
       child: Form(
         child: Column(
@@ -1626,6 +1732,9 @@ class _HomePageState extends State<HomePage> {
                           validationType: f?['validation']?.toString(),
                           validateWith: f?['validateWith']?.toString(),
                         );
+                        if (pageLabel == 'mobile' && (n == 'mobile' || n == 'phone' || n == 'mobile_number')) {
+                          setState(() => _showMobileError = false);
+                        }
                       },
                       onBlur: (n) {
                         _formNotifier.handleBlur(n);
@@ -1684,6 +1793,23 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ],
+                    // Show error below mobile input when validation fails on Send OTP
+                    if (pageLabel == 'mobile' && (name == 'mobile' || name == 'phone' || name == 'mobile_number') && _showMobileError) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.error_outline, size: 16, color: Colors.red.shade700),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              'Please enter a valid 10-digit mobile number',
+                              style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               );
@@ -1692,40 +1818,58 @@ class _HomePageState extends State<HomePage> {
             // Show only when API page label AND position both indicate "mobile"
             if (pageLabel == 'mobile') ...[
               const SizedBox(height: 15),
-              CheckboxListTile(
-                value: _termsAccepted,
-                onChanged: (v) => setState(() {
-                  _termsAccepted = v ?? false;
-                  if (_termsAccepted) {
-                    _showTermsError = false;
-                  }
-                }),
-                controlAffinity: ListTileControlAffinity.leading,
-                activeColor: KycTheme.primary,
-                contentPadding: const EdgeInsets.only(right: 12),
-                dense: true,
-                title: RichText(
-                  text: TextSpan(
-                    style: TextStyle(fontSize: 12, color: KycTheme.textPrimary, height: 1.4),
-                    children: [
-                      const TextSpan(text: 'Please accept the '),
-                      TextSpan(
-                        text: 'Terms and Conditions',
-                        style: const TextStyle(
-                          color: KycTheme.primary,
-                          fontWeight: FontWeight.w600,
-                          decoration: TextDecoration.underline,
+              // Custom checkbox (not default Material) + clickable Terms and Conditions
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _termsAccepted = !_termsAccepted;
+                      if (_termsAccepted) _showTermsError = false;
+                    }),
+                    child: Container(
+                      width: 22,
+                      height: 22,
+                      margin: const EdgeInsets.only(top: 2),
+                      decoration: BoxDecoration(
+                        color: _termsAccepted ? KycTheme.primary : Colors.transparent,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: _termsAccepted ? KycTheme.primary : KycTheme.border,
+                          width: 2,
                         ),
-                        recognizer: TapGestureRecognizer()..onTap = () => _showTermsModal(context),
                       ),
-                    ],
+                      child: _termsAccepted
+                          ? const Icon(Icons.check, size: 14, color: Colors.white)
+                          : null,
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: RichText(
+                      text: TextSpan(
+                        style: TextStyle(fontSize: 12, color: KycTheme.textPrimary, height: 1.4),
+                        children: [
+                          const TextSpan(text: 'Please accept the '),
+                          TextSpan(
+                            text: 'Terms and Conditions',
+                            style: const TextStyle(
+                              color: KycTheme.primary,
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.underline,
+                            ),
+                            recognizer: TapGestureRecognizer()..onTap = () => _showTermsModal(context),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
               if (_showTermsError && !_termsAccepted) ...[
                 const SizedBox(height: 4),
                 Padding(
-                  padding: const EdgeInsets.only(left: 16.0),
+                  padding: const EdgeInsets.only(left: 34.0),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1760,11 +1904,14 @@ class _HomePageState extends State<HomePage> {
                     },
               style: ElevatedButton.styleFrom(
                 backgroundColor: isMobileStep
-                    ? const Color(0xFFE0CCFF)
+                    ? (_isSendOtpDisabled(position) ? KycTheme.buttonDisabledPurple : KycTheme.buttonEnabledPurple)
                     : KycTheme.primary,
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                minimumSize: Size(double.infinity, isMobileStep ? 52 : 48),
+                padding: const EdgeInsets.symmetric(vertical: KycTheme.spacingLg),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(isMobileStep ? 14 : KycTheme.radiusMd),
+                ),
               ),
               child: _submitLoading
                   ? const Row(
@@ -1848,9 +1995,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// Disable Send OTP on mobile step until 10 digits entered
+  /// Disable Send OTP on mobile step until 10 digits entered AND terms accepted
   bool _isSendOtpDisabled(String? position) {
     if (position != 'mobile') return false;
+    if (!_termsAccepted) return true;
     final mobile = _formNotifier.formData['mobile'] ?? 
         _formNotifier.formData['phone'] ?? 
         _formNotifier.formData['mobile_number'] ?? '';
@@ -1902,16 +2050,15 @@ class _HomePageState extends State<HomePage> {
   Widget _buildAadhaarNote() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(KycTheme.spacingLg),
       decoration: BoxDecoration(
         color: const Color(0xFFF1F5F9),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(KycTheme.radiusMd),
         border: Border.all(color: KycTheme.border),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Icon(Icons.info_outline, size: 20, color: KycTheme.textSecondary),
           const SizedBox(width: 12),
           Expanded(
             child: RichText(

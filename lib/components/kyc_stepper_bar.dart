@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:meon_kyc/utils/assets.dart';
 
 /// Stepper as per design: 1. Mobile Verify, 2. Email Verify, 3. Pan Details, etc.
 /// - Completed: purple circle with white checkmark inside
@@ -142,8 +143,11 @@ class _KycStepperBarState extends State<KycStepperBar> {
     final currentIndex = widget.currentIndex;
     return Container(
       key: _scrollContainerKey,
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
-      color: Colors.white,
+      padding: const EdgeInsets.symmetric(
+        vertical: KycTheme.spacingLg,
+        horizontal: KycTheme.spacingLg,
+      ),
+      color: KycTheme.surface,
       child: SingleChildScrollView(
         controller: _scrollController,
         scrollDirection: Axis.horizontal,
@@ -153,9 +157,42 @@ class _KycStepperBarState extends State<KycStepperBar> {
           children: List.generate(list.length * 2 - 1, (i) {
             if (i.isOdd) {
               final prevIdx = (i - 1) ~/ 2;
+              final nextIdx = prevIdx + 1;
               final isSegmentDone = prevIdx < currentIndex;
+
+              // Show rocket icon only on the connector just BEFORE the current step
+              // e.g. when current step is "kradetails" (index N),
+              // rocket dikhna chahiye step N-1 aur N ke beech.
+              final bool isConnectorBeforeCurrent = nextIdx == currentIndex;
+
+              if (isConnectorBeforeCurrent) {
+                return Padding(
+                  padding: const EdgeInsets.only(
+                    top: KycTheme.spacingLg + 2,
+                    left: KycTheme.spacingSm,
+                    right: KycTheme.spacingSm,
+                  ),
+                  child: Opacity(
+                  opacity: isSegmentDone ? 1.0 : 0.3,
+                  child: Transform.translate(
+                    offset: const Offset(0, -10),
+                    child: Image.asset(
+                      AppAssets.stepConnector,
+                      width: 26,
+                      height: 22,
+                    ),
+                  ),
+                ),  
+                );
+              }
+
+              // Default connector line for all other connectors
               return Container(
-                margin: const EdgeInsets.only(top: 16, left: 8, right: 8),
+                margin: const EdgeInsets.only(
+                  top: KycTheme.spacingLg,
+                  left: KycTheme.spacingSm,
+                  right: KycTheme.spacingSm,
+                ),
                 width: 32,
                 height: 2,
                 decoration: BoxDecoration(
@@ -167,12 +204,11 @@ class _KycStepperBarState extends State<KycStepperBar> {
             final idx = i ~/ 2;
             final isPast = idx < currentIndex;
             final isActive = idx == currentIndex;
-            // Show real label from API (data.label) with basic formatting (capitalize words)
             final stepLabel = widget.steps.isEmpty
                 ? KycStepperBar.formatLabel(list[idx])
                 : KycStepperBar.formatLabel(list[idx]);
             return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
+              padding: const EdgeInsets.symmetric(horizontal: KycTheme.spacingMd),
               child: Column(
                 key: _stepKeys.length > idx ? _stepKeys[idx] : null,
                 mainAxisSize: MainAxisSize.min,
@@ -204,14 +240,14 @@ class _KycStepperBarState extends State<KycStepperBar> {
                             ),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: KycTheme.spacingSm),
                   Flexible(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 110),
                       child: Text(
                         stepLabel,
                         style: TextStyle(
-                          fontSize: 8,
+                          fontSize: KycTheme.fontSizeCaption,
                           fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
                           color: isActive || isPast
                               ? KycTheme.textPrimary

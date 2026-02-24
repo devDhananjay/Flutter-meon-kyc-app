@@ -34,12 +34,12 @@ class SegmentsSelection extends StatelessWidget {
         const Text(
           'Select your trading preferences.',
           style: TextStyle(
-            fontSize: 20,
+            fontSize: 16,
             fontWeight: FontWeight.w600,
             color: KycTheme.textPrimary,
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 22),
         
         // NSE Section
         _buildExchangeSection(
@@ -65,8 +65,9 @@ class SegmentsSelection extends StatelessWidget {
           ],
           context,
         ),
+        const SizedBox(height: 16),
+        const Divider(color: KycTheme.border, height: 1),
         const SizedBox(height: 20),
-        
         // MF & MTF Row
         Row(
           children: [
@@ -145,31 +146,63 @@ class SegmentsSelection extends StatelessWidget {
   }
 
   Widget _buildExchangeSection(String title, List<_CheckboxItem> items, BuildContext context) {
-    return Column(
+    // Create rows of 2 items each: [Cash, FO] and [Currency, SLBM]
+    final rows = <List<_CheckboxItem>>[];
+    for (var i = 0; i < items.length; i += 2) {
+      final pair = <_CheckboxItem>[];
+      pair.add(items[i]);
+      if (i + 1 < items.length) {
+        pair.add(items[i + 1]);
+      }
+      rows.add(pair);
+    }
+
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: KycTheme.textSecondary,
+        SizedBox(
+          width: 60,
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: KycTheme.textPrimary,
+            ),
           ),
         ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: items.map((item) {
-            return SizedBox(
-              width: (MediaQuery.of(context).size.width - 72) / 2,
-              child: _buildCheckbox(
-                label: item.label,
-                value: _getValue(item.key),
-                onChanged: (v) => onChange(item.key, v),
-              ),
-            );
-          }).toList(),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: rows.map((pair) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _buildCheckbox(
+                        label: pair[0].label,
+                        value: _getValue(pair[0].key),
+                        onChanged: (v) => onChange(pair[0].key, v),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (pair.length > 1)
+                      Expanded(
+                        child: _buildCheckbox(
+                          label: pair[1].label,
+                          value: _getValue(pair[1].key),
+                          onChanged: (v) => onChange(pair[1].key, v),
+                        ),
+                      )
+                    else
+                      const Spacer(),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
         ),
       ],
     );
@@ -183,49 +216,41 @@ class SegmentsSelection extends StatelessWidget {
     return InkWell(
       onTap: () => onChanged(!value),
       borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: value ? KycTheme.primary : KycTheme.border,
-            width: value ? 2 : 1,
-          ),
-          borderRadius: BorderRadius.circular(8),
-          color: value ? KycTheme.primary.withOpacity(0.05) : Colors.transparent,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                color: value ? KycTheme.primary : Colors.transparent,
-                border: Border.all(
-                  color: value ? KycTheme.primary : KycTheme.border,
-                  width: 2,
-                ),
-                borderRadius: BorderRadius.circular(4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              color: value ? KycTheme.buttonEnabledPurple : Colors.transparent,
+              border: Border.all(
+                color: KycTheme.buttonEnabledPurple,
+                width: 2,
               ),
-              child: value
-                  ? const Icon(
-                      Icons.check,
-                      size: 14,
-                      color: Colors.white,
-                    )
-                  : null,
+              borderRadius: BorderRadius.circular(6),
             ),
-            const SizedBox(width: 10),
-            Text(
+            child: value
+                ? const Icon(
+                    Icons.check,
+                    size: 12,
+                    color: Colors.white,
+                  )
+                : null,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
               label,
               style: TextStyle(
-                fontSize: 14,
+                fontSize: 12,
                 fontWeight: value ? FontWeight.w600 : FontWeight.w500,
-                color: value ? KycTheme.primary : KycTheme.textPrimary,
+                color: KycTheme.textPrimary,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

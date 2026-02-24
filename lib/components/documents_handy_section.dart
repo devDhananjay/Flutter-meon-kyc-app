@@ -17,14 +17,17 @@ class DocumentsHandySection extends StatelessWidget {
 
   Widget _buildDocItem(({String label, IconData icon}) e) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: KycTheme.spacingSm),
       child: Row(
         children: [
           Icon(Icons.check_circle, size: 20, color: KycTheme.success),
-          const SizedBox(width: 8),
+          const SizedBox(width: KycTheme.spacingSm),
           Text(
             e.label,
-            style: TextStyle(fontSize: 14, color: KycTheme.textPrimary),
+            style: TextStyle(
+              fontSize: KycTheme.fontSizeBody,
+              color: KycTheme.textPrimary,
+            ),
           ),
         ],
       ),
@@ -35,18 +38,15 @@ class DocumentsHandySection extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(
+        horizontal: KycTheme.spacingXl,
+        vertical: KycTheme.spacingLg,
+      ),
       decoration: BoxDecoration(
         color: KycTheme.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(KycTheme.radiusMd),
         border: Border.all(color: KycTheme.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        boxShadow: KycTheme.cardShadowSm,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -55,12 +55,12 @@ class DocumentsHandySection extends StatelessWidget {
           Text(
             'Documents to keep Handy',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: KycTheme.fontSizeTitleSm,
               fontWeight: FontWeight.w700,
               color: KycTheme.textPrimary,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: KycTheme.spacingMd),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

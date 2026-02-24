@@ -41,7 +41,7 @@ class KycLayout extends StatelessWidget {
     final hasPickupCopy = lower.contains('pickup where you left off');
 
     if (hasStartKyc && hasPickupCopy) {
-      // Split into two lines: "Start your KYC" + "or pickup where you left off"
+      // Split into two lines: "Start your KYC" + "or pickup where you left off" (Figma)
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: const [
@@ -49,7 +49,7 @@ class KycLayout extends StatelessWidget {
             'Start your KYC',
             style: TextStyle(
               fontSize: 24,
-              fontWeight: FontWeight.bold,
+              fontWeight: FontWeight.w700,
               color: KycTheme.textPrimary,
             ),
           ),
@@ -82,10 +82,10 @@ class KycLayout extends StatelessWidget {
           title!.toLowerCase().contains('pickup where you left off');
       return SingleChildScrollView(
         padding: EdgeInsets.fromLTRB(
-          20,
-          16,
-          20,
-          isFirstStep ? 32 : 16,
+          KycTheme.spacingXl,
+          KycTheme.spacingLg,
+          KycTheme.spacingXl,
+          isFirstStep ? KycTheme.spacing3xl : KycTheme.spacingLg,
         ),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
@@ -93,7 +93,19 @@ class KycLayout extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              _buildTopBar(null),
+              if (isFirstStep) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Image.asset(
+                      AppAssets.stoxboxLogo,
+                      height: 28,
+                      fit: BoxFit.contain,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+              ],
               if (title != null) ...[
                 const SizedBox(height: 20),
                 if (title != null && title!
@@ -108,7 +120,7 @@ class KycLayout extends StatelessWidget {
                     title!,
                     style: const TextStyle(
                       fontSize: 22,
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w700,
                       color: KycTheme.textPrimary,
                     ),
                   ),
@@ -128,7 +140,7 @@ class KycLayout extends StatelessWidget {
     // Default: full layout with Expanded
     return Column(
       children: [
-        // Top bar: logo (STOXBOX) - always show (has logo and leading/trailing buttons)
+        // Top bar: minimal header (logout/back aligned right)
         _buildTopBar(null),
         // Stepper (only show if stepperSteps is provided)
         if (stepperSteps != null)
@@ -136,10 +148,12 @@ class KycLayout extends StatelessWidget {
             steps: stepperSteps!,
             currentIndex: stepperIndex ?? 0,
           ),
-        // Main content
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            padding: const EdgeInsets.symmetric(
+              horizontal: KycTheme.spacingXl,
+              vertical: KycTheme.spacingLg,
+            ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: Column(
@@ -147,7 +161,6 @@ class KycLayout extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (title != null) ...[
-                    // Custom hero layout for "Start your KYC", default title for others
                     if (title != null && title!
                         .toLowerCase()
                         .contains('start your kyc') &&
@@ -159,16 +172,16 @@ class KycLayout extends StatelessWidget {
                       Text(
                         title!,
                         style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
+                          fontSize: KycTheme.fontSizeTitle,
+                          fontWeight: FontWeight.w700,
                           color: KycTheme.textPrimary,
                         ),
                       ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: KycTheme.spacingSm),
                   ],
                   child,
                   if (showDocumentsSection) ...[
-                    const SizedBox(height: 24),
+                    const SizedBox(height: KycTheme.spacing2xl),
                     const DocumentsHandySection(),
                   ],
                 ],
@@ -201,50 +214,26 @@ class KycLayout extends StatelessWidget {
     );
   }
 
-Widget _buildTopBar(BuildContext? context) {
-  return Padding(
-    // Reduced vertical padding so the logo + logout bar takes less height
-    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-    child: Row(
-      children: [
-        if (leading != null) leading!,
-        Expanded(
-          child: Image.asset(
-            AppAssets.stoxboxLogo,
-            height: 24, // Slightly smaller logo to match Figma
-            fit: BoxFit.contain,
-          ),
-        ),
-        if (trailing != null) trailing!,
-      ],
-    ),
-  );
+  Widget _buildTopBar(BuildContext? context) {
+    // If nothing to show, avoid taking vertical space
+    if (leading == null && trailing == null) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        KycTheme.spacingXl,
+        KycTheme.spacingSm,
+        KycTheme.spacingXl,
+        KycTheme.spacingXs,
+      ),
+      child: Row(
+        children: [
+          if (leading != null) leading!,
+          const Spacer(),
+          if (trailing != null) trailing!,
+        ],
+      ),
+    );
+  }
 }
 
-  // Widget _buildTopBar(BuildContext? context) {
-  //   return Padding(
-  //     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-  //     child: Row(
-  //       children: [
-  //         if (leading != null) leading!,
-  //         Expanded(
-  //           child: Text(
-  //             'STOXBOX',  
-  //             // EnvConfig.companyName,
-  //             textAlign: TextAlign.center,
-  //             style: TextStyle(
-  //               fontSize: 20,
-  //               fontWeight: FontWeight.w700,
-  //               color: KycTheme.primary,
-  //               letterSpacing: 1.2,
-  //             ),
-  //           ),
-  //         ),
-  //         if (trailing != null) trailing!,
-  //       ],
-  //     ),
-  //   );
-  // }
-
-  
-}
