@@ -153,22 +153,22 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 25),
                     // KYC Completed heading
                     const Text(
                       'KYC Completed',
                       style: TextStyle(
-                        fontSize: 28,
+                        fontSize: 26,
                         fontWeight: FontWeight.bold,
                         color: Colors.black,
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     // Verification message
                     Text(
                       'Your account will be verified in 48 hr',
                       style: TextStyle(
-                        fontSize: 16,
+                        fontSize: 15,
                         color: Colors.grey[600],
                       ),
                     ),
@@ -186,12 +186,12 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                           const Text(
                             'Customer Details',
                             style: TextStyle(
-                              fontSize: 18,
+                              fontSize: 17,
                               fontWeight: FontWeight.bold,
                               color: Colors.black,
                             ),
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 12),
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -200,7 +200,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     _buildDetailRow('Name', name),
-                                    const SizedBox(height: 12),
+                                    const SizedBox(height: 10),
                                     _buildDetailRow('Pan', pan),
                                   ],
                                 ),
@@ -211,7 +211,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     _buildDetailRow('Phone', phone),
-                                    const SizedBox(height: 12),
+                                      const SizedBox(height: 10),
                                     _buildDetailRow('Aadhaar', maskedAadhaar),
                                   ],
                                 ),
@@ -228,16 +228,16 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                       child: Text(
                         'Completed Steps',
                         style: TextStyle(
-                          fontSize: 18,
+                          fontSize: 17,
                           fontWeight: FontWeight.bold,
                           color: Colors.black,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 14),
                     // Steps list
                     ...completedSteps.map((step) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.only(bottom: 10),
                           child: Row(
                             children: [
                               Container(
@@ -258,7 +258,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                                 child: Text(
                                   step,
                                   style: const TextStyle(
-                                    fontSize: 16,
+                                    fontSize: 14,
                                     color: Colors.black,
                                   ),
                                 ),
@@ -429,7 +429,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
         Text(
           value,
           style: const TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             color: Colors.black,
             fontWeight: FontWeight.w600,
           ),
