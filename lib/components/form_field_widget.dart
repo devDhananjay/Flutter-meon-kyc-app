@@ -97,13 +97,22 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     final oldValue = oldWidget.value?.toString() ?? '';
     
     if (newValue != oldValue) {
+      String textValue = newValue;
       if (widget.type == 'text' && _textController != null) {
-        if (_textController!.text != newValue) {
-          _textController!.text = newValue;
+        if (_isMobileField) {
+          final digits = newValue.replaceAll(RegExp(r'\D'), '');
+          textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+        }
+        if (_textController!.text != textValue) {
+          _textController!.text = textValue;
         }
       } else if (widget.type == 'number' && _numberController != null) {
-        if (_numberController!.text != newValue) {
-          _numberController!.text = newValue;
+        if (_isMobileField) {
+          final digits = newValue.replaceAll(RegExp(r'\D'), '');
+          textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+        }
+        if (_numberController!.text != textValue) {
+          _numberController!.text = textValue;
         }
       } else if (widget.type == 'textarea' && _textareaController != null) {
         if (_textareaController!.text != newValue) {
@@ -264,7 +273,12 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
 
   Widget _buildText() {
     if (_textController == null) {
-      _textController = TextEditingController(text: widget.value?.toString() ?? '');
+      String raw = widget.value?.toString() ?? '';
+      if (_isMobileField) {
+        final digits = raw.replaceAll(RegExp(r'\D'), '');
+        raw = digits.length > 10 ? digits.substring(0, 10) : digits;
+      }
+      _textController = TextEditingController(text: raw);
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -310,7 +324,12 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
 
   Widget _buildNumber() {
     if (_numberController == null) {
-      _numberController = TextEditingController(text: widget.value?.toString() ?? '');
+      String raw = widget.value?.toString() ?? '';
+      if (_isMobileField) {
+        final digits = raw.replaceAll(RegExp(r'\D'), '');
+        raw = digits.length > 10 ? digits.substring(0, 10) : digits;
+      }
+      _numberController = TextEditingController(text: raw);
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -319,12 +338,20 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _numberController,
           enabled: !widget.disable,
-          keyboardType: TextInputType.number,
+          keyboardType: _isMobileField ? TextInputType.number : TextInputType.number,
+          maxLength: _isMobileField ? 10 : null,
+          inputFormatters: _isMobileField
+              ? [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(10),
+                ]
+              : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
-            hintText: '${widget.displayName}',
+            hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
             border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
+            counterText: _isMobileField ? '' : null,
           ),
         ),
       ],
