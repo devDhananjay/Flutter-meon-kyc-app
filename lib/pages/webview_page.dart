@@ -138,6 +138,22 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool get _isReversePennyDropFlow =>
       _isReversePennyDropUrl(widget.url) || _isReversePennyDropUrl(_currentUrl);
 
+  /// Digio eSign flow – hosted on our domain under /digio/cloud-esign/...
+  bool _isDigioEsignUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
+        path.contains('/digio/cloud-esign/');
+  }
+
+  bool get _isDigioEsignFlow =>
+      _isDigioEsignUrl(widget.url) || _isDigioEsignUrl(_currentUrl);
+
+  /// Flows that need JS window.open popups (Digio bank selection etc.)
+  bool get _supportsPopupWindows => _isReversePennyDropFlow || _isDigioEsignFlow;
+
   void _startReversePennyPolling() {
     if (_reversePennyPollTimer != null) return;
     // Poll every 5 seconds to let the page re-evaluate payment status and redirect when ready
@@ -715,9 +731,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               initialUrlRequest: URLRequest(url: WebUri(widget.url)),
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
-                // Allow JS popups / window.open only for reverse_pennydrop flow
-                javaScriptCanOpenWindowsAutomatically: _isReversePennyDropFlow,
-                supportMultipleWindows: _isReversePennyDropFlow,
+                // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
+                javaScriptCanOpenWindowsAutomatically: _supportsPopupWindows,
+                supportMultipleWindows: _supportsPopupWindows,
                 mediaPlaybackRequiresUserGesture: false,
                 allowsInlineMediaPlayback: true,
                 useHybridComposition: true,
@@ -734,13 +750,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               onWebViewCreated: (controller) {
                 _webViewController = controller;
               },
-              // Handle popup windows (window.open) – important for reverse_pennydrop bank flow
+              // Handle popup windows (window.open) – important for Reverse Penny Drop / Digio eSign bank flows
               onCreateWindow: (controller, createWindowAction) async {
                 final popupUri = createWindowAction.request.url;
                 final popupUrl = popupUri?.toString() ?? '';
                 debugPrint('[WebView] onCreateWindow: $popupUrl');
 
-                if (!_isReversePennyDropFlow) {
+                if (!_supportsPopupWindows) {
                   return false;
                 }
 
@@ -829,11 +845,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                   setState(() {
                     _popupWindowId = null;
                   });
-                  // Reverse Penny Drop: after Digio popup closes, reload main page so it fetches success state with params
-                  if (_isReversePennyDropFlow && _webViewController != null && !_redirectHandled && !_rpdSuccessHandled) {
+                  // For flows that rely on Digio-style popups (Reverse Penny Drop, Digio eSign),
+                  // after the popup closes, reload main page so it can fetch updated success state / params.
+                  if ((_isReversePennyDropFlow || _isDigioEsignFlow) &&
+                      _webViewController != null &&
+                      !_redirectHandled &&
+                      !_rpdSuccessHandled) {
                     Future.delayed(const Duration(milliseconds: 500), () async {
                       if (!mounted || _redirectHandled || _rpdSuccessHandled) return;
-                      debugPrint('[WebView] RPD popup closed - reloading main page to fetch success state with params');
+                      debugPrint('[WebView] Popup closed - reloading main page to fetch success state with params');
                       await _webViewController?.reload();
                     });
                   }
