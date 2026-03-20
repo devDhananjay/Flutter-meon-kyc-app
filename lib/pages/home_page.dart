@@ -128,7 +128,10 @@ class _HomePageState extends State<HomePage> {
       final hasCompletionParams = widget.queryParams['success'] == 'yes' ||
           widget.queryParams['verifyCompleted'] == 'true' ||
           widget.queryParams['esign'] == 'yes' ||
-          widget.queryParams.containsKey('transaction_id');
+          widget.queryParams.containsKey('transaction_id') ||
+          widget.queryParams.containsKey('reversepennydrop') ||
+          widget.queryParams.containsKey('reverse_pennydrop') ||
+          widget.queryParams.containsKey('account_aggregator');
       if (mounted && !hasCompletionParams) {
         await _checkAndHandleRedirect(store);
       } else if (hasCompletionParams) {
@@ -142,14 +145,36 @@ class _HomePageState extends State<HomePage> {
           '', // Call without completion params to get fresh state
         );
 
-        if (mounted && store.errorWithAuth != null) {
-          debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth}');
-          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Error refreshing page', gravity: ToastGravity.TOP);
-          return;
+        // Some flows can trigger multiple get-context calls back-to-back (WebView close + route rebuild).
+        // Avoid blocking progress just because `errorWithAuth` was set by an earlier call while the latest
+        // `fieldsWithAuth` succeeded.
+        var refreshed = store.fieldsWithAuth;
+        if (mounted && refreshed is! Map) {
+          final err = (store.errorWithAuth ?? '').toString();
+          final shouldRetryMultipleTabs = err.toLowerCase().contains('multiple tabs');
+
+          if (shouldRetryMultipleTabs) {
+            debugPrint('[HomePage] get-context failed due to multiple tabs - retrying once...');
+            await Future.delayed(const Duration(milliseconds: 800));
+            await store.fetchWorkflowFieldsWithAuth(
+              widget.company,
+              widget.workflowName,
+              '', // Retry without completion params
+            );
+            refreshed = store.fieldsWithAuth;
+          }
+
+          if (mounted && refreshed is! Map) {
+            debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth ?? "fieldsWithAuth not a Map"}');
+            Fluttertoast.showToast(
+              msg: store.errorWithAuth ?? 'Error refreshing page',
+              gravity: ToastGravity.TOP,
+            );
+            return;
+          }
         }
 
         // Check if KYC is completed (is_admin: true)
-        final refreshed = store.fieldsWithAuth;
         if (refreshed is Map && refreshed['is_admin'] == true) {
           debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
           await store.fetchUserDetails();
@@ -206,6 +231,14 @@ class _HomePageState extends State<HomePage> {
           if (uri != null) {
             // Build query string with verify param
             final queryString = uri.query; // This is "verify=digilocker"
+            final lowerHost = uri.host.toLowerCase();
+            final lowerPath = uri.path.toLowerCase();
+            final isIpvOrFace =
+                lowerHost.contains('ipv') ||
+                lowerPath.contains('/ipv/') ||
+                lowerPath.contains('face') ||
+                lowerPath.contains('facefinder') ||
+                lowerHost.contains('face');
             
             debugPrint('[HomePage] Special case: "redirect on verify is true" - calling get-context API');
             debugPrint('[HomePage] Extracted query from URL: $queryString');
@@ -226,8 +259,61 @@ class _HomePageState extends State<HomePage> {
             } else {
               debugPrint('[HomePage] Verify get-context completed successfully - data loaded in app');
             }
-            
-            return; // Don't open WebView
+
+            // IPV/Face KYC case:
+            // Backend provides a direct return URL (often with EMPTY query params).
+            // In that scenario, we must open WebView automatically; otherwise user gets stuck on the non-IPV screen.
+            if (isIpvOrFace && queryString.isEmpty && mounted) {
+              final friendlyTitle = _deriveWebViewTitle(msg, redirectUrl);
+              debugPrint('[HomePage] Auto-opening WebView for IPV/Face after verify reload: $redirectUrl');
+              final encodedUrl = Uri.encodeComponent(redirectUrl);
+              final title = Uri.encodeComponent(friendlyTitle);
+              context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+              return;
+            }
+
+            // If backend after verify-reload asks to redirect to some external page (often IPV),
+            // handle it now. Otherwise user gets stuck until manual reload.
+            final refreshed = store.fieldsWithAuth;
+            if (refreshed is Map &&
+                refreshed['redirect'] == true &&
+                (refreshed['url']?.toString().isNotEmpty ?? false)) {
+              final refreshedRedirectUrl = refreshed['url']!.toString();
+              final refreshedMsg = refreshed['msg']?.toString() ?? msg;
+
+              String refreshedFinalUrl;
+              if (refreshedRedirectUrl.startsWith('http://') ||
+                  refreshedRedirectUrl.startsWith('https://')) {
+                refreshedFinalUrl = refreshedRedirectUrl;
+              } else {
+                // Relative URL - prepend baseUrl and preserve query params
+                var relativeUrl = refreshedRedirectUrl.startsWith('/')
+                    ? refreshedRedirectUrl
+                    : '/$refreshedRedirectUrl';
+
+                if (widget.queryParams.isNotEmpty && !relativeUrl.contains('state')) {
+                  final separator = relativeUrl.contains('?') ? '&' : '?';
+                  final preservedParams = widget.queryParams.entries
+                      .where((e) => e.key != 'verifyCompleted')
+                      .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
+                      .join('&');
+                  if (preservedParams.isNotEmpty) {
+                    relativeUrl = '$relativeUrl$separator$preservedParams';
+                  }
+                }
+
+                refreshedFinalUrl = '${EnvConfig.baseUrl}$relativeUrl';
+              }
+
+              final friendlyTitle = _deriveWebViewTitle(refreshedMsg, refreshedFinalUrl);
+              debugPrint('[HomePage] Opening WebView after verify reload (refreshed redirect): $refreshedFinalUrl');
+              final encodedUrl = Uri.encodeComponent(refreshedFinalUrl);
+              final title = Uri.encodeComponent(friendlyTitle);
+              context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+              return;
+            }
+
+            return; // Don't open WebView for other verify modes (e.g. digilocker handled by backend via fields)
           }
         }
         

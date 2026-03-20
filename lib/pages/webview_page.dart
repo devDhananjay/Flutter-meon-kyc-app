@@ -41,6 +41,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _hasSeenCleanUrl = false;
   bool _permissionsRequested = false;
   bool _hasReloadedAfterPermissions = false;
+  bool _pendingReloadAfterPermissions = false;
+  bool _permissionRequestScheduled = false;
+  bool _permissionHandlerInFlight = false;
+  bool _ipvPermissionGateActive = false;
   bool _redirectHandled = false;
   /// Params captured from completion/success URLs (e.g. success=yes, transaction_id=...)
   /// Passed to get-context API so backend marks step as complete
@@ -53,6 +57,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _paymentAppLaunched = false;
   // Periodic polling timer to auto-refresh Reverse Penny Drop page after UPI payment
   Timer? _reversePennyPollTimer;
+  int _reversePennyPollAttempts = 0;
+  static const int _maxReversePennyPollAttempts = 18; // ~90 seconds @ 5s interval
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
   bool _esignScrollAdjusted = false;
   // Track if we already handled RPD success (to avoid double-close)
@@ -77,8 +83,18 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (_isIpvOrFaceFinderUrl(widget.url)) {
       if (Platform.isAndroid) {
         // Request permissions immediately on Android before WebView loads
+        _ipvPermissionGateActive = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _requestPermissionsBeforeLoad();
+          // Prevent duplicate scheduling between initState and onLoadStart.
+          _permissionRequestScheduled = true;
+          // Gate WebView rendering until permissions request completes.
+          () async {
+            await _requestPermissionsBeforeLoad();
+            if (!mounted) return;
+            setState(() {
+              _ipvPermissionGateActive = false;
+            });
+          }();
         });
       } else {
         // iOS: Request after load (existing behavior)
@@ -159,17 +175,27 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   void _startReversePennyPolling() {
     if (_reversePennyPollTimer != null) return;
+    _reversePennyPollAttempts = 0;
     // Poll every 5 seconds to let the page re-evaluate payment status and redirect when ready
-    _reversePennyPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _reversePennyPollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!_isReversePennyDropFlow || _redirectHandled || !mounted) {
+        _reversePennyPollTimer?.cancel();
+        _reversePennyPollTimer = null;
+        return;
+      }
+
+      if (_reversePennyPollAttempts >= _maxReversePennyPollAttempts) {
+        debugPrint('[WebView] Reverse Penny Drop polling: max attempts reached, stopping');
         _reversePennyPollTimer?.cancel();
         _reversePennyPollTimer = null;
         return;
       }
       // Only reload while we're on the reverse_pennydrop page; once we leave it, stop polling.
       if (_isReversePennyDropUrl(_currentUrl)) {
+        _reversePennyPollAttempts++;
         debugPrint('[WebView] Reverse Penny Drop polling reload: $_currentUrl');
-        _reloadWebView();
+        // Keep polling silent to avoid toast spam.
+        await _reloadWebViewInternal(showToast: false);
       } else {
         _reversePennyPollTimer?.cancel();
         _reversePennyPollTimer = null;
@@ -180,7 +206,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Request permissions BEFORE loading WebView (Android-specific)
   Future<void> _requestPermissionsBeforeLoad() async {
     if (_permissionsRequested) return;
+    if (_permissionRequestScheduled) {
+      // Allow the already-scheduled request to proceed.
+    }
     _permissionsRequested = true;
+    _permissionHandlerInFlight = true;
 
     debugPrint('[WebView] Requesting permissions BEFORE load (Android) for IPV/Face Finder');
 
@@ -199,6 +229,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       debugPrint('[WebView] Permission request failed: $e');
       _permissionsRequested = false;
       return;
+    } finally {
+      _permissionRequestScheduled = false;
+      _permissionHandlerInFlight = false;
     }
 
     bool allGranted = permissions.every((p) {
@@ -216,6 +249,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           debugPrint('[WebView] Reloading WebView after Android permissions granted');
           _webViewController?.reload();
         });
+      } else if (!_hasReloadedAfterPermissions) {
+        // Controller not ready yet; reload as soon as it's created.
+        _pendingReloadAfterPermissions = true;
       }
     } else {
       debugPrint('[WebView] Some permissions denied before load');
@@ -232,6 +268,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   Future<void> _requestPermissionsAndReload() async {
     if (_permissionsRequested) return;
     _permissionsRequested = true;
+    _permissionHandlerInFlight = true;
 
     debugPrint('[WebView] Requesting permissions for IPV/Face Finder');
 
@@ -250,6 +287,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       debugPrint('[WebView] Permission request failed: $e');
       _permissionsRequested = false;
       return;
+    } finally {
+      _permissionRequestScheduled = false;
+      _permissionHandlerInFlight = false;
     }
 
     bool allGranted = permissions.every((p) {
@@ -283,14 +323,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   }
 
   Future<void> _reloadWebView() async {
+    return _reloadWebViewInternal(showToast: true);
+  }
+
+  Future<void> _reloadWebViewInternal({required bool showToast}) async {
     try {
       debugPrint('[WebView] Reloading WebView: $_currentUrl');
       await _webViewController?.reload();
-      Fluttertoast.showToast(
-        msg: 'Page reloaded',
-        toastLength: Toast.LENGTH_SHORT,
-        gravity: ToastGravity.TOP,
-      );
+      if (showToast) {
+        Fluttertoast.showToast(
+          msg: 'Page reloaded',
+          toastLength: Toast.LENGTH_SHORT,
+          gravity: ToastGravity.TOP,
+        );
+      }
     } catch (e) {
       debugPrint('[WebView] Error reloading: $e');
     }
@@ -374,6 +420,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Opens supported payment / deep-link URLs in external apps using url_launcher.
   Future<bool> _handleExternalUrl(String url) async {
     try {
+      final originalUrl = url;
       String finalUrl = url;
       bool isIntentUrl = false;
       
@@ -422,7 +469,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             uri,
             mode: LaunchMode.externalApplication,
           );
-          _markPaymentAppLaunched(finalUrl);
+          // For Android intent:// links, `finalUrl` may not start with `upi://`
+          // (example: `intent://pay?...#Intent;scheme=upi;...;end`).
+          // So mark using the original intent URL to reliably detect scheme=upi.
+          _markPaymentAppLaunched(isIntentUrl ? originalUrl : finalUrl);
           debugPrint('[WebView] Successfully launched payment URL');
           return true;
         } catch (e) {
@@ -432,7 +482,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             final uri = Uri.parse(finalUrl);
             if (await canLaunchUrl(uri)) {
               await launchUrl(uri, mode: LaunchMode.externalApplication);
-              _markPaymentAppLaunched(finalUrl);
+              _markPaymentAppLaunched(isIntentUrl ? originalUrl : finalUrl);
               return true;
             }
           } catch (_) {
@@ -482,23 +532,38 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Marks that a payment app was launched (for auto-reload on return)
   void _markPaymentAppLaunched(String url) {
     final lower = url.toLowerCase();
-    final isPaymentUrl = lower.startsWith('upi://') ||
+    // UPI/payment deep-links can arrive as:
+    // - upi://... / phonepe://... / gpay://...
+    // - or Android intent://...#Intent;scheme=upi;package=...;end
+    final containsUpiScheme = lower.contains('scheme=upi') || lower.startsWith('upi://');
+    final containsPhonepeScheme = lower.contains('scheme=phonepe') || lower.startsWith('phonepe://');
+    final containsPaytmScheme = lower.contains('scheme=paytm') || lower.startsWith('paytm://');
+    final containsPaytmMpScheme = lower.contains('scheme=paytmmp') || lower.startsWith('paytmmp://');
+    final containsGpayScheme = lower.contains('scheme=gpay') || lower.startsWith('gpay://') || lower.contains('scheme=tez');
+    final containsAnyPaymentScheme = lower.startsWith('upi://') ||
         lower.startsWith('phonepe://') ||
         lower.startsWith('paytmmp://') ||
         lower.startsWith('paytm://') ||
         lower.startsWith('gpay://') ||
         lower.startsWith('tez://') ||
         lower.startsWith('bhim://') ||
-        lower.startsWith('googlepay://');
-    
-    if (isPaymentUrl) {
-      if (_isReversePennyDropFlow) {
-        _upiAppLaunched = true;
-      } else {
-        // For iOS: mark any payment app launch so we can reload on return
-        if (Platform.isIOS) {
-          _paymentAppLaunched = true;
-        }
+        lower.startsWith('googlepay://') ||
+        containsUpiScheme ||
+        containsPhonepeScheme ||
+        containsPaytmScheme ||
+        containsPaytmMpScheme ||
+        containsGpayScheme ||
+        lower.contains('scheme=upi');
+
+    if (!containsAnyPaymentScheme) return;
+
+    if (_isReversePennyDropFlow) {
+      _upiAppLaunched = true;
+      debugPrint('[WebView] Marked payment app launched (RPD): $url');
+    } else {
+      // For iOS: mark any payment app launch so we can reload on return
+      if (Platform.isIOS) {
+        _paymentAppLaunched = true;
       }
     }
   }
@@ -750,310 +815,405 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         child: Stack(
           children: [
             // Main WebView
-            InAppWebView(
-              initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-              initialSettings: InAppWebViewSettings(
-                javaScriptEnabled: true,
-                // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
-                javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
-                supportMultipleWindows: _enablePopupWindows,
-                mediaPlaybackRequiresUserGesture: false,
-                allowsInlineMediaPlayback: true,
-                useHybridComposition: true,
-                // Disable pinch-zoom to keep layout stable
-                supportZoom: false,
-                // Android-specific: Enable camera/microphone/location access in WebView
-                allowFileAccess: true,
-                allowFileAccessFromFileURLs: true,
-                allowUniversalAccessFromFileURLs: true,
-                thirdPartyCookiesEnabled: true,
-                // Enable geolocation for IPV/Face Finder (required for location-based verification)
-                geolocationEnabled: true,
-              ),
-              onWebViewCreated: (controller) {
-                _webViewController = controller;
-              },
-              // Handle popup windows (window.open) – important for Reverse Penny Drop / Digio eSign bank flows
-              onCreateWindow: (controller, createWindowAction) async {
-                final popupUri = createWindowAction.request.url;
-                final popupUrl = popupUri?.toString() ?? '';
-                debugPrint('[WebView] onCreateWindow: $popupUrl');
+            _ipvPermissionGateActive
+                ? const Center(child: CircularProgressIndicator())
+                : InAppWebView(
+                    initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                    initialSettings: InAppWebViewSettings(
+                      javaScriptEnabled: true,
+                      // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
+                      javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
+                      supportMultipleWindows: _enablePopupWindows,
+                      mediaPlaybackRequiresUserGesture: false,
+                      allowsInlineMediaPlayback: true,
+                      useHybridComposition: true,
+                      // Disable pinch-zoom to keep layout stable
+                      supportZoom: false,
+                      // Android-specific: Enable camera/microphone/location access in WebView
+                      allowFileAccess: true,
+                      allowFileAccessFromFileURLs: true,
+                      allowUniversalAccessFromFileURLs: true,
+                      thirdPartyCookiesEnabled: true,
+                      // Enable geolocation for IPV/Face Finder (required for location-based verification)
+                      geolocationEnabled: true,
+                    ),
+                    onWebViewCreated: (controller) {
+                      _webViewController = controller;
 
-                if (!_enablePopupWindows) {
-                  return false;
-                }
+                      if (_pendingReloadAfterPermissions &&
+                          !_hasReloadedAfterPermissions) {
+                        _pendingReloadAfterPermissions = false;
+                        _hasReloadedAfterPermissions = true;
+                        Future.delayed(const Duration(milliseconds: 300), () {
+                          debugPrint(
+                              '[WebView] Pending reload after permissions - reloading WebView');
+                          _webViewController?.reload();
+                        });
+                      }
+                    },
+                    // Handle popup windows (window.open) – important for Reverse Penny Drop / Digio eSign bank flows
+                    onCreateWindow: (controller, createWindowAction) async {
+                      final popupUri = createWindowAction.request.url;
+                      final popupUrl = popupUri?.toString() ?? '';
+                      debugPrint('[WebView] onCreateWindow: $popupUrl');
 
-                // Digio often calls window.open('') / about:blank first.
-                // When a windowId is provided, create an overlay WebView bound to it.
-                if (createWindowAction.windowId != null) {
-                  setState(() {
-                    _popupWindowId = createWindowAction.windowId;
-                  });
-                  return true; // popup handled by overlay InAppWebView with windowId
-                }
+                      if (!_enablePopupWindows) {
+                        return false;
+                      }
 
-                // If there's a real URL but no windowId (rare), open inside same WebView.
-                if (popupUri != null &&
-                    popupUrl.isNotEmpty &&
-                    popupUrl != 'about:blank') {
-                  await _webViewController?.loadUrl(
-                    urlRequest: URLRequest(url: popupUri),
-                  );
-                  return true;
-                }
+                      // Digio often calls window.open('') / about:blank first.
+                      // When a windowId is provided, create an overlay WebView bound to it.
+                      if (createWindowAction.windowId != null) {
+                        setState(() {
+                          _popupWindowId = createWindowAction.windowId;
+                        });
 
-                return false;
-              },
-          shouldOverrideUrlLoading: (controller, navigationAction) async {
-            final uri = navigationAction.request.url;
-            if (uri == null) return NavigationActionPolicy.ALLOW;
+                        // Digio completion sometimes doesn't trigger a clear main-webview redirect.
+                        // Start a capped, silent polling loop after a short delay once the popup opens,
+                        // so the reverse_pennydrop page can refresh and move forward automatically.
+                        if (Platform.isAndroid) {
+                          Future.delayed(const Duration(seconds: 25), () {
+                            if (!mounted) return;
+                            if (_redirectHandled || _rpdSuccessHandled) return;
+                            if (_isReversePennyDropUrl(_currentUrl) ||
+                                _isReversePennyDropFlow) {
+                              _startReversePennyPolling();
+                            }
+                          });
+                        }
 
-            final url = uri.toString();
-            debugPrint('[WebView] Navigation request: $url');
+                        return true; // popup handled by overlay InAppWebView with windowId
+                      }
 
-            // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
-            if (Platform.isAndroid && url.toLowerCase().startsWith('intent:')) {
-              debugPrint('[WebView] Intent URL detected - handling externally');
-              await _handleExternalUrl(url);
-              return NavigationActionPolicy.CANCEL;
-            }
+                      // If there's a real URL but no windowId (rare), open inside same WebView.
+                      if (popupUri != null &&
+                          popupUrl.isNotEmpty &&
+                          popupUrl != 'about:blank') {
+                        await _webViewController?.loadUrl(
+                          urlRequest: URLRequest(url: popupUri),
+                        );
+                        return true;
+                      }
 
-            if (_shouldHandleExternally(url)) {
-              final handled = await _handleExternalUrl(url);
-              if (handled) {
-                debugPrint('[WebView] External URL handled by app, cancelling WebView navigation');
-                return NavigationActionPolicy.CANCEL;
-              }
-            }
+                      return false;
+                    },
+                    shouldOverrideUrlLoading: (controller, navigationAction) async {
+                      final uri = navigationAction.request.url;
+                      if (uri == null) return NavigationActionPolicy.ALLOW;
 
-            // Capture completion params from success/return URLs (e.g. ?success=yes&transaction_id=...)
-            // Works for RPD, DigiLocker, and other segments - any URL with params before final workflow URL
-            _captureCompletionParamsIfApplicable(url);
+                      final url = uri.toString();
+                      debugPrint('[WebView] Navigation request: $url');
 
-            // Reverse Penny Drop: if completion params appear in URL, close WebView immediately (no timer needed)
-            if (_isReversePennyDropUrl(url) && !_redirectHandled && !_rpdSuccessHandled) {
-              final uri = Uri.tryParse(url);
-              if (uri != null && uri.queryParameters.isNotEmpty) {
-                final completionParamKeys = [
-                  'success',
-                  'transaction_id',
-                  'reversepennydrop',
-                  'esign',
-                ];
-                final hasCompletionParams = uri.queryParameters.keys.any((key) => 
-                    completionParamKeys.contains(key.toLowerCase()));
-                if (hasCompletionParams) {
-                  debugPrint('[WebView] RPD completion params detected in URL - closing WebView');
-                  _rpdSuccessHandled = true;
-                  _completionParams.addAll(uri.queryParameters);
-                  if (!_completionParams.containsKey('success')) {
-                    _completionParams['success'] = 'yes';
-                  }
-                  await _handleRedirectComplete(
-                    state: uri.queryParameters['state'] ?? _preservedState,
-                    clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
-                    auto: uri.queryParameters['auto'] ?? _preservedAuto,
-                    verifyCompleted: false,
-                  );
-                  return NavigationActionPolicy.CANCEL;
-                }
-              }
-            }
+                      // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
+                      if (Platform.isAndroid &&
+                          url.toLowerCase().startsWith('intent:')) {
+                        debugPrint(
+                            '[WebView] Intent URL detected - handling externally');
+                        await _handleExternalUrl(url);
+                        return NavigationActionPolicy.CANCEL;
+                      }
 
-            return NavigationActionPolicy.ALLOW;
-          },
-              onCloseWindow: (controller) {
-                // Popup window closed – hide overlay
-                if (_popupWindowId != null) {
-                  setState(() {
-                    _popupWindowId = null;
-                  });
-                  // For flows that rely on Digio-style popups (Reverse Penny Drop, Digio eSign),
-                  // after the popup closes, reload main page so it can fetch updated success state / params.
-                  if ((_isReversePennyDropFlow || _isDigioEsignFlow) &&
-                      _webViewController != null &&
-                      !_redirectHandled &&
-                      !_rpdSuccessHandled) {
-                    Future.delayed(const Duration(milliseconds: 500), () async {
-                      if (!mounted || _redirectHandled || _rpdSuccessHandled) return;
-                      debugPrint('[WebView] Popup closed - reloading main page to fetch success state with params');
-                      await _webViewController?.reload();
-                    });
-                  }
-                }
-              },
-              onLoadStart: (controller, url) async {
-            if (url != null && !_redirectHandled) {
-              setState(() {
-                _isLoading = true;
-                _currentUrl = url.toString();
-              });
-              debugPrint('[WebView] Page started: $url');
+                      if (_shouldHandleExternally(url)) {
+                        final handled = await _handleExternalUrl(url);
+                        if (handled) {
+                          debugPrint(
+                              '[WebView] External URL handled by app, cancelling WebView navigation');
+                          return NavigationActionPolicy.CANCEL;
+                        }
+                      }
 
-              // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
-              // Close WebView immediately on success redirect (don't wait for page load)
-              final uri = Uri.tryParse(url.toString());
-              if (uri != null) {
-                final host = uri.host.toLowerCase();
-                final path = uri.path.toLowerCase();
-                final hasSuccess = uri.queryParameters['success']?.toLowerCase() == 'yes';
-                final hasState = uri.queryParameters.containsKey('state');
-                final isWorkflowPath = path.contains('/${widget.company}/${widget.workflowName}');
-                final isMeonRedirect = host.contains('meon.co.in') &&
-                    !host.contains('ipv.') &&
-                    !host.contains('api.') &&
-                    !host.contains('digilocker.');
+                      // Capture completion params from success/return URLs (e.g. ?success=yes&transaction_id=...)
+                      // Works for RPD, DigiLocker, and other segments - any URL with params before final workflow URL
+                      _captureCompletionParamsIfApplicable(url);
 
-                if (isMeonRedirect && isWorkflowPath && (hasSuccess || hasState)) {
-                  debugPrint('[WebView] IPV success redirect detected - closing WebView immediately');
-                  await _handleRedirectComplete(
-                    state: uri.queryParameters['state'] ?? _preservedState,
-                    clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
-                    auto: uri.queryParameters['auto'] ?? _preservedAuto,
-                    verifyCompleted: hasSuccess,
-                  );
-                  return;
-                }
-              }
+                      // Reverse Penny Drop: if completion params appear in URL, close WebView immediately (no timer needed)
+                      if (_isReversePennyDropUrl(url) &&
+                          !_redirectHandled &&
+                          !_rpdSuccessHandled) {
+                        final uri = Uri.tryParse(url);
+                        if (uri != null && uri.queryParameters.isNotEmpty) {
+                          final completionParamKeys = [
+                            'success',
+                            'transaction_id',
+                            'reversepennydrop',
+                            'esign',
+                          ];
+                          final hasCompletionParams = uri
+                              .queryParameters.keys
+                              .any((key) =>
+                                  completionParamKeys.contains(key.toLowerCase()));
+                          if (hasCompletionParams) {
+                            debugPrint(
+                                '[WebView] RPD completion params detected in URL - closing WebView');
+                            _rpdSuccessHandled = true;
+                            _completionParams.addAll(uri.queryParameters);
+                            if (!_completionParams.containsKey('success')) {
+                              _completionParams['success'] = 'yes';
+                            }
+                            await _handleRedirectComplete(
+                              state: uri.queryParameters['state'] ??
+                                  _preservedState,
+                              clientToken: uri.queryParameters['client_token'] ??
+                                  _preservedClientToken,
+                              auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                              verifyCompleted: false,
+                            );
+                            return NavigationActionPolicy.CANCEL;
+                          }
+                        }
+                      }
 
-              // Request permissions on load (iOS or if Android permissions weren't requested before)
-              if (_isIpvOrFaceFinderUrl(url.toString()) && !_permissionsRequested) {
-                if (Platform.isAndroid) {
-                  // Android: Request if not already done (should have been done in initState)
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    _requestPermissionsBeforeLoad();
-                  });
-                } else {
-                  // iOS: Request after load (works fine)
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    _requestPermissionsAndReload();
-                  });
-                }
-              }
-            }
-          },
-              onLoadError: (controller, url, code, message) {
-            debugPrint('[WebView] Load error ($code): $message, url=$url');
-            // Ignore unknown URL scheme errors which are expected for external payment intents
-            if (code == -10 && message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
-              return;
-            }
-          },
-              onLoadStop: (controller, url) async {
-            if (url != null) {
-              setState(() {
-                _isLoading = false;
-                _currentUrl = url.toString();
-              });
-              debugPrint('[WebView] Page finished: $url');
+                      return NavigationActionPolicy.ALLOW;
+                    },
+                    onCloseWindow: (controller) {
+                      // Popup window closed – hide overlay
+                      if (_popupWindowId != null) {
+                        setState(() {
+                          _popupWindowId = null;
+                        });
+                        // For flows that rely on Digio-style popups (Reverse Penny Drop, Digio eSign),
+                        // after the popup closes, reload main page so it can fetch updated success state / params.
+                        if ((_isReversePennyDropFlow || _isDigioEsignFlow) &&
+                            _webViewController != null &&
+                            !_redirectHandled &&
+                            !_rpdSuccessHandled) {
+                          Future.delayed(const Duration(milliseconds: 500),
+                              () async {
+                            if (!mounted ||
+                                _redirectHandled ||
+                                _rpdSuccessHandled) return;
+                            debugPrint(
+                                '[WebView] Popup closed - reloading main page to fetch success state with params');
+                            await _webViewController?.reload();
+                          });
+                        }
+                      }
+                    },
+                    onLoadStart: (controller, url) async {
+                      if (url != null && !_redirectHandled) {
+                        setState(() {
+                          _isLoading = true;
+                          _currentUrl = url.toString();
+                        });
+                        debugPrint('[WebView] Page started: $url');
 
-              // For eSign pages, nudge initial scroll slightly so
-              // important inputs are not hidden under the keyboard.
-              try {
-                final uri = Uri.tryParse(url.toString());
-                if (uri != null) {
-                  final host = uri.host.toLowerCase();
-                  final isCloudesign = host.contains('cloudesign');
-                  final isNsdlEsign = host.contains('esign.egov.proteantech.in') ||
-                      host.startsWith('esign.');
-                  if (!_esignScrollAdjusted && (isCloudesign || isNsdlEsign)) {
-                    _esignScrollAdjusted = true;
-                    // Use native scrollTo first (more reliable), then JS fallback
-                    await controller.scrollTo(x: 0, y: 260);
-                    await controller.evaluateJavascript(
-                      source: 'try { window.scrollTo(0, 260); } catch(e) {}',
-                    );
-                  }
-                }
-              } catch (e) {
-                debugPrint('[WebView] Error adjusting scroll for eSign: $e');
-              }
+                        // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
+                        // Close WebView immediately on success redirect (don't wait for page load)
+                        final uri = Uri.tryParse(url.toString());
+                        if (uri != null) {
+                          final host = uri.host.toLowerCase();
+                          final path = uri.path.toLowerCase();
+                          final hasSuccess =
+                              uri.queryParameters['success']?.toLowerCase() ==
+                                  'yes';
+                          final hasState = uri.queryParameters.containsKey('state');
+                          final isWorkflowPath = path.contains(
+                              '/${widget.company}/${widget.workflowName}');
+                          final isMeonRedirect = host.contains('meon.co.in') &&
+                              !host.contains('ipv.') &&
+                              !host.contains('api.') &&
+                              !host.contains('digilocker.');
 
-              if (_isIpvOrFaceFinderUrl(url.toString()) &&
-                  _permissionsRequested &&
-                  !_hasReloadedAfterPermissions) {
-                Future.delayed(const Duration(milliseconds: 300), () {
-                  if (mounted && _currentUrl == url.toString() && !_hasReloadedAfterPermissions) {
-                    _hasReloadedAfterPermissions = true;
-                    debugPrint('[WebView] Reloading IPV page after permission grant');
-                    controller.reload();
-                  }
-                });
-              }
+                          if (isMeonRedirect &&
+                              isWorkflowPath &&
+                              (hasSuccess || hasState)) {
+                            debugPrint(
+                                '[WebView] IPV success redirect detected - closing WebView immediately');
+                            await _handleRedirectComplete(
+                              state: uri.queryParameters['state'] ?? _preservedState,
+                              clientToken: uri.queryParameters['client_token'] ??
+                                  _preservedClientToken,
+                              auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                              verifyCompleted: hasSuccess,
+                            );
+                            return;
+                          }
+                        }
 
-              await _onPageFinished(url.toString());
-              await _injectNoAutoScrollJs(controller);
+                        // Request permissions on load (iOS or if Android permissions weren't requested before)
+                        if (_isIpvOrFaceFinderUrl(url.toString()) &&
+                            !_permissionsRequested &&
+                            !_permissionRequestScheduled) {
+                          if (Platform.isAndroid) {
+                            WidgetsBinding.instance
+                                .addPostFrameCallback((_) {
+                              _requestPermissionsBeforeLoad();
+                            });
+                          } else {
+                            WidgetsBinding.instance
+                                .addPostFrameCallback((_) {
+                              _requestPermissionsAndReload();
+                            });
+                          }
+                        }
+                      }
+                    },
+                    onLoadError: (controller, url, code, message) {
+                      debugPrint(
+                          '[WebView] Load error ($code): $message, url=$url');
+                      if (code == -10 &&
+                          message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
+                        return;
+                      }
+                    },
+                    onLoadStop: (controller, url) async {
+                      if (url != null) {
+                        setState(() {
+                          _isLoading = false;
+                          _currentUrl = url.toString();
+                        });
+                        debugPrint('[WebView] Page finished: $url');
 
-              // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
-              if (_isReversePennyDropUrl(url.toString()) && !_redirectHandled && !_rpdSuccessHandled) {
-                final uri = Uri.tryParse(url.toString());
-                if (uri != null && uri.queryParameters.isNotEmpty) {
-                  final completionParamKeys = [
-                    'success',
-                    'transaction_id',
-                    'reversepennydrop',
-                    'esign',
-                  ];
-                  final hasCompletionParams = uri.queryParameters.keys.any((key) => 
-                      completionParamKeys.contains(key.toLowerCase()));
-                  if (hasCompletionParams) {
-                    debugPrint('[WebView] RPD completion params detected in URL onLoadStop - closing WebView');
-                    _rpdSuccessHandled = true;
-                    _completionParams.addAll(uri.queryParameters);
-                    if (!_completionParams.containsKey('success')) {
-                      _completionParams['success'] = 'yes';
-                    }
-                    await _handleRedirectComplete(
-                      state: uri.queryParameters['state'] ?? _preservedState,
-                      clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
-                      auto: uri.queryParameters['auto'] ?? _preservedAuto,
-                      verifyCompleted: false,
-                    );
-                  }
-                }
-              }
-            }
-          },
-              onPermissionRequest: (controller, request) async {
-            debugPrint('[WebView] Permission requested (camera/mic): ${request.resources}');
-                return PermissionResponse(
-                  resources: request.resources,
-                  action: PermissionResponseAction.GRANT,
-                );
-              },
-              // Handle geolocation permission requests (required for IPV on Android)
-              onGeolocationPermissionsShowPrompt: (controller, origin) async {
-                debugPrint('[WebView] Geolocation permission requested for: $origin');
-                // Check if location permission is already granted
-                final locationStatus = await Permission.location.status;
-                if (locationStatus.isGranted || locationStatus.isLimited) {
-                  debugPrint('[WebView] Location permission already granted - allowing geolocation');
-                  return GeolocationPermissionShowPromptResponse(
-                    origin: origin,
-                    allow: true,
-                    retain: true,
-                  );
-                } else {
-                  debugPrint('[WebView] Location permission not granted - requesting...');
-                  final result = await Permission.location.request();
-                  if (result.isGranted || result.isLimited) {
-                    debugPrint('[WebView] Location permission granted - allowing geolocation');
-                    return GeolocationPermissionShowPromptResponse(
-                      origin: origin,
-                      allow: true,
-                      retain: true,
-                    );
-                  } else {
-                    debugPrint('[WebView] Location permission denied - denying geolocation');
-                    return GeolocationPermissionShowPromptResponse(
-                      origin: origin,
-                      allow: false,
-                      retain: false,
-                    );
-                  }
-                }
-              },
-            ),
+                        // For eSign pages, nudge initial scroll slightly so
+                        // important inputs are not hidden under the keyboard.
+                        try {
+                          final uri = Uri.tryParse(url.toString());
+                          if (uri != null) {
+                            final host = uri.host.toLowerCase();
+                            final isCloudesign = host.contains('cloudesign');
+                            final isNsdlEsign = host.contains('esign.egov.proteantech.in') ||
+                                host.startsWith('esign.');
+                            if (!_esignScrollAdjusted &&
+                                (isCloudesign || isNsdlEsign)) {
+                              _esignScrollAdjusted = true;
+                              await controller.scrollTo(x: 0, y: 260);
+                              await controller.evaluateJavascript(
+                                source: 'try { window.scrollTo(0, 260); } catch(e) {}',
+                              );
+                            }
+                          }
+                        } catch (e) {
+                          debugPrint(
+                              '[WebView] Error adjusting scroll for eSign: $e');
+                        }
+
+                        if (_isIpvOrFaceFinderUrl(url.toString()) &&
+                            _permissionsRequested &&
+                            !_hasReloadedAfterPermissions) {
+                          Future.delayed(const Duration(milliseconds: 300),
+                              () {
+                            if (mounted &&
+                                _currentUrl == url.toString() &&
+                                !_hasReloadedAfterPermissions) {
+                              _hasReloadedAfterPermissions = true;
+                              debugPrint(
+                                  '[WebView] Reloading IPV page after permission grant');
+                              controller.reload();
+                            }
+                          });
+                        }
+
+                        await _onPageFinished(url.toString());
+                        await _injectNoAutoScrollJs(controller);
+
+                        // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
+                        if (_isReversePennyDropUrl(url.toString()) &&
+                            !_redirectHandled &&
+                            !_rpdSuccessHandled) {
+                          final uri = Uri.tryParse(url.toString());
+                          if (uri != null && uri.queryParameters.isNotEmpty) {
+                            final completionParamKeys = [
+                              'success',
+                              'transaction_id',
+                              'reversepennydrop',
+                              'esign',
+                            ];
+                            final hasCompletionParams = uri
+                                .queryParameters.keys
+                                .any((key) =>
+                                    completionParamKeys
+                                        .contains(key.toLowerCase()));
+                            if (hasCompletionParams) {
+                              debugPrint(
+                                  '[WebView] RPD completion params detected in URL onLoadStop - closing WebView');
+                              _rpdSuccessHandled = true;
+                              _completionParams.addAll(uri.queryParameters);
+                              if (!_completionParams.containsKey('success')) {
+                                _completionParams['success'] = 'yes';
+                              }
+                              await _handleRedirectComplete(
+                                state: uri.queryParameters['state'] ?? _preservedState,
+                                clientToken: uri.queryParameters['client_token'] ??
+                                    _preservedClientToken,
+                                auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                                verifyCompleted: false,
+                              );
+                            }
+                          }
+                        }
+                      }
+                    },
+                    onPermissionRequest: (controller, request) async {
+                      debugPrint(
+                          '[WebView] Permission requested (camera/mic): ${request.resources}');
+                      return PermissionResponse(
+                        resources: request.resources,
+                        action: PermissionResponseAction.GRANT,
+                      );
+                    },
+                    onGeolocationPermissionsShowPrompt:
+                        (controller, origin) async {
+                      debugPrint(
+                          '[WebView] Geolocation permission requested for: $origin');
+                      if (_permissionsRequested ||
+                          _permissionRequestScheduled ||
+                          _permissionHandlerInFlight) {
+                        return GeolocationPermissionShowPromptResponse(
+                          origin: origin,
+                          allow: true,
+                          retain: true,
+                        );
+                      }
+
+                      final locationStatus = await Permission.location.status;
+                      if (locationStatus.isGranted ||
+                          locationStatus.isLimited) {
+                        debugPrint(
+                            '[WebView] Location permission already granted - allowing geolocation');
+                        return GeolocationPermissionShowPromptResponse(
+                          origin: origin,
+                          allow: true,
+                          retain: true,
+                        );
+                      }
+
+                      debugPrint(
+                          '[WebView] Location permission not granted - requesting...');
+                      if (_permissionHandlerInFlight) {
+                        return GeolocationPermissionShowPromptResponse(
+                          origin: origin,
+                          allow: true,
+                          retain: true,
+                        );
+                      }
+
+                      _permissionHandlerInFlight = true;
+                      try {
+                        final result = await Permission.location.request();
+                        final granted = result.isGranted || result.isLimited;
+                        debugPrint(
+                          granted
+                              ? '[WebView] Location permission granted - allowing geolocation'
+                              : '[WebView] Location permission denied - denying geolocation',
+                        );
+                        return GeolocationPermissionShowPromptResponse(
+                          origin: origin,
+                          allow: granted,
+                          retain: granted,
+                        );
+                      } catch (e) {
+                        debugPrint(
+                            '[WebView] Location permission request failed: $e');
+                        return GeolocationPermissionShowPromptResponse(
+                          origin: origin,
+                          allow: false,
+                          retain: false,
+                        );
+                      } finally {
+                        _permissionHandlerInFlight = false;
+                      }
+                    },
+                  ),
 
             // Popup overlay WebView for reverse_pennydrop (Digio window.open)
             if (_popupWindowId != null)
@@ -1102,6 +1262,42 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               return NavigationActionPolicy.CANCEL;
                             }
                           }
+
+                          // Digio can navigate/complete by updating query params within the popup.
+                          // Capture those completion params and immediately trigger the same backend
+                          // completion flow as we do on the main WebView.
+                          _captureCompletionParamsIfApplicable(url);
+                          final popupUri = Uri.tryParse(url);
+                          if (popupUri != null &&
+                              popupUri.queryParameters.isNotEmpty &&
+                              !_redirectHandled &&
+                              !_rpdSuccessHandled) {
+                            const completionParamKeys = [
+                              'success',
+                              'transaction_id',
+                              'reversepennydrop',
+                              'reverse_pennydrop',
+                              'esign',
+                            ];
+                            final hasCompletionParams = popupUri
+                                .queryParameters.keys
+                                .any((key) => completionParamKeys.contains(key.toLowerCase()));
+                            if (hasCompletionParams) {
+                              if (popupUri.queryParameters.containsKey('reversepennydrop') ||
+                                  popupUri.queryParameters.containsKey('reverse_pennydrop')) {
+                                _rpdSuccessHandled = true;
+                              }
+
+                              await _handleRedirectComplete(
+                                state: popupUri.queryParameters['state'] ?? _preservedState,
+                                clientToken: popupUri.queryParameters['client_token'] ?? _preservedClientToken,
+                                auto: popupUri.queryParameters['auto'] ?? _preservedAuto,
+                                verifyCompleted: false,
+                              );
+                              return NavigationActionPolicy.CANCEL;
+                            }
+                          }
+
                           return NavigationActionPolicy.ALLOW;
                         },
                         onLoadError: (controller, url, code, message) {
