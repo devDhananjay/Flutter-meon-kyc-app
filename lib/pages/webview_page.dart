@@ -154,6 +154,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Flows that need JS window.open popups (Digio bank selection etc.)
   bool get _supportsPopupWindows => _isReversePennyDropFlow || _isDigioEsignFlow;
 
+  /// IPV/FaceFinder flow camera/WebRTC ke liye popup/multiple windows off rakhna safe rahega.
+  bool get _enablePopupWindows => _supportsPopupWindows && !_isIpvOrFaceFinderUrl(widget.url);
+
   void _startReversePennyPolling() {
     if (_reversePennyPollTimer != null) return;
     // Poll every 5 seconds to let the page re-evaluate payment status and redirect when ready
@@ -187,12 +190,22 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       Permission.location,
     ];
 
-    final results = await Future.wait(
-      permissions.map((p) => p.request()),
-    );
+    // Important: don't fire multiple permission requests in parallel.
+    // permission_handler will throw if a request is already running.
+    Map<Permission, PermissionStatus> results;
+    try {
+      results = await permissions.request();
+    } catch (e) {
+      debugPrint('[WebView] Permission request failed: $e');
+      _permissionsRequested = false;
+      return;
+    }
 
-    bool allGranted = results.every((status) =>
-        status == PermissionStatus.granted || status == PermissionStatus.limited);
+    bool allGranted = permissions.every((p) {
+      final status = results[p];
+      return status == PermissionStatus.granted ||
+          status == PermissionStatus.limited;
+    });
 
     if (allGranted) {
       debugPrint('[WebView] All permissions granted before load - WebView will load with camera access');
@@ -228,12 +241,22 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       Permission.location,
     ];
 
-    final results = await Future.wait(
-      permissions.map((p) => p.request()),
-    );
+    // Important: don't fire multiple permission requests in parallel.
+    // permission_handler will throw if a request is already running.
+    Map<Permission, PermissionStatus> results;
+    try {
+      results = await permissions.request();
+    } catch (e) {
+      debugPrint('[WebView] Permission request failed: $e');
+      _permissionsRequested = false;
+      return;
+    }
 
-    bool allGranted = results.every((status) =>
-        status == PermissionStatus.granted || status == PermissionStatus.limited);
+    bool allGranted = permissions.every((p) {
+      final status = results[p];
+      return status == PermissionStatus.granted ||
+          status == PermissionStatus.limited;
+    });
 
     if (allGranted) {
       debugPrint('[WebView] All permissions granted, reloading WebView');
@@ -732,8 +755,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               initialSettings: InAppWebViewSettings(
                 javaScriptEnabled: true,
                 // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
-                javaScriptCanOpenWindowsAutomatically: _supportsPopupWindows,
-                supportMultipleWindows: _supportsPopupWindows,
+                javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
+                supportMultipleWindows: _enablePopupWindows,
                 mediaPlaybackRequiresUserGesture: false,
                 allowsInlineMediaPlayback: true,
                 useHybridComposition: true,
@@ -756,7 +779,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 final popupUrl = popupUri?.toString() ?? '';
                 debugPrint('[WebView] onCreateWindow: $popupUrl');
 
-                if (!_supportsPopupWindows) {
+                if (!_enablePopupWindows) {
                   return false;
                 }
 
