@@ -64,6 +64,97 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // Track if we already handled RPD success (to avoid double-close)
   bool _rpdSuccessHandled = false;
 
+  // Reverse Penny Drop: only reload after we see signing-complete text,
+  // to avoid refresh loops while user is entering UPI details.
+  bool _rpdSigningCompletedReloadTriggered = false;
+
+  // Reset the sessionStorage flag only once per WebViewPage instance,
+  // so a reload caused by the console message doesn't re-clear the guard.
+  bool _rpdSigningSessionFlagReset = false;
+
+  Future<void> _maybeReloadAfterRpdSigningCompleted({
+    required InAppWebViewController controller,
+    required String urlForCheck,
+  }) async {
+    if (_redirectHandled || _rpdSuccessHandled) return;
+    if (_rpdSigningCompletedReloadTriggered) return;
+
+    // Only check text on the reverse_pennydrop page.
+    if (!_isReversePennyDropUrl(urlForCheck) && !_isReversePennyDropFlow) {
+      return;
+    }
+
+    try {
+      final result = await controller.evaluateJavascript(
+        source:
+            'try { var t = (document.body && document.body.innerText) ? document.body.innerText : ""; return t.indexOf("Signing completed successfully.") !== -1; } catch(e) { return false; }',
+      );
+
+      final isSignedComplete = (result is bool)
+          ? result
+          : result?.toString().toLowerCase() == 'true';
+
+      if (!isSignedComplete) return;
+
+      _rpdSigningCompletedReloadTriggered = true;
+      debugPrint('[WebView] Detected RPD signing completed text - reloading to proceed');
+
+      // Reload main webview so the URL/params can update and we can close+advance.
+      await _webViewController?.reload();
+    } catch (e) {
+      debugPrint('[WebView] Error checking RPD signing-complete text: $e');
+    }
+  }
+
+  /// Reverse Penny Drop: status-based reload when Digio prints
+  /// "Signing completed successfully." to JS console.
+  ///
+  /// This avoids reloading while user is typing UPI details, because we only
+  /// reload after the exact signing completion console message appears.
+  Future<void> _injectRpdConsoleSigningReload(InAppWebViewController controller) async {
+    const script = r'''
+      (function() {
+        try {
+          if (window.__meonRpdConsoleHookInstalled) return;
+          window.__meonRpdConsoleHookInstalled = true;
+
+          function hook(methodName) {
+            var original = console[methodName];
+            if (!original) return;
+            console[methodName] = function() {
+              try {
+                var msg = '';
+                for (var i = 0; i < arguments.length; i++) {
+                  msg += String(arguments[i]) + ' ';
+                }
+                if (msg.indexOf('Signing completed successfully.') !== -1) {
+                  if (sessionStorage.getItem('meon_rpd_signing_reloaded') !== '1') {
+                    sessionStorage.setItem('meon_rpd_signing_reloaded', '1');
+                    setTimeout(function() {
+                      try { location.reload(); } catch(e) {}
+                    }, 800);
+                  }
+                }
+              } catch (e) {}
+              try { original.apply(console, arguments); } catch (e) {}
+            };
+          }
+
+          hook('log');
+          hook('info');
+          hook('warn');
+          hook('error');
+        } catch (e) {}
+      })();
+    ''';
+
+    try {
+      await controller.evaluateJavascript(source: script);
+    } catch (e) {
+      debugPrint('[WebView] Error injecting RPD console signing reload JS: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -118,8 +209,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       if (_isReversePennyDropFlow && _upiAppLaunched) {
         _upiAppLaunched = false;
-        _reloadWebView();
-        _startReversePennyPolling();
+        // Auto-reload/polling disabled temporarily to avoid hard refresh loops
+        // while user is still interacting with the RPD flow.
+        // Completion handling is handled via query-param capture.
       } else if (_paymentAppLaunched) {
         // For iOS: auto-reload when returning from any payment app
         _paymentAppLaunched = false;
@@ -868,20 +960,6 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _popupWindowId = createWindowAction.windowId;
                         });
 
-                        // Digio completion sometimes doesn't trigger a clear main-webview redirect.
-                        // Start a capped, silent polling loop after a short delay once the popup opens,
-                        // so the reverse_pennydrop page can refresh and move forward automatically.
-                        if (Platform.isAndroid) {
-                          Future.delayed(const Duration(seconds: 25), () {
-                            if (!mounted) return;
-                            if (_redirectHandled || _rpdSuccessHandled) return;
-                            if (_isReversePennyDropUrl(_currentUrl) ||
-                                _isReversePennyDropFlow) {
-                              _startReversePennyPolling();
-                            }
-                          });
-                        }
-
                         return true; // popup handled by overlay InAppWebView with windowId
                       }
 
@@ -973,7 +1051,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         });
                         // For flows that rely on Digio-style popups (Reverse Penny Drop, Digio eSign),
                         // after the popup closes, reload main page so it can fetch updated success state / params.
-                        if ((_isReversePennyDropFlow || _isDigioEsignFlow) &&
+                        if (_isDigioEsignFlow &&
                             _webViewController != null &&
                             !_redirectHandled &&
                             !_rpdSuccessHandled) {
@@ -1105,6 +1183,18 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
                         await _onPageFinished(url.toString());
                         await _injectNoAutoScrollJs(controller);
+                        if (_isReversePennyDropUrl(url.toString())) {
+                          if (!_rpdSigningSessionFlagReset) {
+                            try {
+                              await controller.evaluateJavascript(
+                                source:
+                                    'try { sessionStorage.removeItem("meon_rpd_signing_reloaded"); } catch(e) {}',
+                              );
+                            } catch (_) {}
+                            _rpdSigningSessionFlagReset = true;
+                          }
+                          await _injectRpdConsoleSigningReload(controller);
+                        }
 
                         // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
                         if (_isReversePennyDropUrl(url.toString()) &&
@@ -1311,6 +1401,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         onLoadStop: (controller, url) async {
                           if (url != null) {
                             await _injectNoAutoScrollJs(controller);
+
+                            if (_isReversePennyDropUrl(url.toString())) {
+                              if (!_rpdSigningSessionFlagReset) {
+                                try {
+                                  await controller.evaluateJavascript(
+                                    source:
+                                        'try { sessionStorage.removeItem("meon_rpd_signing_reloaded"); } catch(e) {}',
+                                  );
+                                } catch (_) {}
+                                _rpdSigningSessionFlagReset = true;
+                              }
+                              await _injectRpdConsoleSigningReload(controller);
+                            }
                           }
                         },
                       ),
