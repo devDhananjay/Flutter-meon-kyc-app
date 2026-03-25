@@ -7,7 +7,7 @@ import 'package:meon_kyc/components/otp_input.dart';
 /// OTP expiry comes from API: fields[].otpExpiry
 class OtpVerifySection extends StatefulWidget {
   /// Minimum OTP digits required to enable Verify (email & phone both)
-  static const int minOtpLength = 4;
+  static const int minOtpLength = 6;
 
   /// e.g. "We have sent you an OTP via sms on +91 9291929192" or "We have sent you an OTP on abc@gmail.com"
   final String sentToText;
@@ -17,7 +17,7 @@ class OtpVerifySection extends StatefulWidget {
   /// OTP expiry config from API: {expiryTime, isExpiryEnabled, time}
   final Map<String, dynamic>? otpExpiry;
   final bool verifyLoading;
-  /// OTP length (default: 6) — max digits; Verify enabled when digits >= minOtpLength (4)
+  /// OTP length (default: 6) — max digits; Verify enabled when digits >= minOtpLength (6)
   final int otpLength;
   /// When true, show 6 separate OTP boxes (email_otp); when false, single field (mobile_otp)
   final bool useSixBoxes;

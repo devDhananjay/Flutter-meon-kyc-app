@@ -264,11 +264,10 @@ class _HomePageState extends State<HomePage> {
             // Backend provides a direct return URL (often with EMPTY query params).
             // In that scenario, we must open WebView automatically; otherwise user gets stuck on the non-IPV screen.
             if (isIpvOrFace && queryString.isEmpty && mounted) {
-              final friendlyTitle = _deriveWebViewTitle(msg, redirectUrl);
+              final ensuredRedirectUrl = _forceHttpsForRpd(redirectUrl);
+              final friendlyTitle = _deriveWebViewTitle(msg, ensuredRedirectUrl);
               debugPrint('[HomePage] Auto-opening WebView for IPV/Face after verify reload: $redirectUrl');
-              final encodedUrl = Uri.encodeComponent(redirectUrl);
-              final title = Uri.encodeComponent(friendlyTitle);
-              context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+              await _openWebViewWithTransitionLoader(ensuredRedirectUrl, friendlyTitle);
               return;
             }
 
@@ -305,11 +304,10 @@ class _HomePageState extends State<HomePage> {
                 refreshedFinalUrl = '${EnvConfig.baseUrl}$relativeUrl';
               }
 
+              refreshedFinalUrl = _forceHttpsForRpd(refreshedFinalUrl);
               final friendlyTitle = _deriveWebViewTitle(refreshedMsg, refreshedFinalUrl);
               debugPrint('[HomePage] Opening WebView after verify reload (refreshed redirect): $refreshedFinalUrl');
-              final encodedUrl = Uri.encodeComponent(refreshedFinalUrl);
-              final title = Uri.encodeComponent(friendlyTitle);
-              context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+              await _openWebViewWithTransitionLoader(refreshedFinalUrl, friendlyTitle);
               return;
             }
 
@@ -340,13 +338,61 @@ class _HomePageState extends State<HomePage> {
           finalUrl = '${EnvConfig.baseUrl}$relativeUrl';
         }
         
+        finalUrl = _forceHttpsForRpd(finalUrl);
         final friendlyTitle = _deriveWebViewTitle(msg, finalUrl);
         debugPrint('[HomePage] Opening WebView for redirect (msg: $msg, title: $friendlyTitle): $finalUrl');
-        final encodedUrl = Uri.encodeComponent(finalUrl);
-        final title = Uri.encodeComponent(friendlyTitle);
-        context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+        await _openWebViewWithTransitionLoader(finalUrl, friendlyTitle);
       }
     }
+  }
+
+  /// RPD/reverse_pennydrop sometimes returns `http://...` URLs.
+  /// Force `https://...` before opening the WebView.
+  String _forceHttpsForRpd(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      final lower = url.toLowerCase();
+      final isRpd = lower.contains('reverse_pennydrop') || lower.contains('reversepennydrop');
+      if (isRpd && lower.startsWith('http://')) {
+        return 'https://${url.substring('http://'.length)}';
+      }
+      return url;
+    }
+
+    final pathLower = uri.path.toLowerCase();
+    final queryLower = uri.query.toLowerCase();
+    final isRpd = pathLower.contains('reverse_pennydrop') ||
+        pathLower.contains('reversepennydrop') ||
+        queryLower.contains('reverse_pennydrop') ||
+        queryLower.contains('reversepennydrop');
+
+    if (isRpd && uri.scheme.toLowerCase() == 'http') {
+      return uri.replace(scheme: 'https').toString();
+    }
+
+    return url;
+  }
+
+  /// Prevents "previous step/login screen" flash between redirect API completion
+  /// and the actual WebView route rendering.
+  Future<void> _openWebViewWithTransitionLoader(String finalUrl, String friendlyTitle) async {
+    if (!mounted) return;
+
+    // Turn on loader immediately before route navigation.
+    setState(() => _submitLoading = true);
+    // Ensure loader is actually painted before navigating.
+    await WidgetsBinding.instance.endOfFrame;
+
+    final encodedUrl = Uri.encodeComponent(finalUrl);
+    final title = Uri.encodeComponent(friendlyTitle);
+    context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
+
+    // In case this HomePage widget remains mounted underneath the new route,
+    // stop the loader shortly after. (Avoids any "stuck loader" on back navigation.)
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _submitLoading = false);
+    });
   }
 
   /// Derives a user-friendly WebView title based on redirect message and URL.
@@ -1238,6 +1284,24 @@ class _HomePageState extends State<HomePage> {
               );
 
               // Handle loading states - full screen when no stepper, else loader below stepper
+              // Full-screen loader during submit so users don't see the old/login screen
+              // while API response is pending (especially during redirect flows like RPD).
+              if (_submitLoading) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: showStepper
+                        ? Column(
+                            children: [
+                              stepperWidget,
+                              const Expanded(child: Loader(message: 'Loading...')),
+                            ],
+                          )
+                        : SizedBox.expand(child: const Loader(message: 'Loading...')),
+                  ),
+                );
+              }
+
               if (store.loading) {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
