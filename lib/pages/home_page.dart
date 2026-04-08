@@ -1962,6 +1962,35 @@ class _HomePageState extends State<HomePage> {
 
     final isSegmentsScreen = position == 'segments';
 
+    // BP Wealth requirement: on Segments step, preselect all segment checkboxes
+    // by default. We only set keys that are currently unset so user edits are
+    // preserved on rebuilds.
+    if (isSegmentsScreen && widget.company.toLowerCase() == 'bpwealth') {
+      const segmentKeys = <String>[
+        'nse_cash',
+        'nse_fo',
+        'nse_currency',
+        'nse_slbm',
+        'bse_cash',
+        'bse_fo',
+        'bse_currency',
+        'bse_slbm',
+        'mf',
+        'mtf',
+      ];
+      var didApplyDefaults = false;
+      for (final key in segmentKeys) {
+        if (_formNotifier.formData[key] == null) {
+          _formNotifier.formData[key] = true;
+          didApplyDefaults = true;
+        }
+      }
+      if (didApplyDefaults) {
+        debugPrint(
+            '[HomePage] Applied default segment selections for bpwealth');
+      }
+    }
+
     
     // Show segments selection UI for segments screen
     if (isSegmentsScreen) {
