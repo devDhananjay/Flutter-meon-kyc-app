@@ -38,19 +38,26 @@ class MeonKycApp extends StatelessWidget {
           ),
           GoRoute(
             path: '/:company/:workflowName/webview',
-            builder: (context, state) {
+            pageBuilder: (context, state) {
               final company = state.pathParameters['company'] ?? '';
               final workflow = state.pathParameters['workflowName'] ?? '';
               final url = state.uri.queryParameters['url'] ?? '';
               final title = state.uri.queryParameters['title'] ?? 'External Verification';
               if (company.isEmpty || workflow.isEmpty || url.isEmpty) {
-                return const PageNotFound();
+                return const NoTransitionPage(child: PageNotFound());
               }
-              return WebViewPage(
-                url: url,
-                title: title,
-                company: company,
-                workflowName: workflow,
+              return CustomTransitionPage(
+                key: state.pageKey,
+                child: WebViewPage(
+                  url: url,
+                  title: title,
+                  company: company,
+                  workflowName: workflow,
+                ),
+                transitionDuration: const Duration(milliseconds: 200),
+                reverseTransitionDuration: const Duration(milliseconds: 150),
+                transitionsBuilder: (context, animation, _, child) =>
+                    FadeTransition(opacity: animation, child: child),
               );
             },
           ),

@@ -54,9 +54,24 @@ class AppStore extends ChangeNotifier {
   dynamic _fieldsWithAuth;
   bool _loadingWithAuth = false;
   String? _errorWithAuth;
+  // Set true in WebViewPage before context.go() back to HomePage so the
+  // build method can show a full-screen loader through the entire return flow
+  // (covers first-frame flash AND the gap between sequential API calls).
+  bool _isReturningFromWebView = false;
   dynamic get fieldsWithAuth => _fieldsWithAuth;
   bool get loadingWithAuth => _loadingWithAuth;
   String? get errorWithAuth => _errorWithAuth;
+  bool get isReturningFromWebView => _isReturningFromWebView;
+
+  void setReturningFromWebView(bool value) {
+    _isReturningFromWebView = value;
+    notifyListeners();
+  }
+
+  void clearAuthError() {
+    _errorWithAuth = null;
+    notifyListeners();
+  }
 
   Future<void> fetchWorkflowFieldsWithAuth(
     String urlCompany,
@@ -350,6 +365,7 @@ class AppStore extends ChangeNotifier {
     _errorWithAuth = null;
     _errorUserDetails = null;
     _errorStepperWorkflow = null;
+    _isReturningFromWebView = false;
     notifyListeners();
     debugPrint('[AppStore] State reset');
   }

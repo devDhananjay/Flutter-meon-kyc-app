@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -44,7 +45,19 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late ConditionalFormNotifier _formNotifier;
   bool _submitLoading = false;
+  bool _webViewTransitionActive = false;
   bool _logoutLoading = false;
+  // Non-null when an API call fails while we're returning from WebView.
+  // Triggers the retry UI instead of the old step's form UI.
+  String? _webViewReturnError;
+  // True while _loadWorkflow() is actively running — prevents concurrent calls.
+  bool _loadWorkflowActive = false;
+  // Message shown in the partial loader during WebView return flow.
+  String _returnFlowMessage = 'Loading your next step...';
+  // One-shot timers: 5 s → slow-network message, 12 s → show retry UI.
+  Timer? _returnFlowWatchdogTimer;
+  // 5 s periodic: auto-retries _loadWorkflow() if stuck with no active call.
+  Timer? _returnFlowPollingTimer;
   bool _refreshLoading = false;
   bool _backLoading = false;
   String _submitError = '';
@@ -60,151 +73,272 @@ class _HomePageState extends State<HomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadWorkflow());
   }
 
+  @override
+  void dispose() {
+    _returnFlowWatchdogTimer?.cancel();
+    _returnFlowPollingTimer?.cancel();
+    super.dispose();
+  }
+
+  // ---------- Return-flow timer helpers ----------
+
+  /// Starts a two-stage watchdog (5 s → slow-network msg, 12 s → retry UI)
+  /// and a background 5-second polling timer that auto-retries when not active.
+  void _startReturnFlowTimers() {
+    _returnFlowWatchdogTimer?.cancel();
+    _returnFlowPollingTimer?.cancel();
+
+    // Stage 1 – 5 seconds: update loading message
+    _returnFlowWatchdogTimer = Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      setState(() => _returnFlowMessage =
+          'This is taking longer than usual, please wait...');
+      debugPrint('[HomePage] Return-flow: slow-network message shown');
+
+      // Stage 2 – 7 more seconds (12 s total): show retry UI
+      _returnFlowWatchdogTimer = Timer(const Duration(seconds: 7), () {
+        if (!mounted) return;
+        final store = context.read<AppStore>();
+        if (store.isReturningFromWebView && _webViewReturnError == null) {
+          debugPrint('[HomePage] Return-flow watchdog fired — showing retry UI');
+          setState(() {
+            _webViewReturnError =
+                'Connection is taking too long. Please check your network and try again.';
+            _returnFlowMessage = 'Loading your next step...';
+          });
+        }
+      });
+    });
+
+    // Background poll every 5 seconds: auto-retry if no active call and still stuck
+    _returnFlowPollingTimer =
+        Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final store = context.read<AppStore>();
+      if (!store.isReturningFromWebView) {
+        timer.cancel();
+        _returnFlowPollingTimer = null;
+        return;
+      }
+      if (!_loadWorkflowActive) {
+        debugPrint(
+            '[HomePage] Return-flow polling: auto-retrying (no active call, still returning)');
+        store.clearAuthError();
+        if (_webViewReturnError != null) {
+          setState(() {
+            _webViewReturnError = null;
+            _returnFlowMessage = 'Loading your next step...';
+          });
+        }
+        _loadWorkflow();
+      }
+    });
+  }
+
+  void _stopReturnFlowTimers() {
+    _returnFlowWatchdogTimer?.cancel();
+    _returnFlowWatchdogTimer = null;
+    _returnFlowPollingTimer?.cancel();
+    _returnFlowPollingTimer = null;
+  }
+
+  // ------------------------------------------------
+
   Future<void> _loadWorkflow() async {
+    // Prevent concurrent calls — a second call while one is in flight is a no-op.
+    if (_loadWorkflowActive) {
+      debugPrint('[HomePage] _loadWorkflow already running, skipping duplicate call');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _loadWorkflowActive = true);
+
     debugPrint('[HomePage] _loadWorkflow START: ${widget.company} / ${widget.workflowName}');
     debugPrint('[HomePage] _loadWorkflow queryParams: ${widget.queryParams}');
     final store = context.read<AppStore>();
-    store.setParams(company: widget.company, workflowName: widget.workflowName);
-    final hasToken = await StorageService.hasAccessToken();
-    debugPrint('[HomePage] _loadWorkflow hasToken=$hasToken');
-    if (hasToken) {
-      // Build query string from redirect params (state, client_token, auto)
-      final queryString = widget.queryParams.isEmpty
-          ? ''
-          : '?${widget.queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
-      
-      await store.fetchWorkflowFieldsWithAuth(
-        widget.company,
-        widget.workflowName,
-        queryString,
-      );
-      
-      // Extract workflowId from design_template (format: "company-workflowId-number")
-      // Example: "mandotsecurities-2321998632-76" -> workflowId = "2321998632"
-      String? workflowId;
-      final response = store.fieldsWithAuth;
-      if (response is Map) {
-        final context = response['context'] as Map<String, dynamic>?;
-        final designTemplate = context?['design_template']?.toString();
-        if (designTemplate != null && designTemplate.contains('-')) {
-          final parts = designTemplate.split('-');
-          if (parts.length >= 2) {
-            workflowId = parts[1]; // Second part is workflowId
-            debugPrint('[HomePage] Extracted workflowId from design_template: $workflowId');
-          }
-        }
-        
-        // Also try extracting from user details if available
-        if (workflowId == null || workflowId.isEmpty) {
-          // Will be fetched later if needed
-        }
-      }
-      
-      // Fetch stepper workflow if we have workflowId
-      if (workflowId != null && workflowId.isNotEmpty) {
-        debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
-        // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
-        await store.fetchStepperWorkflow(widget.workflowName, workflowId);
-      }
-      
-      // Check if KYC is completed (is_admin: true)
-      if (response is Map && response['is_admin'] == true) {
-        debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
-        await store.fetchUserDetails();
-        if (mounted && store.userDetails != null) {
-          // Stepper workflow already fetched above (if workflowId was available)
-          // Navigate to KYC Completed page
-          context.go('/${widget.company}/${widget.workflowName}/completed');
-          return;
-        } else if (mounted && store.errorUserDetails != null) {
-          debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
-          Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
-        }
-      }
-      
-      // Check for redirect after get-context
-      // Skip redirect if step completion params present (IPV, RPD, eSign, DigiLocker, etc.)
-      // Prevents infinite loop when backend returns redirect despite completed step
-      final hasCompletionParams = widget.queryParams['success'] == 'yes' ||
-          widget.queryParams['verifyCompleted'] == 'true' ||
-          widget.queryParams['esign'] == 'yes' ||
-          widget.queryParams.containsKey('transaction_id') ||
-          widget.queryParams.containsKey('reversepennydrop') ||
-          widget.queryParams.containsKey('reverse_pennydrop') ||
-          widget.queryParams.containsKey('account_aggregator');
-      if (mounted && !hasCompletionParams) {
-        await _checkAndHandleRedirect(store);
-      } else if (hasCompletionParams) {
-        debugPrint('[HomePage] Step completed (success/transaction_id/esign) - refreshing context to get updated state');
+    // Tracks whether we navigated away inside this call so the finally block
+    // knows not to prematurely clear isReturningFromWebView.
+    bool navigatingAway = false;
 
-        // Refresh context without completion params to get updated state and check for redirects
-        // This ensures user moves to next step after IPV/RPD/eSign completion
+    // Start watchdog + polling timers only when in the WebView return flow.
+    if (store.isReturningFromWebView) _startReturnFlowTimers();
+
+    try {
+      store.setParams(company: widget.company, workflowName: widget.workflowName);
+      final hasToken = await StorageService.hasAccessToken();
+      debugPrint('[HomePage] _loadWorkflow hasToken=$hasToken');
+      if (hasToken) {
+        // Build query string from redirect params (state, client_token, auto)
+        final queryString = widget.queryParams.isEmpty
+            ? ''
+            : '?${widget.queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
+        
         await store.fetchWorkflowFieldsWithAuth(
           widget.company,
           widget.workflowName,
-          '', // Call without completion params to get fresh state
+          queryString,
         );
-
-        // Some flows can trigger multiple get-context calls back-to-back (WebView close + route rebuild).
-        // Avoid blocking progress just because `errorWithAuth` was set by an earlier call while the latest
-        // `fieldsWithAuth` succeeded.
-        var refreshed = store.fieldsWithAuth;
-        if (mounted && refreshed is! Map) {
-          final err = (store.errorWithAuth ?? '').toString();
-          final shouldRetryMultipleTabs = err.toLowerCase().contains('multiple tabs');
-
-          if (shouldRetryMultipleTabs) {
-            debugPrint('[HomePage] get-context failed due to multiple tabs - retrying once...');
-            await Future.delayed(const Duration(milliseconds: 800));
-            await store.fetchWorkflowFieldsWithAuth(
-              widget.company,
-              widget.workflowName,
-              '', // Retry without completion params
-            );
-            refreshed = store.fieldsWithAuth;
+        
+        // Extract workflowId from design_template (format: "company-workflowId-number")
+        // Example: "mandotsecurities-2321998632-76" -> workflowId = "2321998632"
+        String? workflowId;
+        final response = store.fieldsWithAuth;
+        if (response is Map) {
+          final context = response['context'] as Map<String, dynamic>?;
+          final designTemplate = context?['design_template']?.toString();
+          if (designTemplate != null && designTemplate.contains('-')) {
+            final parts = designTemplate.split('-');
+            if (parts.length >= 2) {
+              workflowId = parts[1]; // Second part is workflowId
+              debugPrint('[HomePage] Extracted workflowId from design_template: $workflowId');
+            }
           }
-
-          if (mounted && refreshed is! Map) {
-            debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth ?? "fieldsWithAuth not a Map"}');
-            Fluttertoast.showToast(
-              msg: store.errorWithAuth ?? 'Error refreshing page',
-              gravity: ToastGravity.TOP,
-            );
-            return;
+          
+          // Also try extracting from user details if available
+          if (workflowId == null || workflowId.isEmpty) {
+            // Will be fetched later if needed
           }
         }
-
+        
+        // Fetch stepper workflow if we have workflowId
+        if (workflowId != null && workflowId.isNotEmpty) {
+          debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
+          // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
+          await store.fetchStepperWorkflow(widget.workflowName, workflowId);
+        }
+        
         // Check if KYC is completed (is_admin: true)
-        if (refreshed is Map && refreshed['is_admin'] == true) {
+        if (response is Map && response['is_admin'] == true) {
           debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
           await store.fetchUserDetails();
           if (mounted && store.userDetails != null) {
+            // Stepper workflow already fetched above (if workflowId was available)
+            // Navigate to KYC Completed page
+            navigatingAway = true;
             context.go('/${widget.company}/${widget.workflowName}/completed');
             return;
           } else if (mounted && store.errorUserDetails != null) {
             debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
             Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
-            return;
           }
         }
-
-        // After refreshing context, check for redirects (backend may redirect to next step)
-        if (mounted) {
+        
+        // Check for redirect after get-context
+        // Skip redirect if step completion params present (IPV, RPD, eSign, DigiLocker, etc.)
+        // Prevents infinite loop when backend returns redirect despite completed step
+        final hasCompletionParams = widget.queryParams['success'] == 'yes' ||
+            widget.queryParams['verifyCompleted'] == 'true' ||
+            widget.queryParams['esign'] == 'yes' ||
+            widget.queryParams.containsKey('transaction_id') ||
+            widget.queryParams.containsKey('reversepennydrop') ||
+            widget.queryParams.containsKey('reverse_pennydrop') ||
+            widget.queryParams.containsKey('account_aggregator');
+        if (mounted && !hasCompletionParams) {
           await _checkAndHandleRedirect(store);
-          // If no redirect, navigate to refresh the page with updated data
+          // If _checkAndHandleRedirect navigated to WebView, mounted will be false
+          if (!mounted) navigatingAway = true;
+        } else if (hasCompletionParams) {
+          debugPrint('[HomePage] Step completed (success/transaction_id/esign) - refreshing context to get updated state');
+
+          // Refresh context without completion params to get updated state and check for redirects
+          // This ensures user moves to next step after IPV/RPD/eSign completion
+          await store.fetchWorkflowFieldsWithAuth(
+            widget.company,
+            widget.workflowName,
+            '', // Call without completion params to get fresh state
+          );
+
+          // Some flows can trigger multiple get-context calls back-to-back (WebView close + route rebuild).
+          // Avoid blocking progress just because `errorWithAuth` was set by an earlier call while the latest
+          // `fieldsWithAuth` succeeded.
+          var refreshed = store.fieldsWithAuth;
+          if (mounted && refreshed is! Map) {
+            final err = (store.errorWithAuth ?? '').toString();
+            final shouldRetryMultipleTabs = err.toLowerCase().contains('multiple tabs');
+
+            if (shouldRetryMultipleTabs) {
+              debugPrint('[HomePage] get-context failed due to multiple tabs - retrying once...');
+              await Future.delayed(const Duration(milliseconds: 800));
+              await store.fetchWorkflowFieldsWithAuth(
+                widget.company,
+                widget.workflowName,
+                '', // Retry without completion params
+              );
+              refreshed = store.fieldsWithAuth;
+            }
+
+            if (mounted && refreshed is! Map) {
+              debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth ?? "fieldsWithAuth not a Map"}');
+              if (store.isReturningFromWebView) {
+                // Show retry UI — never fall back to the old step's form
+                setState(() => _webViewReturnError =
+                    store.errorWithAuth ?? 'Something went wrong, please try again.');
+              } else {
+                Fluttertoast.showToast(
+                  msg: store.errorWithAuth ?? 'Error refreshing page',
+                  gravity: ToastGravity.TOP,
+                );
+              }
+              return;
+            }
+          }
+
+          // Check if KYC is completed (is_admin: true)
+          if (refreshed is Map && refreshed['is_admin'] == true) {
+            debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
+            await store.fetchUserDetails();
+            if (mounted && store.userDetails != null) {
+              navigatingAway = true;
+              context.go('/${widget.company}/${widget.workflowName}/completed');
+              return;
+            } else if (mounted && store.errorUserDetails != null) {
+              debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
+              if (store.isReturningFromWebView) {
+                setState(() => _webViewReturnError =
+                    'Error loading completion details. Please try again.');
+              } else {
+                Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
+              }
+              return;
+            }
+          }
+
+          // After refreshing context, check for redirects (backend may redirect to next step)
           if (mounted) {
-            final response = store.fieldsWithAuth;
-            if (response is! Map || response['redirect'] != true) {
-              debugPrint('[HomePage] Navigating to refresh page after step completion');
-              context.go('/${widget.company}/${widget.workflowName}');
+            await _checkAndHandleRedirect(store);
+            if (!mounted) navigatingAway = true;
+            // If no redirect, navigate to refresh the page with updated data
+            if (mounted) {
+              final response = store.fieldsWithAuth;
+              if (response is! Map || response['redirect'] != true) {
+                debugPrint('[HomePage] Navigating to refresh page after step completion');
+                navigatingAway = true;
+                context.go('/${widget.company}/${widget.workflowName}');
+              }
             }
           }
         }
+      } else {
+        await store.fetchWorkflowFields(widget.company, widget.workflowName);
       }
-    } else {
-      await store.fetchWorkflowFields(widget.company, widget.workflowName);
+      debugPrint('[HomePage] _loadWorkflow DONE, store.error=${store.error}');
+    } finally {
+      // Cancel the one-shot watchdog (polling timer keeps running until the flag clears).
+      _returnFlowWatchdogTimer?.cancel();
+      _returnFlowWatchdogTimer = null;
+
+      if (mounted) setState(() => _loadWorkflowActive = false);
+
+      // Clear isReturningFromWebView only when we stayed on this page (no route
+      // change happened) and there is no pending retry error to display.
+      if (mounted && !navigatingAway && store.isReturningFromWebView && _webViewReturnError == null) {
+        store.setReturningFromWebView(false);
+        _stopReturnFlowTimers();
+      }
     }
-    debugPrint('[HomePage] _loadWorkflow DONE, store.error=${store.error}');
   }
 
   Future<void> _checkAndHandleRedirect(AppStore store) async {
@@ -378,20 +512,22 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openWebViewWithTransitionLoader(String finalUrl, String friendlyTitle) async {
     if (!mounted) return;
 
-    // Turn on loader immediately before route navigation.
-    setState(() => _submitLoading = true);
-    // Ensure loader is actually painted before navigating.
+    // Show a fully opaque white overlay so no home-page UI is visible during
+    // the route transition. This pairs with the FadeTransition on the webview
+    // route so the user sees white → white → WebView content with no flash.
+    setState(() => _webViewTransitionActive = true);
+    // Ensure the white overlay is painted before navigating.
     await WidgetsBinding.instance.endOfFrame;
 
     final encodedUrl = Uri.encodeComponent(finalUrl);
     final title = Uri.encodeComponent(friendlyTitle);
     context.go('/${widget.company}/${widget.workflowName}/webview?url=$encodedUrl&title=$title');
 
-    // In case this HomePage widget remains mounted underneath the new route,
-    // stop the loader shortly after. (Avoids any "stuck loader" on back navigation.)
-    Future.delayed(const Duration(milliseconds: 1200), () {
+    // If this widget remains mounted (rare edge-case), clear the overlay so a
+    // back-navigation doesn't leave the screen blank.
+    Future.delayed(const Duration(milliseconds: 600), () {
       if (!mounted) return;
-      setState(() => _submitLoading = false);
+      setState(() => _webViewTransitionActive = false);
     });
   }
 
@@ -1246,6 +1382,79 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // ---------- WebView-return partial-loader helpers ----------
+
+  Widget _buildWebViewReturnLoaderContent() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(color: KycTheme.primary, strokeWidth: 3),
+          const SizedBox(height: 16),
+          Text(
+            _returnFlowMessage,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey.shade600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWebViewReturnRetryContent(AppStore store) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline_rounded, size: 64, color: Colors.orange.shade400),
+            const SizedBox(height: 16),
+            Text(
+              _webViewReturnError!,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey.shade700,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text(
+                'Try Again',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: KycTheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                elevation: 0,
+              ),
+              onPressed: () {
+                store.clearAuthError();
+                setState(() {
+                  _webViewReturnError = null;
+                  _returnFlowMessage = 'Loading your next step...';
+                });
+                _loadWorkflow();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ----------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
@@ -1282,6 +1491,90 @@ class _HomePageState extends State<HomePage> {
                   currentIndex: stepperIndex,
                 ),
               );
+
+              // Partial loader / retry while returning from WebView.
+              // Checked before anything else so the old step's form UI is NEVER
+              // rendered between WebView exit and both API calls completing.
+              // Refresh and Logout buttons remain visible so the user always
+              // has an escape hatch — only the content area shows the loader.
+              if (store.isReturningFromWebView) {
+                return Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Refresh + Logout row — always accessible
+                        if (isAuthenticated)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  onPressed: (_loadWorkflowActive || _logoutLoading)
+                                      ? null
+                                      : () {
+                                          store.clearAuthError();
+                                          setState(() {
+                                            _webViewReturnError = null;
+                                            _returnFlowMessage =
+                                                'Loading your next step...';
+                                          });
+                                          _loadWorkflow();
+                                        },
+                                  icon: _loadWorkflowActive
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.refresh,
+                                          color: KycTheme.textPrimary),
+                                ),
+                                IconButton(
+                                  onPressed: _logoutLoading ? null : _handleLogout,
+                                  icon: _logoutLoading
+                                      ? const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: KycTheme.primary),
+                                        )
+                                      : const Icon(Icons.logout,
+                                          color: KycTheme.textPrimary),
+                                ),
+                              ],
+                            ),
+                          ),
+                        // Stepper stays visible throughout
+                        if (showStepper) stepperWidget,
+                        // Content area: spinner or retry
+                        Expanded(
+                          child: _webViewReturnError != null
+                              ? _buildWebViewReturnRetryContent(store)
+                              : _buildWebViewReturnLoaderContent(),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
+              // Opaque white screen shown just before navigating to WebView.
+              // Paired with the FadeTransition on the webview route to guarantee
+              // zero flash of home-page UI during the transition.
+              if (_webViewTransitionActive) {
+                return const Scaffold(
+                  backgroundColor: Colors.white,
+                  body: SizedBox.expand(
+                    child: ColoredBox(color: Colors.white),
+                  ),
+                );
+              }
 
               // Handle loading states - full screen when no stepper, else loader below stepper
               // Full-screen loader during submit so users don't see the old/login screen

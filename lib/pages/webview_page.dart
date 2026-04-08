@@ -57,6 +57,17 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _paymentAppLaunched = false;
   // Periodic polling timer to auto-refresh Reverse Penny Drop page after UPI payment
   Timer? _reversePennyPollTimer;
+
+  // --- Loading / error UX state ---
+  bool _hasError = false;
+  String _errorMessage = 'Something went wrong, please try again.';
+  String _loadingMessage = 'Loading...';
+  // Set true once the first page finishes loading (controls full-screen cover behaviour)
+  bool _initialPageLoaded = false;
+  // Timeout timer: fires if the page hasn't loaded within 15 seconds
+  Timer? _loadTimeoutTimer;
+  // Slow-network timer: after 5 s still loading, update message to reassure user
+  Timer? _slowNetworkTimer;
   int _reversePennyPollAttempts = 0;
   static const int _maxReversePennyPollAttempts = 18; // ~90 seconds @ 5s interval
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
@@ -71,6 +82,41 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // Reset the sessionStorage flag only once per WebViewPage instance,
   // so a reload caused by the console message doesn't re-clear the guard.
   bool _rpdSigningSessionFlagReset = false;
+
+  /// Starts the 5-second slow-network timer and the 15-second timeout timer.
+  /// Call on every `onLoadStart`. Both timers are cancelled on `onLoadStop`.
+  void _startLoadTimers() {
+    _cancelLoadTimers();
+
+    // After 5 s update the loading message so users know we're still working.
+    _slowNetworkTimer = Timer(const Duration(seconds: 5), () {
+      if (!mounted || !_isLoading) return;
+      setState(() => _loadingMessage = 'Loading, please wait...');
+    });
+
+    // After 15 s give up and show the retry screen.
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || !_isLoading || _hasError) return;
+      debugPrint('[WebView] Load timeout — showing retry UI');
+      setState(() {
+        _isLoading = false;
+        _hasError = true;
+        _errorMessage = 'Connection timed out. Please check your network and try again.';
+        _loadingMessage = 'Loading...';
+      });
+    });
+  }
+
+  /// Cancels both load timers and resets the loading message to the default.
+  void _cancelLoadTimers() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = null;
+    _slowNetworkTimer?.cancel();
+    _slowNetworkTimer = null;
+    if (mounted && _loadingMessage != 'Loading...') {
+      setState(() => _loadingMessage = 'Loading...');
+    }
+  }
 
   Future<void> _maybeReloadAfterRpdSigningCompleted({
     required InAppWebViewController controller,
@@ -200,6 +246,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _reversePennyPollTimer?.cancel();
+    _loadTimeoutTimer?.cancel();
+    _slowNetworkTimer?.cancel();
     super.dispose();
   }
 
@@ -700,7 +748,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             } else {
               debugPrint('[WebView] get-context API completed successfully - navigating back');
             }
-            // Navigate back to home page (without query params since API already called)
+            // Navigate back to home page (without query params since API already called).
+            // Set flag BEFORE navigation so the new HomePage's first build shows a loader,
+            // not the old step UI.
+            context.read<AppStore>().setReturningFromWebView(true);
             context.go('/${widget.company}/${widget.workflowName}');
           }
         } else {
@@ -708,7 +759,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           final query = queryParams.isEmpty
               ? ''
               : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
-          if (mounted) context.go('/${widget.company}/${widget.workflowName}$query');
+          if (mounted) {
+            context.read<AppStore>().setReturningFromWebView(true);
+            context.go('/${widget.company}/${widget.workflowName}$query');
+          }
         }
       } catch (e) {
         debugPrint('[WebView] Exception calling get-context API: $e');
@@ -721,6 +775,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           final query = queryParams.isEmpty
               ? ''
               : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
+          context.read<AppStore>().setReturningFromWebView(true);
           context.go('/${widget.company}/${widget.workflowName}$query');
         }
       }
@@ -740,7 +795,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
 
       debugPrint('[WebView] Going back to: /${widget.company}/${widget.workflowName}$query');
-      if (mounted) context.go('/${widget.company}/${widget.workflowName}$query');
+      if (mounted) {
+        context.read<AppStore>().setReturningFromWebView(true);
+        context.go('/${widget.company}/${widget.workflowName}$query');
+      }
     }
   }
 
@@ -1071,8 +1129,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       if (url != null && !_redirectHandled) {
                         setState(() {
                           _isLoading = true;
+                          _hasError = false;
                           _currentUrl = url.toString();
                         });
+                        _startLoadTimers();
                         debugPrint('[WebView] Page started: $url');
 
                         // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
@@ -1129,15 +1189,62 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     onLoadError: (controller, url, code, message) {
                       debugPrint(
                           '[WebView] Load error ($code): $message, url=$url');
+                      // Ignore unknown URL scheme errors — these are UPI/intent
+                      // deep-links handled externally and are not real page failures.
                       if (code == -10 &&
                           message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
                         return;
                       }
+                      // Only surface errors for the current main-frame URL to
+                      // avoid triggering retry UI for sub-resource failures.
+                      final errorUrl = url?.toString() ?? '';
+                      if (errorUrl.isNotEmpty &&
+                          errorUrl != _currentUrl &&
+                          !errorUrl.startsWith('http')) {
+                        return;
+                      }
+                      _cancelLoadTimers();
+                      if (!mounted) return;
+                      setState(() {
+                        _isLoading = false;
+                        _hasError = true;
+                        _errorMessage =
+                            'Failed to load page. Please check your connection and try again.';
+                      });
+                    },
+                    onReceivedError: (controller, request, error) {
+                      // flutter_inappwebview v6 main-frame error handler.
+                      if (request.isForMainFrame != true) return;
+                      // Ignore custom-scheme deep-links handled externally.
+                      final errUrl = request.url.toString();
+                      if (errUrl.startsWith('upi://') ||
+                          errUrl.startsWith('intent://') ||
+                          errUrl.startsWith('phonepe://') ||
+                          errUrl.startsWith('paytm') ||
+                          errUrl.startsWith('gpay://') ||
+                          errUrl.startsWith('tez://') ||
+                          errUrl.startsWith('bhim://')) {
+                        return;
+                      }
+                      debugPrint(
+                          '[WebView] onReceivedError: ${error.description}, url=$errUrl');
+                      _cancelLoadTimers();
+                      if (!mounted) return;
+                      setState(() {
+                        _isLoading = false;
+                        _hasError = true;
+                        _errorMessage =
+                            'Failed to load page. Please check your connection and try again.';
+                      });
                     },
                     onLoadStop: (controller, url) async {
                       if (url != null) {
+                        _cancelLoadTimers();
+                        if (!mounted) return;
                         setState(() {
                           _isLoading = false;
+                          _hasError = false;
+                          _initialPageLoaded = true;
                           _currentUrl = url.toString();
                         });
                         debugPrint('[WebView] Page finished: $url');
@@ -1422,18 +1529,111 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 ),
               ),
 
-            // Fullscreen loader overlay while the page is loading
+            // Full-screen loader overlay — covers WebView until page is ready.
+            // AnimatedOpacity fades it out smoothly on first load completion.
             if (_isLoading)
               Positioned.fill(
-                child: Container(
+                child: AnimatedOpacity(
+                  opacity: _isLoading ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 250),
+                  child: const ColoredBox(color: Colors.white),
+                ),
+              ),
+            if (_isLoading)
+              Positioned.fill(
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: KycTheme.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: Text(
+                          _loadingMessage,
+                          key: ValueKey(_loadingMessage),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // Error overlay — shown on network failure, resource error, or timeout.
+            // Sits above the WebView so no partial content is ever visible.
+            // Does NOT navigate back to HomePage; user can retry from here.
+            if (_hasError)
+              Positioned.fill(
+                child: ColoredBox(
                   color: Colors.white,
-                  alignment: Alignment.center,
-                  child: const SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 3,
-                      color: KycTheme.primary,
+                  child: SafeArea(
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.wifi_off_rounded,
+                              size: 72,
+                              color: Colors.grey.shade400,
+                            ),
+                            const SizedBox(height: 20),
+                            Text(
+                              _errorMessage,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey.shade700,
+                                height: 1.5,
+                              ),
+                            ),
+                            const SizedBox(height: 28),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.refresh_rounded, size: 18),
+                              label: const Text(
+                                'Try Again',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: KycTheme.primary,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 32, vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                elevation: 0,
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _hasError = false;
+                                  _isLoading = true;
+                                  _loadingMessage = 'Loading...';
+                                });
+                                _startLoadTimers();
+                                _webViewController?.reload();
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),
