@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "1077626154170",
+    "project_id": "stoxbox-5daa8",
+    "storage_bucket": "stoxbox-5daa8.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1077626154170:android:dd3a513aef1bb4cc4f6683",
+        "android_client_info": {
+          "package_name": "com.bpwealth.stoxbox"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1077626154170-61kj6319g2tlhpig26uddesuio92d2oa.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAO3KYu4BOG5dmh0nI4BvAYoSiFm5aLR7c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1077626154170-61kj6319g2tlhpig26uddesuio92d2oa.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.bpwealth.stoxbox"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

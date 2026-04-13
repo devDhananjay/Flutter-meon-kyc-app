@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
@@ -26,6 +27,9 @@ class FormFieldWidget extends StatefulWidget {
   final String? urlCompany;
   final String? workflowKey;
   final bool disable;
+  /// When [validation] is `googleSignIn`, invoked instead of the empty stub.
+  final Future<void> Function()? onGoogleSignIn;
+  final bool googleSignInLoading;
 
   const FormFieldWidget({
     super.key,
@@ -48,6 +52,8 @@ class FormFieldWidget extends StatefulWidget {
     this.urlCompany,
     this.workflowKey,
     this.disable = false,
+    this.onGoogleSignIn,
+    this.googleSignInLoading = false,
   });
 
   @override
@@ -517,14 +523,21 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
 
   Widget _buildButton() {
     if (widget.validation == 'googleSignIn') {
+      final loading = widget.googleSignInLoading;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildLabel(widget.displayName),
           OutlinedButton.icon(
-            onPressed: () {}, // Google Sign-In requires platform setup
+            onPressed: widget.disable || loading
+                ? null
+                : () async {
+                    if (widget.onGoogleSignIn != null) {
+                      await widget.onGoogleSignIn!();
+                    }
+                  },
             icon: const Icon(Icons.g_mobiledata),
-            label: const Text('Sign In with Google'),
+            label: Text(loading ? 'Signing in...' : 'Sign In with Google'),
           ),
         ],
       );
@@ -584,6 +597,276 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     }
     setState(() => _fileError = null);
     widget.onChange(widget.name, file);
+  }
+
+  bool get _isSignatureField {
+    final n = widget.name.toLowerCase();
+    final d = widget.displayName.toLowerCase();
+    return n.contains('signature') || d.contains('signature');
+  }
+
+  Future<File?> _showDigitalSignatureDialog() async {
+    final points = <Offset?>[];
+    bool submitting = false;
+    String? localError;
+    const canvasSize = Size(860, 360);
+    Size drawAreaSize = const Size(860, 360);
+
+    Future<File?> buildSignatureFile() async {
+      if (!points.any((p) => p != null)) return null;
+
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final bgPaint = Paint()..color = Colors.white;
+      canvas.drawRect(Offset.zero & canvasSize, bgPaint);
+
+      final strokePaint = Paint()
+        ..color = Colors.black
+        ..strokeWidth = 4
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+
+      for (var i = 0; i < points.length - 1; i++) {
+        final p1 = points[i];
+        final p2 = points[i + 1];
+        if (p1 != null && p2 != null) {
+          final safeWidth = drawAreaSize.width <= 0 ? canvasSize.width : drawAreaSize.width;
+          final safeHeight = drawAreaSize.height <= 0 ? canvasSize.height : drawAreaSize.height;
+          final scaleX = canvasSize.width / safeWidth;
+          final scaleY = canvasSize.height / safeHeight;
+          final sp1 = Offset(p1.dx * scaleX, p1.dy * scaleY);
+          final sp2 = Offset(p2.dx * scaleX, p2.dy * scaleY);
+          canvas.drawLine(sp1, sp2, strokePaint);
+        }
+      }
+
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(
+        canvasSize.width.toInt(),
+        canvasSize.height.toInt(),
+      );
+      final pngBytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (pngBytes == null) return null;
+
+      final file = File(
+        '${Directory.systemTemp.path}/digital_signature_${DateTime.now().millisecondsSinceEpoch}.png',
+      );
+      await file.writeAsBytes(pngBytes.buffer.asUint8List(), flush: true);
+      return file;
+    }
+
+    return showDialog<File?>(
+      context: context,
+      barrierDismissible: !submitting,
+      builder: (dialogCtx) {
+        final media = MediaQuery.of(dialogCtx);
+        final isMobile = media.size.width < 600;
+        final horizontalPadding = isMobile ? 12.0 : 24.0;
+        final dialogMaxWidth = isMobile ? media.size.width - 24 : 760.0;
+        final pad = isMobile ? 12.0 : 20.0;
+        final canvasHeight = isMobile ? 220.0 : 360.0;
+
+        return StatefulBuilder(
+          builder: (dialogCtx, setLocalState) {
+            return Dialog(
+              insetPadding: EdgeInsets.symmetric(
+                horizontal: horizontalPadding,
+                vertical: isMobile ? 18 : 24,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: dialogMaxWidth),
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: EdgeInsets.all(pad),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            IconButton(
+                              onPressed: submitting
+                                  ? null
+                                  : () => Navigator.of(dialogCtx).pop(),
+                              icon: const Icon(Icons.close, size: 28),
+                            ),
+                          ],
+                        ),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF4F7FB),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFD8E1EA)),
+                          ),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isMobile ? 12 : 18,
+                            vertical: isMobile ? 10 : 14,
+                          ),
+                          child: const Text(
+                            'Digital Signature',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 34,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF09184A),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          height: 3,
+                          color: const Color(0xFF1DB7B9),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Please sign on screen, this will be captured as your authorized signature',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: isMobile ? 13 : 16,
+                            color: const Color(0xFF1F1F1F),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          height: canvasHeight,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFFC9CDD3)),
+                          ),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              drawAreaSize = Size(
+                                constraints.maxWidth,
+                                constraints.maxHeight,
+                              );
+                              return GestureDetector(
+                                onPanStart: (details) {
+                                  final p = details.localPosition;
+                                  setLocalState(() => points.add(p));
+                                },
+                                onPanUpdate: (details) {
+                                  final p = details.localPosition;
+                                  setLocalState(() => points.add(p));
+                                },
+                                onPanEnd: (_) {
+                                  setLocalState(() => points.add(null));
+                                },
+                                child: CustomPaint(
+                                  painter: _SignaturePainter(points: points),
+                                  size: Size(
+                                    constraints.maxWidth,
+                                    constraints.maxHeight,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        if (localError != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            localError!,
+                            style: TextStyle(
+                              color: Colors.red.shade700,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: submitting
+                                    ? null
+                                    : () {
+                                        setLocalState(() {
+                                          points.clear();
+                                          localError = null;
+                                        });
+                                      },
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: Size(0, isMobile ? 48 : 52),
+                                  side: const BorderSide(
+                                    color: Color(0xFF6A5ACD),
+                                  ),
+                                  foregroundColor: const Color(0xFF6A5ACD),
+                                  textStyle: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                child: const Text('Clear'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: submitting
+                                    ? null
+                                    : () async {
+                                        if (!points.any((p) => p != null)) {
+                                          setLocalState(() {
+                                            localError =
+                                                'Please draw your signature first.';
+                                          });
+                                          return;
+                                        }
+                                        setLocalState(() {
+                                          submitting = true;
+                                          localError = null;
+                                        });
+                                        final file = await buildSignatureFile();
+                                        if (!dialogCtx.mounted) return;
+                                        if (file == null) {
+                                          setLocalState(() {
+                                            submitting = false;
+                                            localError =
+                                                'Unable to capture signature. Please try again.';
+                                          });
+                                          return;
+                                        }
+                                        Navigator.of(dialogCtx).pop(file);
+                                      },
+                                style: ElevatedButton.styleFrom(
+                                  minimumSize: Size(0, isMobile ? 48 : 52),
+                                  backgroundColor: const Color(0xFF6A5ACD),
+                                  foregroundColor: Colors.white,
+                                  textStyle: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                child: submitting
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Text('Confirm'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Widget _buildFile() {
@@ -648,6 +931,27 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
             padding: const EdgeInsets.only(top: 8),
             child: Text(_fileError!, style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
           ),
+        if (_isSignatureField) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: widget.disable
+                  ? null
+                  : () async {
+                      final generatedFile = await _showDigitalSignatureDialog();
+                      if (generatedFile == null) return;
+                      await _handleFileSelection(generatedFile);
+                    },
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                side: const BorderSide(color: KycTheme.primary),
+                foregroundColor: KycTheme.primary,
+              ),
+              child: const Text('Digital Signature'),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -667,4 +971,32 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       ],
     );
   }
+}
+
+class _SignaturePainter extends CustomPainter {
+  final List<Offset?> points;
+
+  const _SignaturePainter({required this.points});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    for (var i = 0; i < points.length - 1; i++) {
+      final p1 = points[i];
+      final p2 = points[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SignaturePainter oldDelegate) =>
+      oldDelegate.points != points;
 }

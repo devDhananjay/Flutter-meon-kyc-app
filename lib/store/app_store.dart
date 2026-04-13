@@ -86,14 +86,24 @@ class AppStore extends ChangeNotifier {
     final fullPath = cleanQuery.isEmpty
         ? '/api/get-context/$urlCompany/$urlWorkflowName'
         : '/api/get-context/$urlCompany/$urlWorkflowName?$cleanQuery';
-    
+
+    // When `verify=digilocker` is on the URL, backend expects `save: true` in the POST body
+    // (query string is unchanged; only JSON body is set).
+    final Map<String, dynamic> requestBody = {};
+    if (cleanQuery.isNotEmpty) {
+      final qp = Uri.splitQueryString(cleanQuery);
+      if (qp['verify'] == 'digilocker') {
+        requestBody['save'] = true;
+      }
+    }
+
     debugPrint('[AppStore] fetchWorkflowFieldsWithAuth START: $fullPath');
     _loadingWithAuth = true;
     _errorWithAuth = null;
     notifyListeners();
     try {
       final client = ApiClient();
-      final res = await client.post(fullPath, body: {});
+      final res = await client.post(fullPath, body: requestBody);
       debugPrint('[AppStore] fetchWorkflowFieldsWithAuth Response: ${res.statusCode}');
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final data = _parseJson(res.body);

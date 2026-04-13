@@ -7,7 +7,11 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:meon_kyc/firebase_options.dart';
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
 import 'package:meon_kyc/components/form_field_widget.dart';
@@ -65,6 +69,12 @@ class _HomePageState extends State<HomePage> {
   bool _termsAccepted = false; // Terms & Conditions checkbox (mobile step)
   bool _showTermsError = false; // Show validation message under T&C checkbox
   bool _showMobileError = false; // Show error below mobile input when invalid on submit
+  bool _googleSignInLoading = false;
+
+  /// Kept across `_formNotifier.resetForm()` inside `_handleSubmitResponse` so `mobile_otp`
+  /// resend + header text still know the number (get-context fields often omit it).
+  String? _persistedMobileDigitsForOtp;
+  String? _persistedEmailForOtp;
 
   @override
   void initState() {
@@ -624,8 +634,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<Map<String, dynamic>> _prepareFormData(bool skipValidation) async {
     final data = Map<String, dynamic>.from(_formNotifier.formData);
-    if (skipValidation) data['save'] = true;
-    
+    // Do not send `save` in kyc-post-v2 body (backend expectation).
+
     // Add brokerage_plan for segments screen
     final store = context.read<AppStore>();
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
@@ -886,6 +896,15 @@ class _HomePageState extends State<HomePage> {
         StorageService.setAuthSuccess('true');
         StorageService.setMessage(body?['msg']?.toString() ?? '');
         StorageService.setUserStep(body?['position']?.toString() ?? '');
+        final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
+        final digitsBeforeReset = _digitsFromFormMapOnly(formSnapshot);
+        if (digitsBeforeReset.length == 10) {
+          _persistedMobileDigitsForOtp = digitsBeforeReset;
+        }
+        final emailBeforeReset = _resolveEmailForOtpUi(formSnapshot);
+        if (emailBeforeReset.contains('@')) {
+          _persistedEmailForOtp = emailBeforeReset;
+        }
         _formNotifier.resetForm();
         // Keep loading indicator visible during get-context call for smooth transition
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
@@ -893,6 +912,21 @@ class _HomePageState extends State<HomePage> {
           await _clearCookiesAndRefresh();
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           return;
+        }
+        if (mounted) {
+          final ctx = store.fieldsWithAuth as Map?;
+          final pos =
+              ctx?['context']?['position']?.toString().toLowerCase() ?? '';
+          if (pos == 'mobile_otp') {
+            _applyPersistedMobileToForm();
+            _persistedEmailForOtp = null;
+          } else if (pos == 'email_otp') {
+            _persistedMobileDigitsForOtp = null;
+            _applyPersistedEmailToForm();
+          } else {
+            _persistedMobileDigitsForOtp = null;
+            _persistedEmailForOtp = null;
+          }
         }
         // Small delay for smooth UI transition
         if (mounted) {
@@ -1053,12 +1087,51 @@ class _HomePageState extends State<HomePage> {
       }
       
       final data = await _prepareFormData(skipValidation);
-      // Do NOT send save: true for OTP verification steps (mobile_otp, email_otp) — backend validates OTP only then
-      final position = ctx?['position']?.toString().toLowerCase() ?? '';
-      final isOtpVerifyStep = position == 'mobile_otp' || position == 'email_otp';
-      if (!isOtpVerifyStep) {
-        data['save'] = true;
+      data.remove('save');
+
+      // Initial email capture step: backend expects a trimmed body (email + a few fields).
+      // Must NOT run on `email_otp` — pathSegment e.g. `email_otp4` still starts with `email`,
+      // and clearing here would drop the OTP field and break verify_otp on the server.
+      final currentPosition =
+          (ctx?['position']?.toString().toLowerCase() ?? '').trim();
+      final lowerPath = pathSegment.toLowerCase();
+      final isEmailOtpStep =
+          currentPosition == 'email_otp' || lowerPath.startsWith('email_otp');
+      final isEmailOnlySubmitStep = !isEmailOtpStep &&
+          (currentPosition == 'email' ||
+              (lowerPath.startsWith('email') &&
+                  !lowerPath.startsWith('email_otp')));
+      if (isEmailOnlySubmitStep) {
+        final resolvedEmail =
+            (data['email'] ?? data['email_id'] ?? data['emailId'])
+                    ?.toString()
+                    .trim() ??
+                '';
+        final selectDependency = (data['select__dependency'] ?? 'Self')
+            .toString()
+            .trim();
+        final branchReferenceCode =
+            (data['branch_reference_code'] ?? '').toString();
+        final panNumber1 = (data['pan_number1'] ?? '').toString();
+        data
+          ..clear()
+          ..['email'] = resolvedEmail
+          ..['select__dependency'] =
+              selectDependency.isEmpty ? 'Self' : selectDependency
+          ..['branch_reference_code'] = branchReferenceCode
+          ..['pan_number1'] = panNumber1;
       }
+
+      // DigiLocker: backend expects `save: true` on kyc-post-v2 (e.g. `/digilocker9`).
+      // Do not require `?verify=digilocker` on the app route — that flag is often only sent to
+      // get-context, so `widget.queryParams` is empty here even after a successful verify flow.
+      final onDigilockerStep = currentPosition == 'digilocker' ||
+          lowerPath.startsWith('digilocker');
+      if (onDigilockerStep) {
+        data['save'] = true;
+        debugPrint('[HomePage] DigiLocker step: save=true on kyc-post-v2');
+      }
+
       debugPrint('[HomePage] _handleCommonSubmit data: $data pathSegment: $pathSegment');
       
       // Check saveFilesAPI flag from context.page
@@ -1176,6 +1249,18 @@ class _HomePageState extends State<HomePage> {
       final isSuccess = res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true;
       if (isSuccess) {
         StorageService.setUserStep(body?['step']?.toString() ?? '');
+        // Email step → email_otp: resetForm() clears email; persist from payload before reset.
+        final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
+        final emailFromPayload = (data['email'] ?? data['email_id'] ?? data['emailId'])
+                ?.toString()
+                .trim() ??
+            '';
+        if (emailFromPayload.contains('@')) {
+          _persistedEmailForOtp = emailFromPayload;
+        } else {
+          final resolved = _resolveEmailForOtpUi(formSnapshot);
+          if (resolved.contains('@')) _persistedEmailForOtp = resolved;
+        }
         _formNotifier.resetForm();
         // Keep loading indicator visible during get-context call for smooth transition
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
@@ -1184,6 +1269,16 @@ class _HomePageState extends State<HomePage> {
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           if (mounted) setState(() => _submitLoading = false);
           return;
+        }
+        if (mounted) {
+          final ctx = store.fieldsWithAuth as Map?;
+          final pos =
+              ctx?['context']?['position']?.toString().toLowerCase() ?? '';
+          if (pos == 'email_otp') {
+            _applyPersistedEmailToForm();
+            debugPrint(
+                '[HomePage] email_otp: applied persisted email for UI: $_persistedEmailForOtp');
+          }
         }
         // Small delay for smooth UI transition
         if (mounted) {
@@ -2275,6 +2370,8 @@ class _HomePageState extends State<HomePage> {
                       validation: field['validation'],
                       popupAfterSubmit: activeFields?['popupAfterSubmit'] as List?,
                       value: _formNotifier.formData[name] ?? field['value'],
+                      onGoogleSignIn: _handleGoogleSignIn,
+                      googleSignInLoading: _googleSignInLoading,
                       onChange: (n, v) {
                         final f = fieldList.cast<Map?>().firstWhere(
                               (x) => x?['name'] == n,
@@ -2314,12 +2411,9 @@ class _HomePageState extends State<HomePage> {
                     if (isEmailStep && isEmailField) ...[
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
-                        onPressed: () {
-                          // TODO: Implement Google Sign-In functionality
-                          Fluttertoast.showToast(msg: 'Google Sign-In coming soon', gravity: ToastGravity.TOP);
-                        },
+                        onPressed: _googleSignInLoading ? null : _handleGoogleSignIn,
                         icon: const Icon(Icons.g_mobiledata, size: 20),
-                        label: const Text('Sign in with Google'),
+                        label: Text(_googleSignInLoading ? 'Signing in...' : 'Sign in with Google'),
                         style: OutlinedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                           side: BorderSide(color: KycTheme.primary),
@@ -2652,7 +2746,277 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Extract 10-digit Indian mobile from form map only (no persisted fallback).
+  String _digitsFromFormMapOnly(Map<String, dynamic> fd) {
+    const keys = ['change_mobile', 'mobile_number', 'mobile', 'phone'];
+    for (final key in keys) {
+      final raw = fd[key];
+      if (raw == null) continue;
+      final digits = raw.toString().replaceAll(RegExp(r'\D'), '');
+      if (digits.length == 10 && RegExp(r'^[6-9]').hasMatch(digits)) {
+        return digits;
+      }
+    }
+    for (final key in keys) {
+      final raw = fd[key];
+      if (raw == null) continue;
+      final digits = raw.toString().replaceAll(RegExp(r'\D'), '');
+      if (digits.length >= 10) {
+        final last10 = digits.substring(digits.length - 10);
+        if (RegExp(r'^[6-9]').hasMatch(last10)) return last10;
+      }
+    }
+    return '';
+  }
+
+  /// Prefer live form data; fall back to [ _persistedMobileDigitsForOtp ] after get-context reset.
+  String _resolveMobileDigitsForOtpUi(Map<String, dynamic> fd) {
+    final fromForm = _digitsFromFormMapOnly(fd);
+    if (fromForm.length == 10) return fromForm;
+    final p = _persistedMobileDigitsForOtp;
+    if (p != null &&
+        p.length == 10 &&
+        RegExp(r'^[6-9]').hasMatch(p)) {
+      return p;
+    }
+    return '';
+  }
+
+  void _applyPersistedMobileToForm() {
+    final m = _persistedMobileDigitsForOtp;
+    if (m == null || m.length != 10) return;
+    _formNotifier.handleChange('mobile_number', m, validationType: 'mobile');
+    _formNotifier.handleChange('phone', m, validationType: 'mobile');
+    _formNotifier.handleChange('mobile', m, validationType: 'mobile');
+    _formNotifier.handleChange('change_mobile', m, validationType: 'mobile');
+  }
+
+  String _resolveEmailForOtpUi(Map<String, dynamic> fd) {
+    const keys = ['email', 'email_id', 'emailId'];
+    for (final key in keys) {
+      final raw = fd[key]?.toString().trim() ?? '';
+      if (raw.contains('@')) return raw;
+    }
+    final p = _persistedEmailForOtp?.trim() ?? '';
+    return p.contains('@') ? p : '';
+  }
+
+  void _applyPersistedEmailToForm() {
+    final e = _persistedEmailForOtp?.trim() ?? '';
+    if (!e.contains('@')) return;
+    _formNotifier.handleChange('email', e, validationType: 'email');
+    _formNotifier.handleChange('email_id', e, validationType: 'email');
+    _formNotifier.handleChange('emailId', e, validationType: 'email');
+  }
+
+  Future<void> _handleGoogleSignIn() async {
+    if (_googleSignInLoading) return;
+    setState(() => _googleSignInLoading = true);
+    try {
+      final googleSignIn = GoogleSignIn(
+        scopes: const ['email', 'profile'],
+        // Android: Web client ID is required so Google returns an ID token for Firebase Auth.
+        serverClientId: Platform.isAndroid
+            ? DefaultFirebaseOptions.googleOAuthWebClientId
+            : null,
+      );
+      final selectedAccount = await googleSignIn.signIn();
+      if (selectedAccount == null) {
+        Fluttertoast.showToast(
+          msg: 'Sign-in cancelled',
+          gravity: ToastGravity.TOP,
+        );
+        return;
+      }
+
+      final authData = await selectedAccount.authentication;
+      if (authData.idToken == null || authData.idToken!.isEmpty) {
+        debugPrint(
+          '[GoogleSignIn] idToken missing; check SHA-1 in Firebase & Web client ID.',
+        );
+        Fluttertoast.showToast(
+          msg: 'Could not get Google credentials. Check app signing (SHA-1) in Firebase.',
+          gravity: ToastGravity.TOP,
+        );
+        return;
+      }
+      final credential = GoogleAuthProvider.credential(
+        accessToken: authData.accessToken,
+        idToken: authData.idToken,
+      );
+      final userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
+      final email = (userCredential.user?.email ?? selectedAccount.email).trim();
+      if (email.isEmpty) {
+        Fluttertoast.showToast(
+          msg: 'Google account email not available',
+          gravity: ToastGravity.TOP,
+        );
+        return;
+      }
+
+      _persistedEmailForOtp = email;
+      _applyPersistedEmailToForm();
+      Fluttertoast.showToast(
+        msg: 'Google sign-in successful',
+        gravity: ToastGravity.TOP,
+      );
+    } on FirebaseAuthException catch (e) {
+      debugPrint('[GoogleSignIn] FirebaseAuthException: ${e.code} ${e.message}');
+      Fluttertoast.showToast(
+        msg: e.message ?? 'Google sign-in failed',
+        gravity: ToastGravity.TOP,
+      );
+    } on PlatformException catch (e) {
+      debugPrint('[GoogleSignIn] PlatformException: ${e.code} ${e.message}');
+      final msg = e.code == 'sign_in_failed' || e.code == '10'
+          ? 'Google Sign-In setup error. Add debug SHA-1 in Firebase Console.'
+          : (e.message ?? 'Google sign-in failed');
+      Fluttertoast.showToast(msg: msg, gravity: ToastGravity.TOP);
+    } catch (e, st) {
+      debugPrint('[GoogleSignIn] $e\n$st');
+      Fluttertoast.showToast(
+        msg: 'Unable to sign in with Google. Please try again.',
+        gravity: ToastGravity.TOP,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _googleSignInLoading = false);
+      }
+    }
+  }
+
+  /// Edit from OTP screen: `GET /api_review_edit_page/...` — only on success refresh journey via get-context.
+  Future<void> _requestReviewEditAndRefreshContext(String currentField) async {
+    final store = context.read<AppStore>();
+    if (!mounted) return;
+    setState(() => _submitLoading = true);
+    try {
+      debugPrint(
+          '[HomePage] review_edit_page: $currentField (${widget.company}/${widget.workflowName})');
+      final res = await KycAPI.reviewEditPage(
+        widget.company,
+        widget.workflowName,
+        currentField,
+      );
+      Map<String, dynamic>? body;
+      try {
+        body = jsonDecode(res.body) as Map<String, dynamic>?;
+      } catch (_) {
+        body = null;
+      }
+      final success =
+          body?['success'] == true || body?['success']?.toString() == 'true';
+      if (res.statusCode < 200 || res.statusCode >= 300 || !success) {
+        final msg = body?['msg']?.toString() ??
+            body?['message']?.toString() ??
+            'Could not open edit for this step';
+        Fluttertoast.showToast(msg: msg, gravity: ToastGravity.TOP);
+        return;
+      }
+      debugPrint('[HomePage] review_edit_page OK — fetching get-context');
+      await store.fetchWorkflowFieldsWithAuth(
+          widget.company, widget.workflowName, '');
+      if (!mounted) return;
+      if (store.errorWithAuth != null) {
+        Fluttertoast.showToast(
+            msg: store.errorWithAuth!, gravity: ToastGravity.TOP);
+        return;
+      }
+      if (mounted) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        await _checkAndHandleRedirect(store);
+        if (!mounted) return;
+        final response = store.fieldsWithAuth;
+        if (response is! Map || response['redirect'] != true) {
+          context.go('/${widget.company}/${widget.workflowName}');
+        }
+      }
+    } catch (e, st) {
+      debugPrint('[HomePage] review_edit_page error: $e\n$st');
+      Fluttertoast.showToast(
+          msg: 'Something went wrong. Please try again.',
+          gravity: ToastGravity.TOP);
+    } finally {
+      if (mounted) setState(() => _submitLoading = false);
+    }
+  }
+
   /// OTP verify card: separate UI for email_otp vs mobile_otp (Figma)
+  Future<void> _resendMobileOtpAfterEdit(String mobileNumber) async {
+    _persistedMobileDigitsForOtp = mobileNumber;
+    final store = context.read<AppStore>();
+    FocusScope.of(context).unfocus();
+    if (!mounted) return;
+    setState(() => _submitLoading = true);
+    try {
+      final payload = <String, dynamic>{'mobile_number': mobileNumber};
+      debugPrint(
+          '[HomePage] Resend mobile OTP via /api/get-user payload=$payload');
+      final headers = {'Content-Type': 'application/json'};
+      final res = await KycAPI.submitKyc(
+        widget.company,
+        widget.workflowName,
+        payload,
+        headers,
+      );
+      await _handleSubmitResponse(res, store);
+    } finally {
+      if (mounted) {
+        setState(() => _submitLoading = false);
+      }
+    }
+  }
+
+  Future<void> _resendEmailOtpAfterEdit(String email) async {
+    final store = context.read<AppStore>();
+    final trimmed = email.trim();
+    _persistedEmailForOtp = trimmed;
+    FocusScope.of(context).unfocus();
+    if (!mounted) return;
+    setState(() => _submitLoading = true);
+    try {
+      final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+      final idxRaw = ctx?['index']?.toString() ?? '';
+      final idx = int.tryParse(idxRaw);
+      final resendIndex = (idx != null && idx > 1) ? idx - 1 : 1;
+      final endpoint =
+          '/api/kyc-post-v2/${widget.company}/${widget.workflowName}/email$resendIndex';
+      final payload = <String, dynamic>{'email': trimmed};
+      debugPrint('[HomePage] Resend email OTP via $endpoint payload=$payload');
+      final client = ApiClient();
+      final res = await client.post(endpoint, body: payload);
+      debugPrint('[HomePage] Resend email OTP response status=${res.statusCode}');
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        Fluttertoast.showToast(
+          msg: _errorMessageFromResponse(res.statusCode, res.body),
+          gravity: ToastGravity.TOP,
+        );
+        return;
+      }
+      await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
+      if (mounted && store.errorWithAuth != null) {
+        Fluttertoast.showToast(
+          msg: store.errorWithAuth ?? 'Failed to refresh OTP step',
+          gravity: ToastGravity.TOP,
+        );
+        return;
+      }
+      if (mounted) {
+        _applyPersistedEmailToForm();
+      }
+    } catch (_) {
+      Fluttertoast.showToast(msg: 'Failed to resend email OTP', gravity: ToastGravity.TOP);
+    } finally {
+      if (mounted) {
+        setState(() => _submitLoading = false);
+      }
+    }
+  }
+
+  // Previous flow: Edit opened a modal and then called get-user / kyc-post resend.
+  // Replaced by `_requestReviewEditAndRefreshContext` → GET `/api_review_edit_page/...` then get-context.
+
   Widget _buildOtpVerifyCard(Map otpField, dynamic activeFields) {
     final otpName = otpField['name']?.toString() ?? 'otp';
     final formData = _formNotifier.formData;
@@ -2665,27 +3029,19 @@ class _HomePageState extends State<HomePage> {
     final String sentToText;
     final VoidCallback? onEdit;
     if (isEmailOtp) {
-      final email = formData['email'] ?? formData['email_id'] ?? formData['emailId'] ?? '';
-      final displayEmail = email.toString().trim();
-      sentToText = (otpField['sentToText']?.toString() ?? '').isNotEmpty
-          ? otpField['sentToText'].toString()
-          : 'We have sent you an OTP on ${displayEmail.isEmpty ? 'your email' : displayEmail}';
+      final displayEmail = _resolveEmailForOtpUi(formData);
+      sentToText =
+          'We have sent you an OTP on ${displayEmail.isEmpty ? 'your email' : displayEmail}';
       onEdit = () {
-        debugPrint('[HomePage] Edit email clicked - navigating back to email step');
-        _formNotifier.handleChange(otpName, '');
-        context.go('/${widget.company}/${widget.workflowName}');
+        _requestReviewEditAndRefreshContext('change_email');
       };
     } else {
-      final mobile = formData['mobile'] ?? formData['phone'] ?? formData['mobile_number'] ?? '';
-      final displayMobile = mobile.toString().trim();
-      sentToText = (otpField['sentToText']?.toString() ?? '').isNotEmpty
-          ? otpField['sentToText'].toString()
-          : 'We have sent you an OTP via sms on +91 ${displayMobile.isEmpty ? 'XXXXX' : displayMobile}';
+      final displayDigits = _resolveMobileDigitsForOtpUi(formData);
+      sentToText =
+          'We have sent you an OTP via sms on +91 ${displayDigits.isEmpty ? '' : displayDigits}';
       onEdit = isMobileOtp
           ? () {
-              debugPrint('[HomePage] Edit mobile clicked - navigating back to mobile step');
-              _formNotifier.handleChange(otpName, '');
-              context.go('/${widget.company}/${widget.workflowName}');
+              _requestReviewEditAndRefreshContext('mobile');
             }
           : null;
     }
@@ -2710,7 +3066,31 @@ class _HomePageState extends State<HomePage> {
           onResendOtp: () {
             debugPrint('[HomePage] Resend OTP clicked');
             _formNotifier.handleChange(otpName, '');
-            _handleCommonSubmit(false);
+            if (isMobileOtp) {
+              final digits = _resolveMobileDigitsForOtpUi(
+                  Map<String, dynamic>.from(_formNotifier.formData));
+              debugPrint('[HomePage] Resend OTP resolved digits len=${digits.length}');
+              if (digits.length != 10 ||
+                  !RegExp(r'^[6-9]').hasMatch(digits)) {
+                Fluttertoast.showToast(
+                  msg: 'Please use Edit to enter a valid mobile number',
+                  gravity: ToastGravity.TOP,
+                );
+                return;
+              }
+              _resendMobileOtpAfterEdit(digits);
+            } else {
+              final email = _resolveEmailForOtpUi(
+                  Map<String, dynamic>.from(_formNotifier.formData));
+              if (!email.contains('@')) {
+                Fluttertoast.showToast(
+                  msg: 'Please use Edit to enter a valid email',
+                  gravity: ToastGravity.TOP,
+                );
+                return;
+              }
+              _resendEmailOtpAfterEdit(email);
+            }
           },
           otpExpiry: otpExpiry,
           verifyLoading: _submitLoading,

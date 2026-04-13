@@ -2,6 +2,7 @@ plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
+    id "com.google.gms.google-services"
 }
 
 def localProperties = new Properties()
@@ -23,7 +24,7 @@ if (flutterVersionName == null) {
 }
 
 android {
-    namespace "com.meon.kyc"
+    namespace "com.bpwealth.stoxbox"
     // Compile against latest SDK required by plugins (backward compatible)
     compileSdk 36
     ndkVersion flutter.ndkVersion
@@ -42,7 +43,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.meon.kyc"
+        applicationId "com.bpwealth.stoxbox"
         minSdkVersion flutter.minSdkVersion
       targetSdk 36
         versionCode flutterVersionCode.toInteger()

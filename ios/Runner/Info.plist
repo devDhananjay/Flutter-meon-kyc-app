@@ -78,6 +78,17 @@
 		<string>paytmmp</string>
 		<string>phonepe</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g</string>
+			</array>
+		</dict>
+	</array>
 	
 </dict>
 </plist>

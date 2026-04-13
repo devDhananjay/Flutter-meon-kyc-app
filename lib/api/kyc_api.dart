@@ -21,6 +21,18 @@ class KycAPI {
     );
   }
 
+  /// Backend proxy → review/edit step for a field; on success client refreshes via get-context.
+  static Future<http.Response> reviewEditPage(
+    String company,
+    String workflowName,
+    String currentField,
+  ) {
+    final c = Uri.encodeComponent(company);
+    final w = Uri.encodeComponent(workflowName);
+    final f = Uri.encodeComponent(currentField);
+    return _client.get('/api_review_edit_page/$c/$w/$f');
+  }
+
   static Future<http.Response> submitKycV2(
     String urlCompany,
     String urlWorkflowName,

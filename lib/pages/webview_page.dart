@@ -64,10 +64,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   String _loadingMessage = 'Loading...';
   // Set true once the first page finishes loading (controls full-screen cover behaviour)
   bool _initialPageLoaded = false;
-  // Timeout timer: fires if the page hasn't loaded within 15 seconds
+  // Timeout timer: fires if the page hasn't loaded within 15 seconds (45 s for eSign/PDF)
   Timer? _loadTimeoutTimer;
-  // Slow-network timer: after 5 s still loading, update message to reassure user
+  // Slow-network / hint timers — staged messages on heavy document loads
   Timer? _slowNetworkTimer;
+  Timer? _loadHintTimer2;
   int _reversePennyPollAttempts = 0;
   static const int _maxReversePennyPollAttempts = 18; // ~90 seconds @ 5s interval
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
@@ -83,37 +84,69 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // so a reload caused by the console message doesn't re-clear the guard.
   bool _rpdSigningSessionFlagReset = false;
 
-  /// Starts the 5-second slow-network timer and the 15-second timeout timer.
-  /// Call on every `onLoadStart`. Both timers are cancelled on `onLoadStop`.
-  void _startLoadTimers() {
+  /// eSign / PDF (pdf.js) pages often need more time than a normal HTML page.
+  bool _isEsignPdfHeavyUrl(String url) {
+    final u = url.toLowerCase();
+    return u.contains('cloudesign') ||
+        u.contains('esign.meon') ||
+        u.contains('esignservices') ||
+        u.contains('/esign/') ||
+        u.contains('proteantech') ||
+        u.contains('pdf.js') ||
+        u.contains('cdnjs.cloudflare.com/ajax/libs/pdf.js');
+  }
+
+  static const Duration _defaultLoadTimeout = Duration(seconds: 15);
+  static const Duration _esignLoadTimeout = Duration(seconds: 45);
+
+  /// Starts hint timers and a timeout. Call on every `onLoadStart`; cancel on `onLoadStop`.
+  void _startLoadTimers({String? url}) {
     _cancelLoadTimers();
 
-    // After 5 s update the loading message so users know we're still working.
-    _slowNetworkTimer = Timer(const Duration(seconds: 5), () {
-      if (!mounted || !_isLoading) return;
-      setState(() => _loadingMessage = 'Loading, please wait...');
-    });
+    final sample = (url ?? _currentUrl).toLowerCase();
+    final heavy = _isEsignPdfHeavyUrl(sample);
+    final timeout = heavy ? _esignLoadTimeout : _defaultLoadTimeout;
 
-    // After 15 s give up and show the retry screen.
-    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+    if (heavy) {
+      _slowNetworkTimer = Timer(const Duration(seconds: 3), () {
+        if (!mounted || !_isLoading) return;
+        setState(() => _loadingMessage = 'Loading document...');
+      });
+      _loadHintTimer2 = Timer(const Duration(seconds: 10), () {
+        if (!mounted || !_isLoading) return;
+        setState(() => _loadingMessage = 'Still loading, please wait...');
+      });
+    } else {
+      _slowNetworkTimer = Timer(const Duration(seconds: 5), () {
+        if (!mounted || !_isLoading) return;
+        setState(() => _loadingMessage = 'Loading, please wait...');
+      });
+    }
+
+    _loadTimeoutTimer = Timer(timeout, () {
       if (!mounted || !_isLoading || _hasError) return;
-      debugPrint('[WebView] Load timeout — showing retry UI');
+      debugPrint('[WebView] Load timeout (${timeout.inSeconds}s) — showing retry UI');
       setState(() {
         _isLoading = false;
         _hasError = true;
-        _errorMessage = 'Connection timed out. Please check your network and try again.';
+        _errorMessage =
+            'This step is taking longer than usual. Check your network and tap Try Again.';
         _loadingMessage = 'Loading...';
       });
     });
   }
 
-  /// Cancels both load timers and resets the loading message to the default.
-  void _cancelLoadTimers() {
+  /// Cancels load timers. Optionally keeps [ _loadingMessage ] (e.g. before "Rendering document...").
+  void _cancelLoadTimers({bool resetLoadingMessage = true}) {
     _loadTimeoutTimer?.cancel();
     _loadTimeoutTimer = null;
     _slowNetworkTimer?.cancel();
     _slowNetworkTimer = null;
-    if (mounted && _loadingMessage != 'Loading...') {
+    _loadHintTimer2?.cancel();
+    _loadHintTimer2 = null;
+    if (resetLoadingMessage &&
+        mounted &&
+        _loadingMessage != 'Loading...') {
       setState(() => _loadingMessage = 'Loading...');
     }
   }
@@ -248,6 +281,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     _reversePennyPollTimer?.cancel();
     _loadTimeoutTimer?.cancel();
     _slowNetworkTimer?.cancel();
+    _loadHintTimer2?.cancel();
     super.dispose();
   }
 
@@ -1132,7 +1166,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _hasError = false;
                           _currentUrl = url.toString();
                         });
-                        _startLoadTimers();
+                        _startLoadTimers(url: url.toString());
                         debugPrint('[WebView] Page started: $url');
 
                         // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
@@ -1239,20 +1273,29 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     },
                     onLoadStop: (controller, url) async {
                       if (url != null) {
-                        _cancelLoadTimers();
+                        final urlStr = url.toString();
+                        // Stop timeout/hint timers but keep overlay up briefly on eSign/PDF
+                        // so pdf.js / canvas can paint (avoids blank flash).
+                        _cancelLoadTimers(resetLoadingMessage: false);
+                        final heavyDoc = _isEsignPdfHeavyUrl(urlStr);
+                        if (heavyDoc && mounted) {
+                          setState(() => _loadingMessage = 'Rendering document...');
+                          await Future.delayed(const Duration(milliseconds: 1400));
+                        }
                         if (!mounted) return;
                         setState(() {
                           _isLoading = false;
                           _hasError = false;
                           _initialPageLoaded = true;
-                          _currentUrl = url.toString();
+                          _currentUrl = urlStr;
+                          _loadingMessage = 'Loading...';
                         });
                         debugPrint('[WebView] Page finished: $url');
 
                         // For eSign pages, nudge initial scroll slightly so
                         // important inputs are not hidden under the keyboard.
                         try {
-                          final uri = Uri.tryParse(url.toString());
+                          final uri = Uri.tryParse(urlStr);
                           if (uri != null) {
                             final host = uri.host.toLowerCase();
                             final isCloudesign = host.contains('cloudesign');
@@ -1272,13 +1315,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               '[WebView] Error adjusting scroll for eSign: $e');
                         }
 
-                        if (_isIpvOrFaceFinderUrl(url.toString()) &&
+                        if (_isIpvOrFaceFinderUrl(urlStr) &&
                             _permissionsRequested &&
                             !_hasReloadedAfterPermissions) {
                           Future.delayed(const Duration(milliseconds: 300),
                               () {
                             if (mounted &&
-                                _currentUrl == url.toString() &&
+                                _currentUrl == urlStr &&
                                 !_hasReloadedAfterPermissions) {
                               _hasReloadedAfterPermissions = true;
                               debugPrint(
@@ -1288,9 +1331,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           });
                         }
 
-                        await _onPageFinished(url.toString());
+                        await _onPageFinished(urlStr);
                         await _injectNoAutoScrollJs(controller);
-                        if (_isReversePennyDropUrl(url.toString())) {
+                        if (_isReversePennyDropUrl(urlStr)) {
                           if (!_rpdSigningSessionFlagReset) {
                             try {
                               await controller.evaluateJavascript(
@@ -1304,10 +1347,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         }
 
                         // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
-                        if (_isReversePennyDropUrl(url.toString()) &&
+                        if (_isReversePennyDropUrl(urlStr) &&
                             !_redirectHandled &&
                             !_rpdSuccessHandled) {
-                          final uri = Uri.tryParse(url.toString());
+                          final uri = Uri.tryParse(urlStr);
                           if (uri != null && uri.queryParameters.isNotEmpty) {
                             final completionParamKeys = [
                               'success',
@@ -1627,7 +1670,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                                   _isLoading = true;
                                   _loadingMessage = 'Loading...';
                                 });
-                                _startLoadTimers();
+                                _startLoadTimers(url: _currentUrl);
                                 _webViewController?.reload();
                               },
                             ),
