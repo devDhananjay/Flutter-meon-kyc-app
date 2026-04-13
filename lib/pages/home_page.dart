@@ -642,6 +642,10 @@ class _HomePageState extends State<HomePage> {
     final position = ctx?['position']?.toString()?.toLowerCase();
     if (position == 'segments') {
       data['brokerage_plan'] = 'Brokerage Plan';
+      // UI no longer exposes MTF / currency; keep payload aligned with backend.
+      data['mtf'] = false;
+      data['nse_currency'] = false;
+      data['bse_currency'] = false;
     }
     final fields = _getActiveFields(context.read<AppStore>());
     if (fields == null) return data;
@@ -1566,7 +1570,10 @@ class _HomePageState extends State<HomePage> {
             builder: (context, snapshot) {
               final isAuthenticated = snapshot.data ?? false;
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _formNotifier.updateFields(fieldList, conditionalFlow);
+                if (!mounted) return;
+                _formNotifier.updateFields(fieldList, conditionalFlow);
+                // Must run in same callback *after* updateFields so API `value` is in formData first.
+                _runPersonalDetailsBpWealthPipeline(store, fieldList);
               });
 
               // Get stepper data
@@ -2031,6 +2038,249 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // --- BP Wealth bugfixes (BugFixes → segmentBugResolved) ---
+  // Personal-details step: merge get-context `field.value` (dropoff) into formData,
+  // normalize radio/select option strings, apply PEP/citizen/tax/tariff defaults.
+  // Segments step: `_prepareFormData` forces mtf / NSE-BSE currency off when UI hides them.
+  // ---------------------------------------------------------------------------
+
+  /// Matches workflow option labels (radio or **select** dropdown). Exact match first, then Yes/No prefix.
+  String? _matchRadioOption(List<dynamic>? values, String desired) {
+    if (values == null || values.isEmpty) return null;
+    final want = desired.toLowerCase().trim();
+    for (final o in values) {
+      final s = o.toString();
+      if (s.toLowerCase().trim() == want) return s;
+    }
+    if (want == 'yes') {
+      for (final o in values) {
+        final sl = o.toString().toLowerCase().trim();
+        if (sl.startsWith('y')) return o.toString();
+      }
+    }
+    if (want == 'no') {
+      for (final o in values) {
+        final sl = o.toString().toLowerCase().trim();
+        if (sl.startsWith('n')) return o.toString();
+      }
+    }
+    return null;
+  }
+
+  /// Map API/dropoff value to the exact option string (radio or **select**).
+  String _normalizeRadioToOptions(dynamic raw, List<dynamic>? options) {
+    if (raw == null || options == null || options.isEmpty) {
+      return raw?.toString() ?? '';
+    }
+    final want = raw.toString().trim().toLowerCase();
+    for (final o in options) {
+      final s = o.toString();
+      if (s.toLowerCase().trim() == want) return s;
+    }
+    if (want == 'yes' || want == 'y') {
+      final m = _matchRadioOption(options, 'Yes');
+      if (m != null) return m;
+    }
+    if (want == 'no' || want == 'n') {
+      final m = _matchRadioOption(options, 'No');
+      if (m != null) return m;
+    }
+    if (want.startsWith('y')) {
+      final m = _matchRadioOption(options, 'Yes');
+      if (m != null) return m;
+    }
+    if (want.startsWith('n')) {
+      final m = _matchRadioOption(options, 'No');
+      if (m != null) return m;
+    }
+    return raw.toString();
+  }
+
+  /// Prefer in-memory value; if unset or blank string, use workflow `field['value']` (dropoff).
+  dynamic _coalesceFormFieldValue(dynamic formValue, dynamic fieldValue) {
+    if (formValue == null) return fieldValue;
+    if (formValue is String && formValue.trim().isEmpty) return fieldValue;
+    return formValue;
+  }
+
+  /// True when [formData] has no meaningful value yet (merge dropoff/API into form).
+  bool _shouldMergeFromApi(dynamic existing) {
+    if (existing == null) return true;
+    if (existing is String && existing.trim().isEmpty) return true;
+    return false;
+  }
+
+  /// Push `field['value']` from get-context (incl. dropoff) into [formData] so radios/checkboxes
+  /// match option strings and submit payload is correct. Skips when user already has a value.
+  void _mergePersonalDetailsFromFieldDefinitions(List<dynamic> fieldList) {
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      final name = f['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+      final existing = _formNotifier.formData[name];
+      if (!_shouldMergeFromApi(existing)) continue;
+
+      final apiValue = f['value'];
+      if (apiValue == null) continue;
+
+      final type = f['type']?.toString() ?? '';
+      final validation = f['validation']?.toString();
+      final values = f['values'] as List?;
+
+      if (type == 'radio' || type == 'select') {
+        final normalized = _normalizeRadioToOptions(apiValue, values);
+        _formNotifier.handleChange(name, normalized,
+            type: type, validationType: validation);
+      } else if (type == 'checkbox') {
+        final v = apiValue is bool
+            ? apiValue
+            : apiValue.toString().toLowerCase() == 'true' ||
+                apiValue.toString() == '1';
+        _formNotifier.handleChange(name, v,
+            type: 'checkbox', validationType: validation);
+      } else {
+        _formNotifier.handleChange(name, apiValue,
+            type: type.isEmpty ? 'text' : type, validationType: validation);
+      }
+    }
+  }
+
+  /// Fix casing mismatch for radio and **select** (dropdown) option lists.
+  void _normalizePersonalDetailRadios(List<dynamic> fieldList) {
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      final type = f['type']?.toString() ?? '';
+      if (type != 'radio' && type != 'select') continue;
+      final name = f['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+      final values = f['values'] as List?;
+      final raw = _formNotifier.formData[name];
+      if (raw == null) continue;
+      final fixed = _normalizeRadioToOptions(raw, values);
+      if (fixed != raw.toString()) {
+        _formNotifier.handleChange(name, fixed,
+            type: type, validationType: f['validation']?.toString());
+      }
+    }
+  }
+
+  bool get _isBpWealthCompany =>
+      widget.company.toLowerCase().trim() == 'bpwealth';
+
+  /// BP Wealth only: merge dropoff, normalize radios, then PEP/citizen/tax/tariff defaults.
+  void _runPersonalDetailsBpWealthPipeline(
+    AppStore store,
+    List<dynamic> fieldList,
+  ) {
+    if (!_isBpWealthCompany) return;
+    final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+    var position = ctx?['position']?.toString().toLowerCase() ?? '';
+    var pageLabel =
+        ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+    if (position.isEmpty || pageLabel.isEmpty) {
+      final workflow = store.fields as Map?;
+      position = (workflow?['position']?.toString() ?? '').toLowerCase();
+      pageLabel = (workflow?['data']?['label']?.toString() ?? '').toLowerCase();
+    }
+    final isPersonalDetails = position == 'personal_details' ||
+        pageLabel == 'personal_details';
+    if (!isPersonalDetails) return;
+
+    debugPrint(
+        '[HomePage] personal_details BP Wealth pipeline: fields=${fieldList.length}');
+    _mergePersonalDetailsFromFieldDefinitions(fieldList);
+    _normalizePersonalDetailRadios(fieldList); // radio + select (dropdowns)
+    _applyPersonalDetailsDefaults(fieldList);
+  }
+
+  /// Personal details step: defaults when API/dropoff did not pre-fill.
+  void _applyPersonalDetailsDefaults(List<dynamic> fieldList) {
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      final name = f['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+      if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
+
+      final dn = (f['displayName']?.toString() ?? '').toLowerCase();
+      final nl = name.toLowerCase();
+      final type = f['type']?.toString() ?? '';
+      final values = f['values'] as List?;
+      final validation = f['validation']?.toString();
+
+      if (type == 'radio' || type == 'select') {
+        final vYes = _matchRadioOption(values, 'Yes');
+        final vNo = _matchRadioOption(values, 'No');
+
+        final politicallyExposed = nl.contains('pep') ||
+            (dn.contains('political') &&
+                (dn.contains('expos') ||
+                    dn.contains('pep') ||
+                    dn.contains('person'))) ||
+            (nl.contains('political') && nl.contains('expos')) ||
+            dn.contains('politically');
+        if (politicallyExposed && vNo != null) {
+          _formNotifier.handleChange(name, vNo,
+              type: type, validationType: validation);
+          continue;
+        }
+
+        final citizenIndia = (dn.contains('citizen') && dn.contains('india')) ||
+            (nl.contains('citizen') &&
+                (nl.contains('india') || nl.contains('indian')));
+        if (citizenIndia && vYes != null) {
+          _formNotifier.handleChange(name, vYes,
+              type: type, validationType: validation);
+          continue;
+        }
+
+        final taxResidencyOutside = (dn.contains('tax') && dn.contains('residen')) ||
+            (nl.contains('tax') && nl.contains('residen')) ||
+            (dn.contains('residen') && dn.contains('outside')) ||
+            nl.contains('tax_resid') ||
+            nl.contains('tax_residency');
+        if (taxResidencyOutside && vNo != null) {
+          _formNotifier.handleChange(name, vNo,
+              type: type, validationType: validation);
+          continue;
+        }
+
+        // Tariff / "continue your journey" style dropdown — pick default/tariff option if any.
+        final journeyTariff = dn.contains('tariff') ||
+            nl.contains('tariff') ||
+            (dn.contains('journey') && dn.contains('continue')) ||
+            (dn.contains('please select') && dn.contains('continue')) ||
+            (dn.contains('option') && dn.contains('continue'));
+        if (journeyTariff && values != null && values.isNotEmpty) {
+          String? pick;
+          for (final o in values) {
+            final s = o.toString();
+            final sl = s.toLowerCase();
+            if (sl.contains('default') ||
+                sl.contains('tariff') ||
+                sl.contains('brokerage') ||
+                sl.contains('stoxbox')) {
+              pick = s;
+              break;
+            }
+          }
+          pick ??= values.first.toString();
+          _formNotifier.handleChange(name, pick,
+              type: type, validationType: validation);
+          continue;
+        }
+        continue;
+      }
+
+      if (type == 'checkbox') {
+        final tariff = dn.contains('tariff') || nl.contains('tariff');
+        if (tariff) {
+          _formNotifier.handleChange(name, true,
+              type: 'checkbox', validationType: validation);
+        }
+      }
+    }
+  }
+
   Widget _buildForm(
     List fieldList,
     dynamic activeFields,
@@ -2064,14 +2314,10 @@ class _HomePageState extends State<HomePage> {
       const segmentKeys = <String>[
         'nse_cash',
         'nse_fo',
-        'nse_currency',
         'nse_slbm',
         'bse_cash',
         'bse_fo',
-        'bse_currency',
-        'bse_slbm',
         'mf',
-        'mtf',
       ];
       var didApplyDefaults = false;
       for (final key in segmentKeys) {
@@ -2369,7 +2615,10 @@ class _HomePageState extends State<HomePage> {
                       mandatory: field['mandatory'] == true,
                       validation: field['validation'],
                       popupAfterSubmit: activeFields?['popupAfterSubmit'] as List?,
-                      value: _formNotifier.formData[name] ?? field['value'],
+                      value: _coalesceFormFieldValue(
+                        _formNotifier.formData[name],
+                        field['value'],
+                      ),
                       onGoogleSignIn: _handleGoogleSignIn,
                       googleSignInLoading: _googleSignInLoading,
                       onChange: (n, v) {

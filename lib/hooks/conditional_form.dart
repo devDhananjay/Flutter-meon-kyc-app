@@ -40,8 +40,14 @@ class ConditionalFormNotifier extends ChangeNotifier {
       for (final f in fields) {
         if (f is Map && f['name'] != null) {
           final val = f['value'];
-          if (val != null && !formData.containsKey(f['name'])) {
-            formData[f['name']] = f['type'] == 'checkbox' ? (val == true) : val;
+          if (val == null) continue;
+          final name = f['name'];
+          final current = formData[name];
+          // BugFixes: treat blank string as unset so get-context dropoff can populate.
+          final unset = current == null ||
+              (current is String && current.trim().isEmpty);
+          if (!formData.containsKey(name) || unset) {
+            formData[name] = f['type'] == 'checkbox' ? (val == true) : val;
           }
         }
       }
@@ -73,7 +79,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
   }
 
   String _processValue(String name, dynamic value, String type, String? validationType, String? validateWith) {
-    if (type == 'checkbox' || type == 'file') return value.toString();
+    // BugFixes: dropdown (select) values must not be truncated like generic text.
+    if (type == 'checkbox' || type == 'file' || type == 'select') {
+      return value.toString();
+    }
     var processed = value.toString();
     final maxLen = validationMaxLengths[validationType ?? ''] ?? 35;
     if (processed.length > maxLen) processed = processed.substring(0, maxLen);

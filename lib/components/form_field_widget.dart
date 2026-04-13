@@ -3,9 +3,41 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:intl/intl.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+
+// BugFixes: date helpers + select value resolution + date picker use existing API value (dropoff).
+
+/// Stored value is ISO `yyyy-MM-dd`; UI shows US-style `MM/dd/yyyy`.
+DateTime? _parseDateFieldValue(dynamic value) {
+  if (value == null) return null;
+  final s = value.toString().trim();
+  if (s.isEmpty) return null;
+  final normalized = s.replaceAll('/', '-');
+  final d = DateTime.tryParse(normalized);
+  if (d != null) return d;
+  final m = RegExp(r'^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$').firstMatch(s);
+  if (m != null) {
+    final month = int.tryParse(m.group(1)!);
+    final day = int.tryParse(m.group(2)!);
+    final year = int.tryParse(m.group(3)!);
+    if (month != null && day != null && year != null) {
+      return DateTime(year, month, day);
+    }
+  }
+  return null;
+}
+
+String _formatDateFieldDisplay(dynamic value) {
+  if (value == null) return 'Select date';
+  final s = value.toString().trim();
+  if (s.isEmpty) return 'Select date';
+  final d = _parseDateFieldValue(value);
+  if (d == null) return s;
+  return DateFormat('MM/dd/yyyy').format(d);
+}
 
 class FormFieldWidget extends StatefulWidget {
   final String name;
@@ -415,19 +447,33 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
 
   Widget _buildSelect() {
     final options = widget.values ?? [];
-    
-    // Validate value: only use it if it's not empty AND exists in options
-    final currentValue = widget.value?.toString();
-    final isValidValue = currentValue != null && 
-                         currentValue.isNotEmpty && 
-                         options.any((e) => e.toString() == currentValue);
-    
+
+    /// Match API/dropoff value to a dropdown item (exact or case-insensitive).
+    String? _resolveSelectChoice(String? raw, List<dynamic> opts) {
+      if (raw == null || raw.trim().isEmpty) return null;
+      final t = raw.trim();
+      for (final e in opts) {
+        final s = e.toString();
+        if (s == t) return s;
+      }
+      final tl = t.toLowerCase();
+      for (final e in opts) {
+        final s = e.toString();
+        if (s.toLowerCase().trim() == tl) return s;
+      }
+      return null;
+    }
+
+    final currentRaw = widget.value?.toString();
+    final resolvedValue = _resolveSelectChoice(currentRaw, options);
+    final isValidValue = resolvedValue != null;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildLabel(widget.displayName),
         DropdownButtonFormField<String>(
-          value: isValidValue ? currentValue : null, // Only set if valid, else show hint
+          value: isValidValue ? resolvedValue : null,
           decoration: const InputDecoration(border: OutlineInputBorder()),
           hint: Text(widget.displayName),
           isExpanded: true, // Prevents overflow by expanding to available width
@@ -458,11 +504,17 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           onTap: widget.disable
               ? null
               : () async {
+                  final now = DateTime.now();
+                  final first = DateTime(1900);
+                  final existing = _parseDateFieldValue(widget.value);
+                  var initial = existing ?? now;
+                  if (initial.isAfter(now)) initial = now;
+                  if (initial.isBefore(first)) initial = first;
                   final d = await showDatePicker(
                     context: context,
-                    initialDate: DateTime.now(),
-                    firstDate: DateTime(1900),
-                    lastDate: DateTime.now(),
+                    initialDate: initial,
+                    firstDate: first,
+                    lastDate: now,
                   );
                   if (d != null) {
                     widget.onChange(widget.name, d.toIso8601String().split('T')[0]);
@@ -475,9 +527,12 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               prefixIcon: _getFieldIcon(),
             ),
             child: Text(
-              widget.value?.toString() ?? 'Select date',
+              _formatDateFieldDisplay(widget.value),
               style: TextStyle(
-                color: widget.value != null ? null : Colors.grey,
+                color: widget.value != null &&
+                        widget.value.toString().trim().isNotEmpty
+                    ? null
+                    : Colors.grey,
               ),
             ),
           ),
