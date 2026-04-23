@@ -15,7 +15,7 @@ class SsoTokenResult {
 }
 
 class SsoAPI {
-  static const String _ssoBaseUrl = 'https://improvements-lectures-optics-prix.trycloudflare.com';
+  static const String _ssoBaseUrl = 'https://live.meon.co.in';
   static const String _ssoRoutePath = '/get_sso_route';
 
   static const List<String> _containerKeys = [
