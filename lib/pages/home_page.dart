@@ -14,6 +14,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:meon_kyc/firebase_options.dart';
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
+import 'package:meon_kyc/api/sso_api.dart';
 import 'package:meon_kyc/components/form_field_widget.dart';
 import 'package:meon_kyc/components/kyc_layout.dart';
 import 'package:meon_kyc/components/kyc_stepper_bar.dart';
@@ -70,6 +71,11 @@ class _HomePageState extends State<HomePage> {
   bool _showTermsError = false; // Show validation message under T&C checkbox
   bool _showMobileError = false; // Show error below mobile input when invalid on submit
   bool _googleSignInLoading = false;
+
+  // One-shot guard: if we already attempted SSO for this widget instance,
+  // don't retry on rebuild.
+  bool _ssoAttempted = false;
+  bool _ssoInProgress = false;
 
   /// Kept across `_formNotifier.resetForm()` inside `_handleSubmitResponse` so `mobile_otp`
   /// resend + header text still know the number (get-context fields often omit it).
@@ -156,6 +162,47 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ------------------------------------------------
+  Future<bool> _trySsoLoginIfNeeded(AppStore store) async {
+    if (_ssoAttempted || _ssoInProgress) return _ssoAttempted;
+
+    _ssoInProgress = true;
+    try {
+      // Static mobile/email for now (as requested by user).
+      const mobileNumber = '9411441937';
+      const email = 'dhananjay@meon.co.in';
+
+      debugPrint('[HomePage] No access token - attempting SSO login...');
+      final tokens = await SsoAPI.getSsoRouteTokens(
+        company: widget.company,
+        workflowName: widget.workflowName,
+        mobileNumber: mobileNumber,
+        email: email,
+      );
+
+      if (tokens == null) {
+        debugPrint('[HomePage] SSO token fetch failed - fallback to OTP flow');
+        return false;
+      }
+
+      await StorageService.setAccessToken(tokens.accessToken);
+      await StorageService.setRefreshToken(tokens.refreshToken);
+      await StorageService.setAuthSuccess('true');
+
+      // Safety fallback in case backend still returns an OTP step.
+      _persistedMobileDigitsForOtp = mobileNumber;
+      _persistedEmailForOtp = email;
+
+      store.clearAuthError();
+      debugPrint('[HomePage] SSO tokens stored successfully');
+      return true;
+    } catch (e, st) {
+      debugPrint('[HomePage] SSO login exception: $e\n$st');
+      return false;
+    } finally {
+      _ssoInProgress = false;
+      _ssoAttempted = true;
+    }
+  }
 
   Future<void> _loadWorkflow() async {
     // Prevent concurrent calls — a second call while one is in flight is a no-op.
@@ -178,8 +225,20 @@ class _HomePageState extends State<HomePage> {
 
     try {
       store.setParams(company: widget.company, workflowName: widget.workflowName);
-      final hasToken = await StorageService.hasAccessToken();
+      bool hasToken = await StorageService.hasAccessToken();
       debugPrint('[HomePage] _loadWorkflow hasToken=$hasToken');
+
+      // Always attempt SSO on first _loadWorkflow() for this widget instance.
+      // Reason: SSO should drive backend to set the correct
+      // `fieldsWithAuth.context.position` (skip mobile/OTP modules).
+      if (!_ssoAttempted) {
+        debugPrint('[HomePage] First-load: forcing SSO attempt (hasToken=$hasToken)');
+        if (mounted) setState(() => _submitLoading = true);
+        final ssoOk = await _trySsoLoginIfNeeded(store);
+        if (mounted) setState(() => _submitLoading = false);
+        hasToken = hasToken || ssoOk;
+      }
+
       if (hasToken) {
         // Build query string from redirect params (state, client_token, auto)
         final queryString = widget.queryParams.isEmpty
@@ -3192,6 +3251,42 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// OTP verify card: separate UI for email_otp vs mobile_otp (Figma)
+  Future<void> _resendOtpByPosition({
+    required AppStore store,
+    required String positionSegment,
+    required Map<String, dynamic> payload,
+    required String failureMessage,
+  }) async {
+    final endpoint = '/api/resend-otp/$positionSegment';
+    debugPrint('[HomePage] Resend OTP via $endpoint payload=$payload');
+    final client = ApiClient();
+    final res = await client.post(endpoint, body: payload);
+    debugPrint('[HomePage] Resend OTP response status=${res.statusCode}');
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      Fluttertoast.showToast(
+        msg: _errorMessageFromResponse(res.statusCode, res.body),
+        gravity: ToastGravity.TOP,
+      );
+      return;
+    }
+    await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
+    if (mounted && store.errorWithAuth != null) {
+      Fluttertoast.showToast(
+        msg: store.errorWithAuth ?? failureMessage,
+        gravity: ToastGravity.TOP,
+      );
+      return;
+    }
+  }
+
+  String _getResendOtpPositionSegment(Map? ctx, String fallbackPosition) {
+    final position = (ctx?['position']?.toString().toLowerCase() ?? '').trim();
+    final pageId = (ctx?['page']?['id']?.toString() ?? '').trim();
+    final effectivePosition = position.isNotEmpty ? position : fallbackPosition;
+    if (pageId.isEmpty) return effectivePosition;
+    return '$effectivePosition$pageId';
+  }
+
   Future<void> _resendMobileOtpAfterEdit(String mobileNumber) async {
     _persistedMobileDigitsForOtp = mobileNumber;
     final store = context.read<AppStore>();
@@ -3199,17 +3294,16 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     setState(() => _submitLoading = true);
     try {
+      final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+      final resendPositionSegment =
+          _getResendOtpPositionSegment(ctx, 'mobile_otp');
       final payload = <String, dynamic>{'mobile_number': mobileNumber};
-      debugPrint(
-          '[HomePage] Resend mobile OTP via /api/get-user payload=$payload');
-      final headers = {'Content-Type': 'application/json'};
-      final res = await KycAPI.submitKyc(
-        widget.company,
-        widget.workflowName,
-        payload,
-        headers,
+      await _resendOtpByPosition(
+        store: store,
+        positionSegment: resendPositionSegment,
+        payload: payload,
+        failureMessage: 'Failed to refresh OTP step',
       );
-      await _handleSubmitResponse(res, store);
     } finally {
       if (mounted) {
         setState(() => _submitLoading = false);
@@ -3226,31 +3320,15 @@ class _HomePageState extends State<HomePage> {
     setState(() => _submitLoading = true);
     try {
       final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
-      final idxRaw = ctx?['index']?.toString() ?? '';
-      final idx = int.tryParse(idxRaw);
-      final resendIndex = (idx != null && idx > 1) ? idx - 1 : 1;
-      final endpoint =
-          '/api/kyc-post-v2/${widget.company}/${widget.workflowName}/email$resendIndex';
+      final resendPositionSegment =
+          _getResendOtpPositionSegment(ctx, 'email_otp');
       final payload = <String, dynamic>{'email': trimmed};
-      debugPrint('[HomePage] Resend email OTP via $endpoint payload=$payload');
-      final client = ApiClient();
-      final res = await client.post(endpoint, body: payload);
-      debugPrint('[HomePage] Resend email OTP response status=${res.statusCode}');
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        Fluttertoast.showToast(
-          msg: _errorMessageFromResponse(res.statusCode, res.body),
-          gravity: ToastGravity.TOP,
-        );
-        return;
-      }
-      await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
-      if (mounted && store.errorWithAuth != null) {
-        Fluttertoast.showToast(
-          msg: store.errorWithAuth ?? 'Failed to refresh OTP step',
-          gravity: ToastGravity.TOP,
-        );
-        return;
-      }
+      await _resendOtpByPosition(
+        store: store,
+        positionSegment: resendPositionSegment,
+        payload: payload,
+        failureMessage: 'Failed to refresh OTP step',
+      );
       if (mounted) {
         _applyPersistedEmailToForm();
       }
