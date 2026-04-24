@@ -194,6 +194,8 @@ class _HomePageState extends State<HomePage> {
 
       store.clearAuthError();
       debugPrint('[HomePage] SSO tokens stored successfully');
+      // Give backend a moment to persist session before first get-context (avoids intermittent 500).
+      await Future.delayed(const Duration(milliseconds: 600));
       return true;
     } catch (e, st) {
       debugPrint('[HomePage] SSO login exception: $e\n$st');
@@ -228,15 +230,22 @@ class _HomePageState extends State<HomePage> {
       bool hasToken = await StorageService.hasAccessToken();
       debugPrint('[HomePage] _loadWorkflow hasToken=$hasToken');
 
-      // Always attempt SSO on first _loadWorkflow() for this widget instance.
-      // Reason: SSO should drive backend to set the correct
-      // `fieldsWithAuth.context.position` (skip mobile/OTP modules).
-      if (!_ssoAttempted) {
+      // Auto-SSO only on fresh app journey.
+      // Do NOT auto-SSO when returning from WebView (keep current token),
+      // and do NOT auto-SSO after explicit logout (user should continue with get-user flow).
+      final shouldTrySso = !_ssoAttempted &&
+          StorageService.ssoAutoLoginEnabled &&
+          !store.isReturningFromWebView;
+      if (shouldTrySso) {
         debugPrint('[HomePage] First-load: forcing SSO attempt (hasToken=$hasToken)');
         if (mounted) setState(() => _submitLoading = true);
         final ssoOk = await _trySsoLoginIfNeeded(store);
         if (mounted) setState(() => _submitLoading = false);
         hasToken = hasToken || ssoOk;
+      } else if (!_ssoAttempted) {
+        debugPrint(
+            '[HomePage] Skipping auto-SSO (returnFromWebView=${store.isReturningFromWebView}, ssoAutoEnabled=${StorageService.ssoAutoLoginEnabled})');
+        _ssoAttempted = true;
       }
 
       if (hasToken) {
@@ -519,6 +528,64 @@ class _HomePageState extends State<HomePage> {
         }
         
         // For all OTHER redirects - open WebView (like DigiLocker)
+        // But if backend returns internal workflow path first (e.g. /bpwealth/individual),
+        // do not open that URL in WebView. Refresh context once and open only external URL.
+        final lowerRedirect = redirectUrl.toLowerCase();
+        final internalWorkflowPath = '/${widget.company.toLowerCase()}/${widget.workflowName.toLowerCase()}';
+        final looksInternalWorkflowRedirect =
+            lowerRedirect == internalWorkflowPath ||
+            lowerRedirect == '${internalWorkflowPath}/' ||
+            lowerRedirect.startsWith('$internalWorkflowPath?');
+        if (looksInternalWorkflowRedirect) {
+          debugPrint(
+              '[HomePage] Internal workflow redirect received - refreshing context once instead of opening WebView: $redirectUrl');
+          await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
+          final refreshed = store.fieldsWithAuth;
+          if (refreshed is Map &&
+              refreshed['redirect'] == true &&
+              (refreshed['url']?.toString().isNotEmpty ?? false)) {
+            final nextRedirectUrl = refreshed['url']!.toString();
+            final refreshedMsg = refreshed['msg']?.toString() ?? msg;
+            final nextLower = nextRedirectUrl.toLowerCase();
+            final stillInternal =
+                nextLower == internalWorkflowPath ||
+                nextLower == '${internalWorkflowPath}/' ||
+                nextLower.startsWith('$internalWorkflowPath?');
+            if (stillInternal) {
+              debugPrint(
+                  '[HomePage] Refreshed redirect is still internal workflow URL - staying in app flow');
+              return;
+            }
+
+            String refreshedFinalUrl;
+            if (nextRedirectUrl.startsWith('http://') ||
+                nextRedirectUrl.startsWith('https://')) {
+              refreshedFinalUrl = nextRedirectUrl;
+            } else {
+              var relativeUrl =
+                  nextRedirectUrl.startsWith('/') ? nextRedirectUrl : '/$nextRedirectUrl';
+              if (widget.queryParams.isNotEmpty && !relativeUrl.contains('state')) {
+                final separator = relativeUrl.contains('?') ? '&' : '?';
+                final preservedParams = widget.queryParams.entries
+                    .where((e) => e.key != 'verifyCompleted')
+                    .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
+                    .join('&');
+                if (preservedParams.isNotEmpty) {
+                  relativeUrl = '$relativeUrl$separator$preservedParams';
+                }
+              }
+              refreshedFinalUrl = '${EnvConfig.baseUrl}$relativeUrl';
+            }
+
+            refreshedFinalUrl = _forceHttpsForRpd(refreshedFinalUrl);
+            final friendlyTitle = _deriveWebViewTitle(refreshedMsg, refreshedFinalUrl);
+            debugPrint(
+                '[HomePage] Opening WebView after internal-redirect refresh: $refreshedFinalUrl');
+            await _openWebViewWithTransitionLoader(refreshedFinalUrl, friendlyTitle);
+          }
+          return;
+        }
+
         String finalUrl;
         if (redirectUrl.startsWith('http://') || redirectUrl.startsWith('https://')) {
           finalUrl = redirectUrl;
@@ -629,7 +696,7 @@ class _HomePageState extends State<HomePage> {
       } else if (host.contains('ipv') ||
           path.contains('ipv') ||
           path.contains('face')) {
-        module = 'Video KYC';
+        module = 'Face Verification';
       }
     }
 
@@ -645,6 +712,8 @@ class _HomePageState extends State<HomePage> {
 
   int _getStepperIndex(AppStore store, bool isAuth) {
     if (!isAuth) return 0;
+
+    String normalize(String s) => s.toLowerCase().trim().replaceAll(' ', '_');
     
     // Use dynamic position-based index from AppStore
     final currentIndex = store.getCurrentStepIndex();
@@ -652,18 +721,51 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] Stepper index from position: $currentIndex');
       return currentIndex;
     }
-    
-    // Fallback to old logic if position not found
+
+    final displayedSteps = _getStepperSteps(store);
+
+    // Fallback 1 (legacy): backend index/step value.
+    // Backend commonly sends one-based index (e.g., "16" for the second mobile_otp step).
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
     if (ctx is Map) {
       // Try 'index' first (from get-context response), then 'step'
       final indexStr = ctx['index']?.toString() ?? ctx['step']?.toString();
       if (indexStr != null) {
         final idx = int.tryParse(indexStr);
-        if (idx != null && idx >= 0) {
-          final steps = store.getStepperSteps();
-          return idx.clamp(0, steps.length > 0 ? steps.length - 1 : 4);
+        if (idx != null) {
+          final steps = displayedSteps;
+          final maxIndex = steps.isNotEmpty ? steps.length - 1 : 4;
+          // Prefer one-based interpretation when possible.
+          if (idx >= 1 && idx <= steps.length) {
+            return (idx - 1).clamp(0, maxIndex);
+          }
+          // Fallback: already zero-based.
+          if (idx >= 0) {
+            return idx.clamp(0, maxIndex);
+          }
         }
+      }
+    }
+
+    // Fallback 2: derive from current position against the same step list that UI shows
+    // (works even when stepper metadata API is unavailable).
+    final position = (store.currentPosition ?? '').toLowerCase().trim();
+    if (position.isNotEmpty && displayedSteps.isNotEmpty) {
+      final normalizedPosition = normalize(position);
+      var byPosition = displayedSteps.indexWhere(
+        (step) => normalize(step) == normalizedPosition,
+      );
+      if (byPosition == -1) {
+        byPosition = displayedSteps.indexWhere((step) {
+          final n = normalize(step);
+          return n.startsWith(normalizedPosition) ||
+              normalizedPosition.startsWith(n);
+        });
+      }
+      if (byPosition != -1) {
+        debugPrint(
+            '[HomePage] Stepper index from fallback position "$position": $byPosition');
+        return byPosition;
       }
     }
     return 0;
@@ -972,9 +1074,30 @@ class _HomePageState extends State<HomePage> {
         // Keep loading indicator visible during get-context call for smooth transition
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
+          if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
+            debugPrint(
+                '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
+            Fluttertoast.showToast(
+              msg: 'Could not refresh your progress. Please try again.',
+              gravity: ToastGravity.TOP,
+            );
+            return;
+          }
           await _clearCookiesAndRefresh();
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           return;
+        }
+        if (mounted) {
+          final authResponse = store.fieldsWithAuth;
+          if (authResponse is Map && authResponse['is_admin'] == true) {
+            debugPrint('[HomePage] Submit response indicates completion (is_admin=true) - navigating to completed');
+            await store.fetchUserDetails();
+            if (!mounted) return;
+            if (store.userDetails != null) {
+              context.go('/${widget.company}/${widget.workflowName}/completed');
+              return;
+            }
+          }
         }
         if (mounted) {
           final ctx = store.fieldsWithAuth as Map?;
@@ -1328,10 +1451,33 @@ class _HomePageState extends State<HomePage> {
         // Keep loading indicator visible during get-context call for smooth transition
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
+          if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
+            debugPrint(
+                '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
+            Fluttertoast.showToast(
+              msg: 'Could not refresh your progress. Please try again.',
+              gravity: ToastGravity.TOP,
+            );
+            if (mounted) setState(() => _submitLoading = false);
+            return;
+          }
           await _clearCookiesAndRefresh();
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           if (mounted) setState(() => _submitLoading = false);
           return;
+        }
+        if (mounted) {
+          final authResponse = store.fieldsWithAuth;
+          if (authResponse is Map && authResponse['is_admin'] == true) {
+            debugPrint('[HomePage] Common submit indicates completion (is_admin=true) - navigating to completed');
+            await store.fetchUserDetails();
+            if (!mounted) return;
+            if (store.userDetails != null) {
+              setState(() => _submitLoading = false);
+              context.go('/${widget.company}/${widget.workflowName}/completed');
+              return;
+            }
+          }
         }
         if (mounted) {
           final ctx = store.fieldsWithAuth as Map?;
@@ -1365,6 +1511,19 @@ class _HomePageState extends State<HomePage> {
       Fluttertoast.showToast(msg: 'Something went wrong. Please try again.', gravity: ToastGravity.TOP);
       if (mounted) setState(() => _submitLoading = false);
     }
+  }
+
+  /// When [AppStore.errorWithAuth] is set to an HTML/5xx page, the session is usually still valid;
+  /// wiping storage only forces an unauthenticated workflow load (`hasToken=false`).
+  static bool _isHtmlOrInfraErrorBody(String? err) {
+    if (err == null || err.isEmpty) return false;
+    final t = err.trim().toLowerCase();
+    return t.startsWith('<!doctype') ||
+        t.contains('<html') ||
+        t.contains('internal server error') ||
+        t.contains('502 bad gateway') ||
+        t.contains('503 service unavailable') ||
+        t.contains('504 gateway');
   }
 
   Future<void> _clearCookiesAndRefresh() async {
@@ -1515,6 +1674,9 @@ class _HomePageState extends State<HomePage> {
       // Step 2: Clear all auth tokens and data
       await StorageService.clearAll();
       debugPrint('[HomePage] Tokens cleared');
+      // Keep post-logout flow on get-user token until app restart.
+      StorageService.setSsoAutoLoginEnabled(false);
+      _ssoAttempted = true;
       
       // Step 3: Reset form state
       _formNotifier.resetForm();
@@ -2388,6 +2550,14 @@ class _HomePageState extends State<HomePage> {
       if (didApplyDefaults) {
         debugPrint(
             '[HomePage] Applied default segment selections for bpwealth');
+      }
+
+      // UI says "Default Brokerage plan applied"; keep validation state aligned
+      // so user is not blocked with "Please select brokerage plan".
+      final brokerage = _formNotifier.formData['brokerage_plan']?.toString().trim() ?? '';
+      if (brokerage.isEmpty) {
+        _formNotifier.handleChange('brokerage_plan', 'Brokerage Plan');
+        debugPrint('[HomePage] Applied default brokerage_plan for segments');
       }
     }
 
@@ -3348,9 +3518,10 @@ class _HomePageState extends State<HomePage> {
     final otpName = otpField['name']?.toString() ?? 'otp';
     final formData = _formNotifier.formData;
     final store = context.read<AppStore>();
-    final position = (store.fieldsWithAuth as Map?)?['context']?['position']?.toString().toLowerCase() ?? '';
-    final isEmailOtp = position == 'email_otp';
-    final isMobileOtp = position == 'mobile_otp';
+    final position =
+        (store.fieldsWithAuth as Map?)?['context']?['position']?.toString().toLowerCase() ?? '';
+    final isEmailOtp = position == 'email_otp' || position.startsWith('email_otp');
+    final isMobileOtp = position == 'mobile_otp' || position.startsWith('mobile_otp');
 
     // Step-specific copy: no mobile/SMS wording on email_otp
     final String sentToText;
@@ -3368,7 +3539,7 @@ class _HomePageState extends State<HomePage> {
           'We have sent you an OTP via sms on +91 ${displayDigits.isEmpty ? '' : displayDigits}';
       onEdit = isMobileOtp
           ? () {
-              _requestReviewEditAndRefreshContext('mobile');
+              _requestReviewEditAndRefreshContext('change_mobile');
             }
           : null;
     }

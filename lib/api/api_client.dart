@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:meon_kyc/api/base_api.dart';
@@ -40,6 +39,8 @@ class ApiClient {
       final token = await StorageService.getAccessToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
+        final csrf = BaseAPI.csrfFromJwtAccessToken(token);
+        if (csrf != null) request.headers['X-CSRF-TOKEN'] = csrf;
         debugPrint('[API MULTIPART] Authorization header set (token length: ${token.length})');
       } else {
         debugPrint('[API MULTIPART] WARNING: No access token in storage');

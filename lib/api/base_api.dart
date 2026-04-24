@@ -12,6 +12,37 @@ class BaseAPI {
 
   String get _baseUrl => EnvConfig.baseUrl;
 
+  /// Reads [csrf] from JWT payload when present (e.g. Flask-JWT-Extended).
+  /// Used by [ApiClient] multipart requests; same header as JSON calls.
+  static String? csrfFromJwtAccessToken(String token) => _csrfFromAccessToken(token);
+
+  static String? _csrfFromAccessToken(String token) {
+    final firstDot = token.indexOf('.');
+    final secondDot = token.indexOf('.', firstDot + 1);
+    if (firstDot <= 0 || secondDot <= firstDot) return null;
+    final segment = token.substring(firstDot + 1, secondDot);
+    final pad = (4 - (segment.length % 4)) % 4;
+    final padded = segment + ('=' * pad);
+    try {
+      final jsonStr = utf8.decode(base64Url.decode(padded));
+      final decoded = jsonDecode(jsonStr);
+      if (decoded is! Map) return null;
+      final csrf = decoded['csrf'];
+      if (csrf == null) return null;
+      final s = csrf.toString();
+      return s.isEmpty ? null : s;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void _applyBearerAndCsrf(Map<String, String> headers, String? token) {
+    if (token == null || token.isEmpty) return;
+    headers['Authorization'] = 'Bearer $token';
+    final csrf = _csrfFromAccessToken(token);
+    if (csrf != null) headers['X-CSRF-TOKEN'] = csrf;
+  }
+
   static void _log(String tag, String message, [String? extra]) {
     debugPrint('[API $tag] $message${extra != null ? '\n$extra' : ''}');
   }
@@ -27,7 +58,7 @@ class BaseAPI {
     final token = await StorageService.getAccessToken();
     debugPrint('[API] Token: $token');
     final h = {...?headers, 'Content-Type': 'application/json'};
-    if (token != null) h['Authorization'] = 'Bearer $token';
+    _applyBearerAndCsrf(h, token);
     try {
       final res = await http.get(Uri.parse(url), headers: h);
       _log('GET', 'Response ${res.statusCode}: $url', _truncate(res.body));
@@ -56,7 +87,7 @@ class BaseAPI {
     if (!h.containsKey('Content-Type')) {
       h['Content-Type'] = 'application/json';
     }
-    if (token != null) h['Authorization'] = 'Bearer $token';
+    _applyBearerAndCsrf(h, token);
     try {
       final res = await http.post(
         Uri.parse(url),

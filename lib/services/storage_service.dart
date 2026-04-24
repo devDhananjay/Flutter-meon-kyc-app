@@ -4,6 +4,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Manages tokens and cookies equivalent to js-cookie in React
 class StorageService {
   static const _storage = FlutterSecureStorage();
+  // Process-lifetime SSO switch:
+  // - true by default (fresh app start -> allow SSO)
+  // - set false on explicit logout (skip SSO; use normal get-workflow/get-user flow)
+  // - resets to true automatically when app process restarts.
+  static bool _ssoAutoLoginEnabled = true;
 
   static const _keyAccessToken = 'access_token';
   static const _keyRefreshToken = 'refresh_token';
@@ -53,5 +58,11 @@ class StorageService {
   static Future<bool> hasAccessToken() async {
     final token = await getAccessToken();
     return token != null && token.isNotEmpty;
+  }
+
+  static bool get ssoAutoLoginEnabled => _ssoAutoLoginEnabled;
+
+  static void setSsoAutoLoginEnabled(bool enabled) {
+    _ssoAutoLoginEnabled = enabled;
   }
 }

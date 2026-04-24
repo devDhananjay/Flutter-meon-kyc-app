@@ -1,9 +1,24 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
 
+bool _isGenericHtml500(String body) {
+  final t = body.trim().toLowerCase();
+  return t.contains('<html') && t.contains('internal server error');
+}
+
 class AppStore extends ChangeNotifier {
+  static const Set<String> _hiddenStepperSteps = {
+    'cdsl_upload',
+    'nse',
+    'bse',
+    'kra_new',
+    'backoffice',
+  };
+
   // Params
   String? _company;
   String? _workflowName;
@@ -103,7 +118,18 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     try {
       final client = ApiClient();
-      final res = await client.post(fullPath, body: requestBody);
+      http.Response res = await client.post(fullPath, body: requestBody);
+      const maxAttempts = 3;
+      for (var attempt = 1;
+          attempt < maxAttempts && res.statusCode == 500 && _isGenericHtml500(res.body);
+          attempt++) {
+        final wait = Duration(milliseconds: 450 * attempt);
+        debugPrint(
+          '[AppStore] get-context HTTP 500 (generic HTML) — retry $attempt/$maxAttempts after ${wait.inMilliseconds}ms',
+        );
+        await Future.delayed(wait);
+        res = await client.post(fullPath, body: requestBody);
+      }
       debugPrint('[AppStore] fetchWorkflowFieldsWithAuth Response: ${res.statusCode}');
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final data = _parseJson(res.body);
@@ -248,17 +274,8 @@ class AppStore extends ChangeNotifier {
       }
     }
     
-    // Filter out backend-only / admin steps that should not appear in user stepper
-    const hiddenSteps = <String>{
-      'cdsl_upload',
-      'nse',
-      'bse',
-      'kra_new',
-      'backoffice',
-    };
-    
     return steps
-        .where((s) => !hiddenSteps.contains(s.toLowerCase().trim()))
+        .where((s) => !_hiddenStepperSteps.contains(s.toLowerCase().trim()))
         .toList();
   }
 
@@ -289,17 +306,22 @@ class AppStore extends ChangeNotifier {
           return a.toString().compareTo(b.toString());
         });
       
-      // Find the index of the key that matches pageId
-      final keyIndex = sortedKeys.indexWhere((key) => key.toString() == pageId);
-      if (keyIndex != -1) {
-        // Verify that the label at this index matches the position
-        final workflowValue = _stepperWorkflow[sortedKeys[keyIndex]];
-        if (workflowValue is Map) {
-          final data = workflowValue['data'] as Map?;
-          final label = data?['label']?.toString()?.toLowerCase().trim();
-          if (label == positionLower || label?.startsWith(positionLower) == true) {
-            return keyIndex;
+      // Find visible step index for pageId (aligned with getStepperSteps filtering)
+      int visibleIndex = -1;
+      for (final key in sortedKeys) {
+        final workflowValue = _stepperWorkflow[key];
+        if (workflowValue is! Map) continue;
+        final data = workflowValue['data'] as Map?;
+        final rawLabel = data?['label']?.toString() ?? workflowValue['moduleName']?.toString();
+        final label = rawLabel?.toLowerCase().trim() ?? '';
+        if (label.isEmpty || _hiddenStepperSteps.contains(label)) continue;
+
+        visibleIndex++;
+        if (key.toString() == pageId) {
+          if (label == positionLower || label.startsWith(positionLower)) {
+            return visibleIndex;
           }
+          break;
         }
       }
     }

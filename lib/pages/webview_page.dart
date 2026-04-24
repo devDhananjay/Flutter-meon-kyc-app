@@ -83,6 +83,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // Reset the sessionStorage flag only once per WebViewPage instance,
   // so a reload caused by the console message doesn't re-clear the guard.
   bool _rpdSigningSessionFlagReset = false;
+  // Some cloudesign document pages intermittently render blank on first load
+  // and work after a manual refresh. Auto-reload a few times for this case.
+  int _cloudesignAutoReloadAttempts = 0;
+  static const int _maxCloudesignAutoReloadAttempts = 3;
+  Timer? _cloudesignRecoveryTimer;
+  bool _cloudesignOpenedExternally = false;
 
   /// eSign / PDF (pdf.js) pages often need more time than a normal HTML page.
   bool _isEsignPdfHeavyUrl(String url) {
@@ -94,6 +100,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         u.contains('proteantech') ||
         u.contains('pdf.js') ||
         u.contains('cdnjs.cloudflare.com/ajax/libs/pdf.js');
+  }
+
+  bool _isCloudesignDocumentUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host.contains('livetest.meon.co.in') &&
+        path.contains('/cloudesign/document-');
   }
 
   static const Duration _defaultLoadTimeout = Duration(seconds: 15);
@@ -282,6 +297,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     _loadTimeoutTimer?.cancel();
     _slowNetworkTimer?.cancel();
     _loadHintTimer2?.cancel();
+    _cloudesignRecoveryTimer?.cancel();
     super.dispose();
   }
 
@@ -514,6 +530,62 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[WebView] Error reloading: $e');
     }
+  }
+
+  Future<void> _openCloudesignExternallyIfStuck() async {
+    if (_cloudesignOpenedExternally || _redirectHandled) return;
+    final current = _currentUrl;
+    if (!_isCloudesignDocumentUrl(current)) return;
+    _cloudesignOpenedExternally = true;
+    debugPrint(
+        '[WebView] Cloudesign still stuck after retries - opening in external browser');
+    try {
+      await launchUrl(
+        Uri.parse(current),
+        mode: LaunchMode.externalApplication,
+      );
+      if (mounted) {
+        Fluttertoast.showToast(
+          msg: 'Opened document in browser to continue',
+          gravity: ToastGravity.TOP,
+        );
+      }
+    } catch (e) {
+      debugPrint('[WebView] Failed to open cloudesign externally: $e');
+    }
+  }
+
+  void _scheduleCloudesignRecovery(InAppWebViewController controller, String urlStr) {
+    _cloudesignRecoveryTimer?.cancel();
+    _cloudesignRecoveryTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      if (!mounted || _redirectHandled) {
+        t.cancel();
+        return;
+      }
+      if (_currentUrl != urlStr || !_isCloudesignDocumentUrl(_currentUrl)) {
+        // URL progressed; stop recovery loop.
+        t.cancel();
+        return;
+      }
+
+      if (_cloudesignAutoReloadAttempts < _maxCloudesignAutoReloadAttempts) {
+        _cloudesignAutoReloadAttempts++;
+        final attempt = _cloudesignAutoReloadAttempts;
+        debugPrint(
+            '[WebView] Auto reloading cloudesign document (attempt $attempt/$_maxCloudesignAutoReloadAttempts)');
+        try {
+          await controller.evaluateJavascript(
+            source: 'try { window.location.reload(true); } catch(e) {}',
+          );
+        } catch (_) {}
+        await _reloadWebViewInternal(showToast: false);
+        return;
+      }
+
+      // Still same URL after retries -> force external browser fallback.
+      t.cancel();
+      await _openCloudesignExternallyIfStuck();
+    });
   }
 
   /// Captures query params from completion/success URLs (e.g. RPD: ?success=yes&transaction_id=..., eSign: ?esign=yes)
@@ -1291,6 +1363,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _loadingMessage = 'Loading...';
                         });
                         debugPrint('[WebView] Page finished: $url');
+
+                        // Recovery: cloudesign can hang blank; run controlled retries and external fallback.
+                        if (_isCloudesignDocumentUrl(urlStr) && !_redirectHandled) {
+                          _scheduleCloudesignRecovery(controller, urlStr);
+                        }
 
                         // For eSign pages, nudge initial scroll slightly so
                         // important inputs are not hidden under the keyboard.

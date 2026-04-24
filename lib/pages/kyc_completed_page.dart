@@ -310,6 +310,8 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
     );
     if (confirmed != true || !context.mounted) return;
     await StorageService.clearAll();
+    // Ensure post-logout route uses normal get-workflow/get-user flow (no SSO auto-login).
+    StorageService.setSsoAutoLoginEnabled(false);
     if (!context.mounted) return;
     context.read<AppStore>().resetState();
     context.go('/${widget.company}/${widget.workflowName}');
