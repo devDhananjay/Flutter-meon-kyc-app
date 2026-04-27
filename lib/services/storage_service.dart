@@ -16,6 +16,8 @@ class StorageService {
   static const _keyMessage = 'message';
   static const _keyUserStep = 'userStep';
   static const _keyUserData = 'user_data';
+  static const _keyLastCompany = 'last_company';
+  static const _keyLastWorkflow = 'last_workflow';
 
   static Future<String?> getAccessToken() async {
     return _storage.read(key: _keyAccessToken);
@@ -47,6 +49,31 @@ class StorageService {
 
   static Future<void> setUserData(String data) async {
     await _storage.write(key: _keyUserData, value: data);
+  }
+
+  static Future<void> setLastWorkflowRoute({
+    required String company,
+    required String workflowName,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyLastCompany, company);
+    await prefs.setString(_keyLastWorkflow, workflowName);
+  }
+
+  static Future<Map<String, String>?> getLastWorkflowRoute() async {
+    final prefs = await SharedPreferences.getInstance();
+    final company = prefs.getString(_keyLastCompany);
+    final workflowName = prefs.getString(_keyLastWorkflow);
+    if (company == null ||
+        company.isEmpty ||
+        workflowName == null ||
+        workflowName.isEmpty) {
+      return null;
+    }
+    return {
+      'company': company,
+      'workflowName': workflowName,
+    };
   }
 
   static Future<void> clearAll() async {

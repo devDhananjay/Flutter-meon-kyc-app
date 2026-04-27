@@ -5,6 +5,7 @@ import 'package:meon_kyc/pages/home_page.dart';
 import 'package:meon_kyc/pages/kyc_completed_page.dart';
 import 'package:meon_kyc/pages/page_not_found.dart';
 import 'package:meon_kyc/pages/webview_page.dart';
+import 'package:meon_kyc/pages/workflow_entry_page.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 
 class MeonKycApp extends StatelessWidget {
@@ -17,8 +18,12 @@ class MeonKycApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: KycTheme.theme,
       routerConfig: GoRouter(
-        initialLocation: '/${EnvConfig.companyName}/${EnvConfig.workflowName}',
+        initialLocation: '/',
         routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const WorkflowEntryPage(),
+          ),
           GoRoute(
             path: '/:company/:workflowName',
             builder: (context, state) {
@@ -33,6 +38,9 @@ class MeonKycApp extends StatelessWidget {
                 company: company,
                 workflowName: workflow,
                 queryParams: queryParams,
+                prefillEmail: queryParams['prefillEmail'],
+                prefillMobile: queryParams['prefillMobile'],
+                ssoSecretKey: queryParams['ssoSecretKey'],
               );
             },
           ),
@@ -42,7 +50,8 @@ class MeonKycApp extends StatelessWidget {
               final company = state.pathParameters['company'] ?? '';
               final workflow = state.pathParameters['workflowName'] ?? '';
               final url = state.uri.queryParameters['url'] ?? '';
-              final title = state.uri.queryParameters['title'] ?? 'External Verification';
+              final title =
+                  state.uri.queryParameters['title'] ?? 'External Verification';
               if (company.isEmpty || workflow.isEmpty || url.isEmpty) {
                 return const NoTransitionPage(child: PageNotFound());
               }
@@ -64,9 +73,12 @@ class MeonKycApp extends StatelessWidget {
           GoRoute(
             path: '/:company/:workflowName/completed',
             builder: (context, state) {
-              final company = state.pathParameters['company'] ?? EnvConfig.companyName;
-              final workflowName = state.pathParameters['workflowName'] ?? EnvConfig.workflowName;
-              return KycCompletedPage(company: company, workflowName: workflowName);
+              final company =
+                  state.pathParameters['company'] ?? EnvConfig.companyName;
+              final workflowName = state.pathParameters['workflowName'] ??
+                  EnvConfig.workflowName;
+              return KycCompletedPage(
+                  company: company, workflowName: workflowName);
             },
           ),
           GoRoute(
@@ -75,13 +87,6 @@ class MeonKycApp extends StatelessWidget {
           ),
         ],
         errorBuilder: (context, state) => const PageNotFound(),
-        redirect: (context, state) {
-          final path = state.uri.path;
-          if (path == '/' || path.isEmpty) {
-            return '/${EnvConfig.companyName}/${EnvConfig.workflowName}';
-          }
-          return null;
-        },
       ),
     );
   }

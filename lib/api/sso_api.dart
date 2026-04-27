@@ -15,7 +15,7 @@ class SsoTokenResult {
 }
 
 class SsoAPI {
-  static const String _ssoBaseUrl = 'https://livetest.meon.co.in';
+  static const String _ssoBaseUrl = 'https://live.meon.co.in';
   static const String _ssoRoutePath = '/get_sso_route';
 
   static const List<String> _containerKeys = [
@@ -49,7 +49,8 @@ class SsoAPI {
     return null;
   }
 
-  static String? _extractToken(Map<String, dynamic> root, List<String> tokenKeys) {
+  static String? _extractToken(
+      Map<String, dynamic> root, List<String> tokenKeys) {
     // First pass: direct keys at the root.
     final direct = _extractStringFromMap(root, tokenKeys);
     if (direct != null) return direct;
@@ -89,6 +90,7 @@ class SsoAPI {
     required String workflowName,
     required String mobileNumber,
     required String email,
+    String? secretKey,
   }) async {
     final url = '$_ssoBaseUrl$_ssoRoutePath';
 
@@ -97,7 +99,7 @@ class SsoAPI {
       'workflowName': workflowName,
       'generate_access_token': true,
       'skip_reverification': true,
-      'secret_key': EnvConfig.ssoSecretKey,
+      'secret_key': secretKey ?? EnvConfig.ssoSecretKey,
       'notification': false,
       'unique_keys': <String, dynamic>{
         'mobile_number': mobileNumber,
@@ -165,4 +167,3 @@ class SsoAPI {
     }
   }
 }
-

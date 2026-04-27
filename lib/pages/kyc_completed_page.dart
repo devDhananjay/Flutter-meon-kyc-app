@@ -36,7 +36,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
   void _loadStepperData() {
     final store = context.read<AppStore>();
     final userDetails = store.userDetails;
-    
+
     // Extract workflowId from design_template in fieldsWithAuth (same as home_page)
     final fieldsWithAuth = store.fieldsWithAuth;
     if (fieldsWithAuth is Map) {
@@ -46,37 +46,41 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
         final parts = designTemplate.split('-');
         if (parts.length >= 2) {
           _workflowId = parts[1]; // Second part is workflowId
-          debugPrint('[KycCompletedPage] Extracted workflowId from design_template: $_workflowId');
+          debugPrint(
+              '[KycCompletedPage] Extracted workflowId from design_template: $_workflowId');
         }
       }
-      
+
       // Get position (already stored in AppStore, but keep for reference)
       _currentPosition = store.currentPosition;
     }
-    
+
     // Fallback: try user details if workflowId not found
     if ((_workflowId == null || _workflowId!.isEmpty) && userDetails is Map) {
       final data = userDetails['data'] as Map<String, dynamic>?;
-      _workflowId = data?['workflow_id']?.toString() ?? 
-                   data?['id']?.toString() ?? 
-                   userDetails['workflow_id']?.toString();
+      _workflowId = data?['workflow_id']?.toString() ??
+          data?['id']?.toString() ??
+          userDetails['workflow_id']?.toString();
     }
-    
+
     // Get company and workflowName from store
     _company = store.company ?? 'mandotsecurities';
     final workflowName = store.workflowName ?? 'bp_flow';
-    
-    debugPrint('[KycCompletedPage] Stepper data - company: $_company, workflowName: $workflowName, workflowId: $_workflowId, position: $_currentPosition');
-    
+
+    debugPrint(
+        '[KycCompletedPage] Stepper data - company: $_company, workflowName: $workflowName, workflowId: $_workflowId, position: $_currentPosition');
+
     // Fetch stepper workflow if we have workflowId and it's not already loaded
     if (_workflowId != null && _workflowId!.isNotEmpty) {
       if (store.stepperWorkflow == null && !store.loadingStepperWorkflow) {
-        debugPrint('[KycCompletedPage] Fetching stepper workflow: $workflowName / $_workflowId');
+        debugPrint(
+            '[KycCompletedPage] Fetching stepper workflow: $workflowName / $_workflowId');
         // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
         store.fetchStepperWorkflow(workflowName, _workflowId!);
       }
     } else {
-      debugPrint('[KycCompletedPage] Missing workflowId or company. workflowId: $_workflowId, company: $_company');
+      debugPrint(
+          '[KycCompletedPage] Missing workflowId or company. workflowId: $_workflowId, company: $_company');
     }
   }
 
@@ -84,21 +88,24 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
   Widget build(BuildContext context) {
     final store = context.watch<AppStore>();
     final userDetails = store.userDetails;
-    
+
     // Extract user details from API response
-    final response = userDetails is Map ? userDetails as Map<String, dynamic>? : null;
+    final response =
+        userDetails is Map ? userDetails as Map<String, dynamic>? : null;
     final data = response?['data'] as Map<String, dynamic>?;
-    
+
     final name = data?['aadhar_name']?.toString() ?? 'N/A';
     final pan = data?['temp_pan_no']?.toString() ?? 'N/A';
-    final phone = data?['change_mobile']?.toString() ?? data?['mobile_number']?.toString() ?? 'N/A';
+    final phone = data?['change_mobile']?.toString() ??
+        data?['mobile_number']?.toString() ??
+        'N/A';
     final aadhaar = data?['aadhar_no']?.toString() ?? '';
     final maskedAadhaar = aadhaar.isNotEmpty && aadhaar.length >= 4
         ? 'XXXX-XXXX-${aadhaar.substring(aadhaar.length - 4)}'
         : 'N/A';
 
     // Stepper not shown on KYC completed page - removed stepper-related code
-    
+
     final completedSteps = _getCompletedSteps(data);
 
     return Scaffold(
@@ -110,167 +117,170 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
               children: [
                 // Main content
                 Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    const SizedBox(height: 20),
-                    // Success indicator with rings
-                    Stack(
-                      alignment: Alignment.center,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
                       children: [
-                        // Outer ring
+                        const SizedBox(height: 20),
+                        // Success indicator with rings
+                        Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // Outer ring
+                            Container(
+                              width: 120,
+                              height: 120,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.green.withOpacity(0.1),
+                              ),
+                            ),
+                            // Middle ring
+                            Container(
+                              width: 100,
+                              height: 100,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.green.withOpacity(0.15),
+                              ),
+                            ),
+                            // Inner circle with checkmark
+                            Container(
+                              width: 80,
+                              height: 80,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.green,
+                              ),
+                              child: const Icon(
+                                Icons.check,
+                                color: Colors.white,
+                                size: 50,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 25),
+                        // KYC Completed heading
+                        const Text(
+                          'KYC Completed',
+                          style: TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        // Verification message
+                        Text(
+                          'Your account will be verified in 48 hr',
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        const SizedBox(height: 40),
+                        // Customer Details card
                         Container(
-                          width: 120,
-                          height: 120,
+                          padding: const EdgeInsets.all(20),
                           decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.green.withOpacity(0.1),
+                            color: Colors.grey[100],
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Customer Details',
+                                style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        _buildDetailRow('Name', name),
+                                        const SizedBox(height: 10),
+                                        _buildDetailRow('Pan', pan),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 24),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        _buildDetailRow('Phone', phone),
+                                        const SizedBox(height: 10),
+                                        _buildDetailRow(
+                                            'Aadhaar', maskedAadhaar),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
                         ),
-                        // Middle ring
-                        Container(
-                          width: 100,
-                          height: 100,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.green.withOpacity(0.15),
-                          ),
-                        ),
-                        // Inner circle with checkmark
-                        Container(
-                          width: 80,
-                          height: 80,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.green,
-                          ),
-                          child: const Icon(
-                            Icons.check,
-                            color: Colors.white,
-                            size: 50,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 25),
-                    // KYC Completed heading
-                    const Text(
-                      'KYC Completed',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    // Verification message
-                    Text(
-                      'Your account will be verified in 48 hr',
-                      style: TextStyle(
-                        fontSize: 15,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                    // Customer Details card
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Customer Details',
+                        const SizedBox(height: 32),
+                        // Completed Steps section
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Completed Steps',
                             style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.bold,
                               color: Colors.black,
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    _buildDetailRow('Name', name),
-                                    const SizedBox(height: 10),
-                                    _buildDetailRow('Pan', pan),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 24),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    _buildDetailRow('Phone', phone),
-                                      const SizedBox(height: 10),
-                                    _buildDetailRow('Aadhaar', maskedAadhaar),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    // Completed Steps section
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Completed Steps',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
                         ),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    // Steps list
-                    ...completedSteps.map((step) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 24,
-                                height: 24,
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.green,
-                                ),
-                                child: const Icon(
-                                  Icons.check,
-                                  color: Colors.white,
-                                  size: 16,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  step,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black,
+                        const SizedBox(height: 14),
+                        // Steps list
+                        ...completedSteps.map((step) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 24,
+                                    height: 24,
+                                    decoration: const BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: Colors.green,
+                                    ),
+                                    child: const Icon(
+                                      Icons.check,
+                                      color: Colors.white,
+                                      size: 16,
+                                    ),
                                   ),
-                                ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      step,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.black,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                        )),
-                    const SizedBox(height: 40),
-                  ],
+                            )),
+                        const SizedBox(height: 40),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            ),
               ],
             ),
             Positioned(
@@ -310,11 +320,10 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
     );
     if (confirmed != true || !context.mounted) return;
     await StorageService.clearAll();
-    // Ensure post-logout route uses normal get-workflow/get-user flow (no SSO auto-login).
-    StorageService.setSsoAutoLoginEnabled(false);
+    StorageService.setSsoAutoLoginEnabled(true);
     if (!context.mounted) return;
     context.read<AppStore>().resetState();
-    context.go('/${widget.company}/${widget.workflowName}');
+    context.go('/');
   }
 
   Widget _buildStepper(List<String> steps, int? currentPositionIndex) {
@@ -330,9 +339,10 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
         ),
       );
     }
-    
-    debugPrint('[KycCompletedPage] Building stepper with ${steps.length} steps, currentIndex: $currentPositionIndex');
-    
+
+    debugPrint(
+        '[KycCompletedPage] Building stepper with ${steps.length} steps, currentIndex: $currentPositionIndex');
+
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -343,7 +353,8 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
           if (i.isOdd) {
             // Connector arrow
             final prevIdx = (i - 1) ~/ 2;
-            final isSegmentDone = currentPositionIndex != null && currentPositionIndex! > prevIdx;
+            final isSegmentDone =
+                currentPositionIndex != null && currentPositionIndex! > prevIdx;
             return Padding(
               padding: const EdgeInsets.only(top: 14, left: 2, right: 2),
               child: Icon(
@@ -357,9 +368,11 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
           final stepName = steps[idx];
           // IMPORTANT: Only steps BEFORE currentPositionIndex are completed
           // Current step (idx == currentPositionIndex) should be ACTIVE, NOT completed
-          final isPast = currentPositionIndex != null && idx < currentPositionIndex!;
-          final isActive = currentPositionIndex != null && idx == currentPositionIndex;
-          
+          final isPast =
+              currentPositionIndex != null && idx < currentPositionIndex!;
+          final isActive =
+              currentPositionIndex != null && idx == currentPositionIndex;
+
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Column(
@@ -371,9 +384,7 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                   height: 32,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isPast || isActive
-                        ? Colors.green
-                        : Colors.grey[300],
+                    color: isPast || isActive ? Colors.green : Colors.grey[300],
                   ),
                   child: Center(
                     // Show checkmark ONLY for completed steps (isPast), NOT for current step
@@ -398,9 +409,8 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                    color: isActive || isPast
-                        ? Colors.green
-                        : Colors.grey[600]!,
+                    color:
+                        isActive || isPast ? Colors.green : Colors.grey[600]!,
                   ),
                   textAlign: TextAlign.center,
                   maxLines: 1,
@@ -413,7 +423,6 @@ class _KycCompletedPageState extends State<KycCompletedPage> {
       ),
     );
   }
-
 
   Widget _buildDetailRow(String label, String value) {
     return Column(

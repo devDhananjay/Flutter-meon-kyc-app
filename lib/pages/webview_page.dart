@@ -34,6 +34,7 @@ class WebViewPage extends StatefulWidget {
 class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   InAppWebViewController? _webViewController;
   bool _isLoading = true;
+  bool _logoutLoading = false;
   String _currentUrl = '';
   String? _preservedState;
   String? _preservedClientToken;
@@ -46,6 +47,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _permissionHandlerInFlight = false;
   bool _ipvPermissionGateActive = false;
   bool _redirectHandled = false;
+
   /// Params captured from completion/success URLs (e.g. success=yes, transaction_id=...)
   /// Passed to get-context API so backend marks step as complete
   final Map<String, String> _completionParams = {};
@@ -70,7 +72,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   Timer? _slowNetworkTimer;
   Timer? _loadHintTimer2;
   int _reversePennyPollAttempts = 0;
-  static const int _maxReversePennyPollAttempts = 18; // ~90 seconds @ 5s interval
+  static const int _maxReversePennyPollAttempts =
+      18; // ~90 seconds @ 5s interval
   // Avoid repeating special scroll adjustment for eSign (clouDesign) pages
   bool _esignScrollAdjusted = false;
   // Track if we already handled RPD success (to avoid double-close)
@@ -107,7 +110,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (uri == null) return false;
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
-    return host.contains('livetest.meon.co.in') &&
+    return host.contains('live.meon.co.in') &&
         path.contains('/cloudesign/document-');
   }
 
@@ -140,7 +143,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
     _loadTimeoutTimer = Timer(timeout, () {
       if (!mounted || !_isLoading || _hasError) return;
-      debugPrint('[WebView] Load timeout (${timeout.inSeconds}s) — showing retry UI');
+      debugPrint(
+          '[WebView] Load timeout (${timeout.inSeconds}s) — showing retry UI');
       setState(() {
         _isLoading = false;
         _hasError = true;
@@ -159,9 +163,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     _slowNetworkTimer = null;
     _loadHintTimer2?.cancel();
     _loadHintTimer2 = null;
-    if (resetLoadingMessage &&
-        mounted &&
-        _loadingMessage != 'Loading...') {
+    if (resetLoadingMessage && mounted && _loadingMessage != 'Loading...') {
       setState(() => _loadingMessage = 'Loading...');
     }
   }
@@ -191,7 +193,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       if (!isSignedComplete) return;
 
       _rpdSigningCompletedReloadTriggered = true;
-      debugPrint('[WebView] Detected RPD signing completed text - reloading to proceed');
+      debugPrint(
+          '[WebView] Detected RPD signing completed text - reloading to proceed');
 
       // Reload main webview so the URL/params can update and we can close+advance.
       await _webViewController?.reload();
@@ -205,7 +208,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   ///
   /// This avoids reloading while user is typing UPI details, because we only
   /// reload after the exact signing completion console message appears.
-  Future<void> _injectRpdConsoleSigningReload(InAppWebViewController controller) async {
+  Future<void> _injectRpdConsoleSigningReload(
+      InAppWebViewController controller) async {
     const script = r'''
       (function() {
         try {
@@ -260,7 +264,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       _preservedState = initialUri.queryParameters['state'];
       _preservedClientToken = initialUri.queryParameters['client_token'];
       _preservedAuto = initialUri.queryParameters['auto'];
-      debugPrint('[WebView] Initial params from URL: state=$_preservedState, client_token=$_preservedClientToken, auto=$_preservedAuto');
+      debugPrint(
+          '[WebView] Initial params from URL: state=$_preservedState, client_token=$_preservedClientToken, auto=$_preservedAuto');
     }
 
     // For Android: Request permissions BEFORE loading IPV page to ensure camera/mic work
@@ -288,6 +293,50 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         });
       }
     }
+  }
+
+  Future<void> _handleLogout() async {
+    if (_logoutLoading) return;
+    setState(() => _logoutLoading = true);
+    try {
+      await StorageService.clearAll();
+      StorageService.setSsoAutoLoginEnabled(true);
+      if (!mounted) return;
+      context.read<AppStore>().resetState();
+      context.go('/');
+    } catch (e) {
+      debugPrint('[WebView] Logout error: $e');
+      Fluttertoast.showToast(
+        msg: 'Error during logout',
+        gravity: ToastGravity.TOP,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _logoutLoading = false);
+      }
+    }
+  }
+
+  Future<void> _showLogoutConfirmation() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _handleLogout();
   }
 
   @override
@@ -358,16 +407,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       _isDigioEsignUrl(widget.url) || _isDigioEsignUrl(_currentUrl);
 
   /// Flows that need JS window.open popups (Digio bank selection etc.)
-  bool get _supportsPopupWindows => _isReversePennyDropFlow || _isDigioEsignFlow;
+  bool get _supportsPopupWindows =>
+      _isReversePennyDropFlow || _isDigioEsignFlow;
 
   /// IPV/FaceFinder flow camera/WebRTC ke liye popup/multiple windows off rakhna safe rahega.
-  bool get _enablePopupWindows => _supportsPopupWindows && !_isIpvOrFaceFinderUrl(widget.url);
+  bool get _enablePopupWindows =>
+      _supportsPopupWindows && !_isIpvOrFaceFinderUrl(widget.url);
 
   void _startReversePennyPolling() {
     if (_reversePennyPollTimer != null) return;
     _reversePennyPollAttempts = 0;
     // Poll every 5 seconds to let the page re-evaluate payment status and redirect when ready
-    _reversePennyPollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _reversePennyPollTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!_isReversePennyDropFlow || _redirectHandled || !mounted) {
         _reversePennyPollTimer?.cancel();
         _reversePennyPollTimer = null;
@@ -375,7 +427,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       }
 
       if (_reversePennyPollAttempts >= _maxReversePennyPollAttempts) {
-        debugPrint('[WebView] Reverse Penny Drop polling: max attempts reached, stopping');
+        debugPrint(
+            '[WebView] Reverse Penny Drop polling: max attempts reached, stopping');
         _reversePennyPollTimer?.cancel();
         _reversePennyPollTimer = null;
         return;
@@ -402,7 +455,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     _permissionsRequested = true;
     _permissionHandlerInFlight = true;
 
-    debugPrint('[WebView] Requesting permissions BEFORE load (Android) for IPV/Face Finder');
+    debugPrint(
+        '[WebView] Requesting permissions BEFORE load (Android) for IPV/Face Finder');
 
     final permissions = [
       Permission.camera,
@@ -431,12 +485,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     });
 
     if (allGranted) {
-      debugPrint('[WebView] All permissions granted before load - WebView will load with camera access');
+      debugPrint(
+          '[WebView] All permissions granted before load - WebView will load with camera access');
       // On Android, reload WebView after permissions granted to ensure camera/mic initialize properly
       if (_webViewController != null && !_hasReloadedAfterPermissions) {
         _hasReloadedAfterPermissions = true;
         Future.delayed(const Duration(milliseconds: 300), () {
-          debugPrint('[WebView] Reloading WebView after Android permissions granted');
+          debugPrint(
+              '[WebView] Reloading WebView after Android permissions granted');
           _webViewController?.reload();
         });
       } else if (!_hasReloadedAfterPermissions) {
@@ -555,9 +611,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  void _scheduleCloudesignRecovery(InAppWebViewController controller, String urlStr) {
+  void _scheduleCloudesignRecovery(
+      InAppWebViewController controller, String urlStr) {
     _cloudesignRecoveryTimer?.cancel();
-    _cloudesignRecoveryTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
+    _cloudesignRecoveryTimer =
+        Timer.periodic(const Duration(seconds: 2), (t) async {
       if (!mounted || _redirectHandled) {
         t.cancel();
         return;
@@ -596,7 +654,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
-    final isWorkflowPath = path.contains('/${widget.company}/${widget.workflowName}');
+    final isWorkflowPath =
+        path.contains('/${widget.company}/${widget.workflowName}');
     final isOurDomain = host.contains('meon.co.in') &&
         !host.contains('api.') &&
         !host.contains('accounts.');
@@ -614,8 +673,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       'resdate',
       'fi',
     ];
-    final hasCompletionParams = uri.queryParameters.keys.any((key) => 
-        completionParamKeys.contains(key.toLowerCase()));
+    final hasCompletionParams = uri.queryParameters.keys
+        .any((key) => completionParamKeys.contains(key.toLowerCase()));
 
     // Capture from completion URLs: our domain, has params
     // If workflow path, only capture if it has completion params (e.g. ?esign=yes)
@@ -633,7 +692,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           }
         }
         if (_completionParams.isNotEmpty) {
-          debugPrint('[WebView] Captured completion params: $_completionParams');
+          debugPrint(
+              '[WebView] Captured completion params: $_completionParams');
         }
       }
     }
@@ -660,7 +720,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       'intent://',
     ];
 
-    return externalSchemes.any((scheme) => url.toLowerCase().startsWith(scheme));
+    return externalSchemes
+        .any((scheme) => url.toLowerCase().startsWith(scheme));
   }
 
   /// Opens supported payment / deep-link URLs in external apps using url_launcher.
@@ -669,7 +730,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       final originalUrl = url;
       String finalUrl = url;
       bool isIntentUrl = false;
-      
+
       // Handle Android intent: URLs - extract the actual UPI URL
       // Format: intent:upi://pay?...#Intent;scheme=upi;package=...;end
       // Or: intent:upi://pay?...
@@ -687,7 +748,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         finalUrl = intentContent.trim();
         debugPrint('[WebView] Extracted UPI URL from intent: $finalUrl');
       }
-      
+
       // Map Digio's custom PhonePe scheme "ppe://" to the real "phonepe://"
       if (finalUrl.toLowerCase().startsWith('ppe://')) {
         finalUrl = 'phonepe://' + finalUrl.substring('ppe://'.length);
@@ -738,7 +799,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       }
 
       // Google Pay special handling: try multiple possible schemes
-      if (finalUrl.contains('gpay') || finalUrl.contains('tez') || finalUrl.contains('google.payments')) {
+      if (finalUrl.contains('gpay') ||
+          finalUrl.contains('tez') ||
+          finalUrl.contains('google.payments')) {
         final gpaySchemes = [
           finalUrl,
           finalUrl.replaceAll('gpay://', 'tez://'),
@@ -781,11 +844,17 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     // UPI/payment deep-links can arrive as:
     // - upi://... / phonepe://... / gpay://...
     // - or Android intent://...#Intent;scheme=upi;package=...;end
-    final containsUpiScheme = lower.contains('scheme=upi') || lower.startsWith('upi://');
-    final containsPhonepeScheme = lower.contains('scheme=phonepe') || lower.startsWith('phonepe://');
-    final containsPaytmScheme = lower.contains('scheme=paytm') || lower.startsWith('paytm://');
-    final containsPaytmMpScheme = lower.contains('scheme=paytmmp') || lower.startsWith('paytmmp://');
-    final containsGpayScheme = lower.contains('scheme=gpay') || lower.startsWith('gpay://') || lower.contains('scheme=tez');
+    final containsUpiScheme =
+        lower.contains('scheme=upi') || lower.startsWith('upi://');
+    final containsPhonepeScheme =
+        lower.contains('scheme=phonepe') || lower.startsWith('phonepe://');
+    final containsPaytmScheme =
+        lower.contains('scheme=paytm') || lower.startsWith('paytm://');
+    final containsPaytmMpScheme =
+        lower.contains('scheme=paytmmp') || lower.startsWith('paytmmp://');
+    final containsGpayScheme = lower.contains('scheme=gpay') ||
+        lower.startsWith('gpay://') ||
+        lower.contains('scheme=tez');
     final containsAnyPaymentScheme = lower.startsWith('upi://') ||
         lower.startsWith('phonepe://') ||
         lower.startsWith('paytmmp://') ||
@@ -814,45 +883,53 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _handleRedirectComplete({String? state, String? clientToken, String? auto, bool verifyCompleted = false}) async {
+  Future<void> _handleRedirectComplete(
+      {String? state,
+      String? clientToken,
+      String? auto,
+      bool verifyCompleted = false}) async {
     if (_redirectHandled || !mounted) return;
     _redirectHandled = true;
     if (!mounted) return;
-    
+
     // When verifyCompleted=true (IPV success), call get-context API directly
     // Don't navigate to route - let API call handle the data loading
     if (verifyCompleted) {
       final queryParams = <String, String>{};
       if (state != null) queryParams['state'] = state;
       queryParams['success'] = 'yes';
-      
+
       final queryString = queryParams.isEmpty
           ? ''
           : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
-      
-      debugPrint('[WebView] IPV success - calling get-context API directly: /api/get-context/${widget.company}/${widget.workflowName}$queryString');
-      
+
+      debugPrint(
+          '[WebView] IPV success - calling get-context API directly: /api/get-context/${widget.company}/${widget.workflowName}$queryString');
+
       try {
         final store = context.read<AppStore>();
         final hasToken = await StorageService.hasAccessToken();
-        
+
         if (hasToken) {
-          store.setParams(company: widget.company, workflowName: widget.workflowName);
+          store.setParams(
+              company: widget.company, workflowName: widget.workflowName);
           await store.fetchWorkflowFieldsWithAuth(
             widget.company,
             widget.workflowName,
             queryString,
           );
-          
+
           if (mounted) {
             if (store.errorWithAuth != null) {
-              debugPrint('[WebView] Error after get-context API: ${store.errorWithAuth}');
+              debugPrint(
+                  '[WebView] Error after get-context API: ${store.errorWithAuth}');
               Fluttertoast.showToast(
                 msg: store.errorWithAuth ?? 'Error loading data',
                 gravity: ToastGravity.TOP,
               );
             } else {
-              debugPrint('[WebView] get-context API completed successfully - navigating back');
+              debugPrint(
+                  '[WebView] get-context API completed successfully - navigating back');
             }
             // Navigate back to home page (without query params since API already called).
             // Set flag BEFORE navigation so the new HomePage's first build shows a loader,
@@ -900,7 +977,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           ? ''
           : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
 
-      debugPrint('[WebView] Going back to: /${widget.company}/${widget.workflowName}$query');
+      debugPrint(
+          '[WebView] Going back to: /${widget.company}/${widget.workflowName}$query');
       if (mounted) {
         context.read<AppStore>().setReturningFromWebView(true);
         context.go('/${widget.company}/${widget.workflowName}$query');
@@ -944,7 +1022,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             !host.contains('api.') &&
             !host.contains('accounts.')) ||
         host.contains('localhost');
-    final isWorkflowPath = path.contains('/${widget.company}/${widget.workflowName}');
+    final isWorkflowPath =
+        path.contains('/${widget.company}/${widget.workflowName}');
     final isReversePennyRoute = path.contains('/reverse_pennydrop/');
     final hasVerifyParam = uri.queryParameters.containsKey('verify');
 
@@ -964,8 +1043,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     // For Reverse Penny Drop, we must keep the WebView open on
     // /reverse_pennydrop/... so the Digio popup can complete.
     // Treat only the plain workflow URL (/company/workflowName) as "clean".
-    final isCleanWorkflowUrl =
-        isFrontendUrl && isWorkflowPath && !hasVerifyParam && !isReversePennyRoute;
+    final isCleanWorkflowUrl = isFrontendUrl &&
+        isWorkflowPath &&
+        !hasVerifyParam &&
+        !isReversePennyRoute;
 
     if (isCleanWorkflowUrl && initialWasVerifyPage) {
       if (!_hasSeenCleanUrl) {
@@ -976,7 +1057,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         debugPrint('[WebView] Verify form submitted - closing WebView');
         await _handleRedirectComplete(
           state: uri.queryParameters['state'] ?? _preservedState,
-          clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
+          clientToken:
+              uri.queryParameters['client_token'] ?? _preservedClientToken,
           auto: uri.queryParameters['auto'] ?? _preservedAuto,
           verifyCompleted: true,
         );
@@ -985,13 +1067,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       debugPrint('[WebView] External flow completed - closing WebView');
       await _handleRedirectComplete(
         state: uri.queryParameters['state'] ?? _preservedState,
-        clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
+        clientToken:
+            uri.queryParameters['client_token'] ?? _preservedClientToken,
         auto: uri.queryParameters['auto'] ?? _preservedAuto,
         verifyCompleted: false,
       );
     }
   }
-
 
   /// Injects JavaScript to prevent automatic scroll jumps on input focus.
   /// This keeps the WebView from auto-scrolling when the keyboard opens;
@@ -1047,6 +1129,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             onPressed: _isLoading ? null : _reloadWebView,
             tooltip: 'Reload',
           ),
+          IconButton(
+            icon: _logoutLoading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: KycTheme.primary,
+                    ),
+                  )
+                : const Icon(Icons.logout, color: KycTheme.textPrimary),
+            onPressed: _logoutLoading ? null : _showLogoutConfirmation,
+            tooltip: 'Logout',
+          ),
           if (_isIpvOrFaceFinderUrl(_currentUrl))
             IconButton(
               icon: const Icon(Icons.camera_alt, color: KycTheme.textPrimary),
@@ -1078,7 +1174,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
                       // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
-                      javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
+                      javaScriptCanOpenWindowsAutomatically:
+                          _enablePopupWindows,
                       supportMultipleWindows: _enablePopupWindows,
                       mediaPlaybackRequiresUserGesture: false,
                       allowsInlineMediaPlayback: true,
@@ -1139,7 +1236,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
                       return false;
                     },
-                    shouldOverrideUrlLoading: (controller, navigationAction) async {
+                    shouldOverrideUrlLoading:
+                        (controller, navigationAction) async {
                       final uri = navigationAction.request.url;
                       if (uri == null) return NavigationActionPolicy.ALLOW;
 
@@ -1180,10 +1278,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             'reversepennydrop',
                             'esign',
                           ];
-                          final hasCompletionParams = uri
-                              .queryParameters.keys
-                              .any((key) =>
-                                  completionParamKeys.contains(key.toLowerCase()));
+                          final hasCompletionParams = uri.queryParameters.keys
+                              .any((key) => completionParamKeys
+                                  .contains(key.toLowerCase()));
                           if (hasCompletionParams) {
                             debugPrint(
                                 '[WebView] RPD completion params detected in URL - closing WebView');
@@ -1195,9 +1292,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             await _handleRedirectComplete(
                               state: uri.queryParameters['state'] ??
                                   _preservedState,
-                              clientToken: uri.queryParameters['client_token'] ??
-                                  _preservedClientToken,
-                              auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                              clientToken:
+                                  uri.queryParameters['client_token'] ??
+                                      _preservedClientToken,
+                              auto:
+                                  uri.queryParameters['auto'] ?? _preservedAuto,
                               verifyCompleted: false,
                             );
                             return NavigationActionPolicy.CANCEL;
@@ -1250,7 +1349,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           final hasSuccess =
                               uri.queryParameters['success']?.toLowerCase() ==
                                   'yes';
-                          final hasState = uri.queryParameters.containsKey('state');
+                          final hasState =
+                              uri.queryParameters.containsKey('state');
                           final isWorkflowPath = path.contains(
                               '/${widget.company}/${widget.workflowName}');
                           final isMeonRedirect = host.contains('meon.co.in') &&
@@ -1264,10 +1364,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             debugPrint(
                                 '[WebView] IPV success redirect detected - closing WebView immediately');
                             await _handleRedirectComplete(
-                              state: uri.queryParameters['state'] ?? _preservedState,
-                              clientToken: uri.queryParameters['client_token'] ??
-                                  _preservedClientToken,
-                              auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                              state: uri.queryParameters['state'] ??
+                                  _preservedState,
+                              clientToken:
+                                  uri.queryParameters['client_token'] ??
+                                      _preservedClientToken,
+                              auto:
+                                  uri.queryParameters['auto'] ?? _preservedAuto,
                               verifyCompleted: hasSuccess,
                             );
                             return;
@@ -1279,13 +1382,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             !_permissionsRequested &&
                             !_permissionRequestScheduled) {
                           if (Platform.isAndroid) {
-                            WidgetsBinding.instance
-                                .addPostFrameCallback((_) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
                               _requestPermissionsBeforeLoad();
                             });
                           } else {
-                            WidgetsBinding.instance
-                                .addPostFrameCallback((_) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
                               _requestPermissionsAndReload();
                             });
                           }
@@ -1351,8 +1452,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         _cancelLoadTimers(resetLoadingMessage: false);
                         final heavyDoc = _isEsignPdfHeavyUrl(urlStr);
                         if (heavyDoc && mounted) {
-                          setState(() => _loadingMessage = 'Rendering document...');
-                          await Future.delayed(const Duration(milliseconds: 1400));
+                          setState(
+                              () => _loadingMessage = 'Rendering document...');
+                          await Future.delayed(
+                              const Duration(milliseconds: 1400));
                         }
                         if (!mounted) return;
                         setState(() {
@@ -1365,7 +1468,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         debugPrint('[WebView] Page finished: $url');
 
                         // Recovery: cloudesign can hang blank; run controlled retries and external fallback.
-                        if (_isCloudesignDocumentUrl(urlStr) && !_redirectHandled) {
+                        if (_isCloudesignDocumentUrl(urlStr) &&
+                            !_redirectHandled) {
                           _scheduleCloudesignRecovery(controller, urlStr);
                         }
 
@@ -1376,14 +1480,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           if (uri != null) {
                             final host = uri.host.toLowerCase();
                             final isCloudesign = host.contains('cloudesign');
-                            final isNsdlEsign = host.contains('esign.egov.proteantech.in') ||
-                                host.startsWith('esign.');
+                            final isNsdlEsign =
+                                host.contains('esign.egov.proteantech.in') ||
+                                    host.startsWith('esign.');
                             if (!_esignScrollAdjusted &&
                                 (isCloudesign || isNsdlEsign)) {
                               _esignScrollAdjusted = true;
                               await controller.scrollTo(x: 0, y: 260);
                               await controller.evaluateJavascript(
-                                source: 'try { window.scrollTo(0, 260); } catch(e) {}',
+                                source:
+                                    'try { window.scrollTo(0, 260); } catch(e) {}',
                               );
                             }
                           }
@@ -1395,8 +1501,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         if (_isIpvOrFaceFinderUrl(urlStr) &&
                             _permissionsRequested &&
                             !_hasReloadedAfterPermissions) {
-                          Future.delayed(const Duration(milliseconds: 300),
-                              () {
+                          Future.delayed(const Duration(milliseconds: 300), () {
                             if (mounted &&
                                 _currentUrl == urlStr &&
                                 !_hasReloadedAfterPermissions) {
@@ -1435,11 +1540,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               'reversepennydrop',
                               'esign',
                             ];
-                            final hasCompletionParams = uri
-                                .queryParameters.keys
-                                .any((key) =>
-                                    completionParamKeys
-                                        .contains(key.toLowerCase()));
+                            final hasCompletionParams = uri.queryParameters.keys
+                                .any((key) => completionParamKeys
+                                    .contains(key.toLowerCase()));
                             if (hasCompletionParams) {
                               debugPrint(
                                   '[WebView] RPD completion params detected in URL onLoadStop - closing WebView');
@@ -1449,10 +1552,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                                 _completionParams['success'] = 'yes';
                               }
                               await _handleRedirectComplete(
-                                state: uri.queryParameters['state'] ?? _preservedState,
-                                clientToken: uri.queryParameters['client_token'] ??
-                                    _preservedClientToken,
-                                auto: uri.queryParameters['auto'] ?? _preservedAuto,
+                                state: uri.queryParameters['state'] ??
+                                    _preservedState,
+                                clientToken:
+                                    uri.queryParameters['client_token'] ??
+                                        _preservedClientToken,
+                                auto: uri.queryParameters['auto'] ??
+                                    _preservedAuto,
                                 verifyCompleted: false,
                               );
                             }
@@ -1563,14 +1669,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           final url = uri.toString();
                           debugPrint(
                               '[WebView][Popup] Navigation request: $url');
-                          
+
                           // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
-                          if (Platform.isAndroid && url.toLowerCase().startsWith('intent:')) {
-                            debugPrint('[WebView][Popup] Intent URL detected - handling externally');
+                          if (Platform.isAndroid &&
+                              url.toLowerCase().startsWith('intent:')) {
+                            debugPrint(
+                                '[WebView][Popup] Intent URL detected - handling externally');
                             await _handleExternalUrl(url);
                             return NavigationActionPolicy.CANCEL;
                           }
-                          
+
                           if (_shouldHandleExternally(url)) {
                             final handled = await _handleExternalUrl(url);
                             if (handled) {
@@ -1598,17 +1706,24 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             ];
                             final hasCompletionParams = popupUri
                                 .queryParameters.keys
-                                .any((key) => completionParamKeys.contains(key.toLowerCase()));
+                                .any((key) => completionParamKeys
+                                    .contains(key.toLowerCase()));
                             if (hasCompletionParams) {
-                              if (popupUri.queryParameters.containsKey('reversepennydrop') ||
-                                  popupUri.queryParameters.containsKey('reverse_pennydrop')) {
+                              if (popupUri.queryParameters
+                                      .containsKey('reversepennydrop') ||
+                                  popupUri.queryParameters
+                                      .containsKey('reverse_pennydrop')) {
                                 _rpdSuccessHandled = true;
                               }
 
                               await _handleRedirectComplete(
-                                state: popupUri.queryParameters['state'] ?? _preservedState,
-                                clientToken: popupUri.queryParameters['client_token'] ?? _preservedClientToken,
-                                auto: popupUri.queryParameters['auto'] ?? _preservedAuto,
+                                state: popupUri.queryParameters['state'] ??
+                                    _preservedState,
+                                clientToken:
+                                    popupUri.queryParameters['client_token'] ??
+                                        _preservedClientToken,
+                                auto: popupUri.queryParameters['auto'] ??
+                                    _preservedAuto,
                                 verifyCompleted: false,
                               );
                               return NavigationActionPolicy.CANCEL;
@@ -1618,10 +1733,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           return NavigationActionPolicy.ALLOW;
                         },
                         onLoadError: (controller, url, code, message) {
-                          debugPrint('[WebView][Popup] Load error ($code): $message, url=$url');
+                          debugPrint(
+                              '[WebView][Popup] Load error ($code): $message, url=$url');
                           // Ignore unknown URL scheme errors for intent URLs (expected on Android)
-                          if (code == -10 && message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
-                            debugPrint('[WebView][Popup] Ignoring ERR_UNKNOWN_URL_SCHEME (intent URL handled externally)');
+                          if (code == -10 &&
+                              message.contains('net::ERR_UNKNOWN_URL_SCHEME')) {
+                            debugPrint(
+                                '[WebView][Popup] Ignoring ERR_UNKNOWN_URL_SCHEME (intent URL handled externally)');
                             return;
                           }
                         },

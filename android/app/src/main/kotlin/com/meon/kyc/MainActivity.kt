@@ -1,4 +1,4 @@
-package com.bpwealth.stoxbox
+package com.meon.kyc
 
 import io.flutter.embedding.android.FlutterActivity
 
