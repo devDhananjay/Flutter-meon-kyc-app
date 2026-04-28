@@ -344,7 +344,7 @@ class _WorkflowEntryPageState extends State<WorkflowEntryPage> {
                               decoration: _inputDecoration(
                                 label: 'Email Address',
                                 hint: 'Enter your email',
-                                icon: Icons.alternate_email_rounded,
+                                icon: Icons.email_rounded,
                                 accent: primary,
                               ),
                               validator: (value) {

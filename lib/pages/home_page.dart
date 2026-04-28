@@ -88,6 +88,7 @@ class _HomePageState extends State<HomePage> {
   /// resend + header text still know the number (get-context fields often omit it).
   String? _persistedMobileDigitsForOtp;
   String? _persistedEmailForOtp;
+  Map<String, String>? _googleProfileSnapshot;
 
   @override
   void initState() {
@@ -3132,6 +3133,7 @@ class _HomePageState extends State<HomePage> {
                           foregroundColor: KycTheme.primary,
                         ),
                       ),
+                      _buildGoogleProfileTable(),
                     ],
                     // Add "Fetch Bank Details" button below IFSC field
                     if (isIfscField) ...[
@@ -3552,6 +3554,67 @@ class _HomePageState extends State<HomePage> {
     _formNotifier.handleChange('email', e, validationType: 'email');
     _formNotifier.handleChange('email_id', e, validationType: 'email');
     _formNotifier.handleChange('emailId', e, validationType: 'email');
+    _formNotifier.handleChange('emailid', e, validationType: 'email');
+  }
+
+  Widget _buildGoogleProfileTable() {
+    final p = _googleProfileSnapshot;
+    if (p == null || p.isEmpty) return const SizedBox.shrink();
+
+    Widget row(String k, String? v) {
+      final value = (v ?? '').trim();
+      if (value.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 92,
+              child: Text(
+                k,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                value,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFF),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFD8E2FF)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Google Account Details',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          row('Name', p['name']),
+          row('Email', p['email']),
+          row('UID', p['uid']),
+        ],
+      ),
+    );
   }
 
   Future<void> _handleGoogleSignIn() async {
@@ -3592,6 +3655,48 @@ class _HomePageState extends State<HomePage> {
       );
       final userCredential =
           await FirebaseAuth.instance.signInWithCredential(credential);
+      final firebaseUser = userCredential.user;
+      final debugGoogleProfile = <String, dynamic>{
+        'googleAccount': {
+          'id': selectedAccount.id,
+          'displayName': selectedAccount.displayName,
+          'email': selectedAccount.email,
+          'photoUrl': selectedAccount.photoUrl,
+        },
+        'googleAuth': {
+          'hasAccessToken':
+              authData.accessToken != null && authData.accessToken!.isNotEmpty,
+          'accessTokenPrefix':
+              (authData.accessToken != null && authData.accessToken!.isNotEmpty)
+                  ? '${authData.accessToken!.substring(0, authData.accessToken!.length > 12 ? 12 : authData.accessToken!.length)}...'
+                  : null,
+          'hasIdToken': authData.idToken != null && authData.idToken!.isNotEmpty,
+          'idTokenPrefix': (authData.idToken != null && authData.idToken!.isNotEmpty)
+              ? '${authData.idToken!.substring(0, authData.idToken!.length > 12 ? 12 : authData.idToken!.length)}...'
+              : null,
+        },
+        'firebaseUser': {
+          'uid': firebaseUser?.uid,
+          'displayName': firebaseUser?.displayName,
+          'email': firebaseUser?.email,
+          'emailVerified': firebaseUser?.emailVerified,
+          'phoneNumber': firebaseUser?.phoneNumber,
+          'photoURL': firebaseUser?.photoURL,
+          'isAnonymous': firebaseUser?.isAnonymous,
+          'providerData': firebaseUser?.providerData
+              .map((p) => {
+                    'providerId': p.providerId,
+                    'uid': p.uid,
+                    'displayName': p.displayName,
+                    'email': p.email,
+                    'phoneNumber': p.phoneNumber,
+                    'photoURL': p.photoURL,
+                  })
+              .toList(),
+        },
+      };
+      debugPrint(
+          '[GoogleSignIn] SUCCESS PROFILE -> ${jsonEncode(debugGoogleProfile)}');
       final email =
           (userCredential.user?.email ?? selectedAccount.email).trim();
       if (email.isEmpty) {
@@ -3604,6 +3709,16 @@ class _HomePageState extends State<HomePage> {
 
       _persistedEmailForOtp = email;
       _applyPersistedEmailToForm();
+      setState(() {
+        _googleProfileSnapshot = {
+          'name': (userCredential.user?.displayName ??
+                  selectedAccount.displayName ??
+                  '')
+              .trim(),
+          'email': email,
+          'uid': (userCredential.user?.uid ?? '').trim(),
+        };
+      });
       Fluttertoast.showToast(
         msg: 'Google sign-in successful',
         gravity: ToastGravity.TOP,

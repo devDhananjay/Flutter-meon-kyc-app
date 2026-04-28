@@ -8,7 +8,7 @@ import 'package:flutter/foundation.dart'
 class DefaultFirebaseOptions {
   /// Web OAuth client ID from `google-services.json` (`client_type: 3`).
   static const String googleOAuthWebClientId =
-      '1077626154170-61kj6319g2tlhpig26uddesuio92d2oa.apps.googleusercontent.com';
+      '680768531196-thtl79kon86oesjc155v513iipd0anv2.apps.googleusercontent.com';
 
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {
@@ -33,11 +33,11 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyAO3KYu4BOG5dmh0nI4BvAYoSiFm5aLR7c',
-    appId: '1:1077626154170:android:dd3a513aef1bb4cc4f6683',
-    messagingSenderId: '1077626154170',
-    projectId: 'stoxbox-5daa8',
-    storageBucket: 'stoxbox-5daa8.appspot.com',
+    apiKey: 'AIzaSyCGnh7_5lFJWSO4oWFXBc2c-jjBrq3xwAs',
+    appId: '1:680768531196:android:9a6c3b1320a899f0960579',
+    messagingSenderId: '680768531196',
+    projectId: 'meonmf-91753',
+    storageBucket: 'meonmf-91753.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
@@ -47,7 +47,7 @@ class DefaultFirebaseOptions {
     projectId: 'stoxbox-5daa8',
     storageBucket: 'stoxbox-5daa8.appspot.com',
     iosClientId:
-        '1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g.apps.googleusercontent.com',
-    iosBundleId: 'com.bpwealth.stoxbox',
+        '680768531196-thtl79kon86oesjc155v513iipd0anv2.apps.googleusercontent.com',
+    iosBundleId: 'com.meon.kyc',
   );
 }

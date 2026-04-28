@@ -16,9 +16,17 @@ class WorkflowListItem {
   });
 
   factory WorkflowListItem.fromJson(Map<String, dynamic> json) {
+    final workflowKey = json['work_flow_key']?.toString() ?? '';
+    final workflowName = (json['workflowName'] ??
+            json['workflow_name'] ??
+            json['work_flow_name'])
+        ?.toString()
+        .trim();
     return WorkflowListItem(
-      workflowKey: json['work_flow_key']?.toString() ?? '',
-      workflowName: json['workflowName']?.toString() ?? '',
+      workflowKey: workflowKey,
+      workflowName: (workflowName == null || workflowName.isEmpty)
+          ? (workflowKey.isNotEmpty ? 'Workflow $workflowKey' : 'Workflow')
+          : workflowName,
       workflowType: json['workflow_type']?.toString() ?? '',
       status: json['status']?.toString() ?? '',
     );
@@ -109,15 +117,20 @@ class WorkflowLookupApi {
       throw Exception(msg);
     }
 
-    final companyMap = body['company'];
+    final companyMap = body['company'] ??
+        (body['data'] is Map<String, dynamic>
+            ? (body['data'] as Map<String, dynamic>)['company']
+            : null) ??
+        (body['company_details']) ??
+        (body['companyDetail']);
     if (companyMap is! Map<String, dynamic>) {
       throw Exception('Company details missing in workflow API response');
     }
 
     final company = companyMap['company']?.toString() ?? '';
-    final secretKey = companyMap['secret_key']?.toString() ?? '';
-    if (company.isEmpty || secretKey.isEmpty) {
-      throw Exception('Company or secret key missing in workflow API response');
+    final secretKey = companyMap['secret_key']?.toString();
+    if (company.isEmpty) {
+      throw Exception('Company missing in workflow API response');
     }
 
     final fullCompanyName = _firstString(companyMap, [
@@ -151,7 +164,6 @@ class WorkflowLookupApi {
         ? rawList
             .whereType<Map<String, dynamic>>()
             .map(WorkflowListItem.fromJson)
-            .where((e) => e.workflowName.isNotEmpty)
             .toList()
         : <WorkflowListItem>[];
 
@@ -161,7 +173,9 @@ class WorkflowLookupApi {
 
     return WorkflowLookupResult(
       company: company,
-      secretKey: secretKey,
+      secretKey: (secretKey == null || secretKey.trim().isEmpty)
+          ? ''
+          : secretKey.trim(),
       workflows: workflows,
       fullCompanyName: fullCompanyName,
       logoUrl: logoUrl,

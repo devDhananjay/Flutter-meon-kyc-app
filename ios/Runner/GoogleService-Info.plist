@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.bpwealth.stoxbox</string>
+	<string>com.meon.kyc</string>
 	<key>PROJECT_ID</key>
 	<string>stoxbox-5daa8</string>
 	<key>STORAGE_BUCKET</key>
@@ -27,8 +27,8 @@
 	<key>GOOGLE_APP_ID</key>
 	<string>1:1077626154170:ios:6cf794b257a449804f6683</string>
 	<key>CLIENT_ID</key>
-	<string>1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g.apps.googleusercontent.com</string>
+	<string>680768531196-thtl79kon86oesjc155v513iipd0anv2.apps.googleusercontent.com</string>
 	<key>REVERSED_CLIENT_ID</key>
-	<string>com.googleusercontent.apps.1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g</string>
+	<string>com.googleusercontent.apps.680768531196-thtl79kon86oesjc155v513iipd0anv2</string>
 </dict>
 </plist>
