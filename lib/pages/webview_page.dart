@@ -107,7 +107,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (uri == null) return false;
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
-    return host.contains('live.meon.co.in') &&
+    return (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
         path.contains('/cloudesign/document-');
   }
 
@@ -327,6 +327,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
     return host.contains('ipv.meon.co.in') ||
+        host.contains('ipv.stoxbox.in') ||
         host.contains('ipv') ||
         path.contains('ipv') ||
         path.contains('face') ||
@@ -338,7 +339,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (uri == null) return false;
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
-    return host.contains('meon.co.in') && path.contains('/reverse_pennydrop/');
+    return (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
+        path.contains('/reverse_pennydrop/');
   }
 
   bool get _isReversePennyDropFlow =>
@@ -597,7 +599,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final host = uri.host.toLowerCase();
     final path = uri.path.toLowerCase();
     final isWorkflowPath = path.contains('/${widget.company}/${widget.workflowName}');
-    final isOurDomain = host.contains('meon.co.in') &&
+    final isOurDomain = (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
         !host.contains('api.') &&
         !host.contains('accounts.');
 
@@ -1253,7 +1255,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           final hasState = uri.queryParameters.containsKey('state');
                           final isWorkflowPath = path.contains(
                               '/${widget.company}/${widget.workflowName}');
-                          final isMeonRedirect = host.contains('meon.co.in') &&
+                          final isMeonRedirect = (host.contains('meon.co.in') ||
+                                  host.contains('stoxbox.in')) &&
                               !host.contains('ipv.') &&
                               !host.contains('api.') &&
                               !host.contains('digilocker.');

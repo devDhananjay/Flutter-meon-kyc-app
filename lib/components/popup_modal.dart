@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:meon_kyc/config/env_config.dart';
 
 class PopupModal extends StatelessWidget {
   final Map<String, dynamic> popupData;
@@ -138,7 +139,10 @@ class PopupModal extends StatelessWidget {
       children: [
         SizedBox(
           height: 400,
-          child: InAppWebView(url: 'https://live.meon.co.in/static/static_upload_files/kediacapital/Tariff%20Plan.pdf'),
+          child: InAppWebView(
+            url:
+                '${EnvConfig.baseUrl}/static/static_upload_files/kediacapital/Tariff%20Plan.pdf',
+          ),
         ),
         const SizedBox(height: 16),
         OutlinedButton(
