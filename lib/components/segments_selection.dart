@@ -4,7 +4,10 @@ import 'package:meon_kyc/theme/kyc_theme.dart';
 /// Trading segments selection UI as per design.
 /// BugFixes: grid shows only NSE/BSE cash, FO, SLBM, MF (no MTF / currency columns) —
 /// submit payload matches via [HomePage] `_prepareFormData` (mtf/currency false).
-class SegmentsSelection extends StatelessWidget {
+///
+/// UX: when user toggles NSE FO / BSE FO from OFF -> ON, show a one-time
+/// reminder modal listing the financial documents required to enable FO.
+class SegmentsSelection extends StatefulWidget {
   final Map<String, dynamic> formData;
   final void Function(String name, dynamic value) onChange;
   final VoidCallback? onViewBrokeragePlan;
@@ -20,15 +23,110 @@ class SegmentsSelection extends StatelessWidget {
     this.submitLoading = false,
   });
 
+  @override
+  State<SegmentsSelection> createState() => _SegmentsSelectionState();
+}
+
+class _SegmentsSelectionState extends State<SegmentsSelection> {
+  static const Set<String> _foKeys = {'nse_fo', 'bse_fo'};
+  static const _linkBlue = Color(0xFF2563EB);
+
   bool _getValue(String key) {
-    final val = formData[key];
+    final val = widget.formData[key];
     if (val == null) return false;
     if (val is bool) return val;
     final str = val.toString().toLowerCase();
     return str == 'true' || str == '1' || str == 'yes';
   }
 
-  static const _linkBlue = Color(0xFF2563EB);
+  bool _coerceBool(dynamic value) {
+    if (value is bool) return value;
+    if (value == null) return false;
+    final str = value.toString().toLowerCase();
+    return str == 'true' || str == '1' || str == 'yes';
+  }
+
+  void _handleSegmentChange(String name, dynamic value) {
+    final wasEnabled = _getValue(name);
+    final willEnable = _coerceBool(value);
+
+    widget.onChange(name, value);
+
+    // OFF -> ON transition on NSE FO / BSE FO: show financial documents reminder.
+    if (_foKeys.contains(name) && !wasEnabled && willEnable) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showFoFinancialDocsModal();
+      });
+    }
+  }
+
+  Future<void> _showFoFinancialDocsModal() {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Please upload any one of the following financial '
+                  'documents (required only if selected):',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: KycTheme.textPrimary,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const _FoDocBullet(text: 'Last 6 months bank statement'),
+                const _FoDocBullet(
+                    text: 'Latest Income Tax Return (ITR) acknowledgement'),
+                const _FoDocBullet(
+                    text: 'Form 16 or salary slips for the last 3 months'),
+                const _FoDocBullet(text: 'CA-certified Net Worth Certificate'),
+                const _FoDocBullet(text: 'Latest Demat Holding Statement'),
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: KycTheme.buttonEnabledPurple,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 28, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,7 +171,7 @@ class SegmentsSelection extends StatelessWidget {
                   child: _buildCheckbox(
                     label: pair[0].label,
                     value: _getValue(pair[0].key),
-                    onChanged: (v) => onChange(pair[0].key, v),
+                    onChanged: (v) => _handleSegmentChange(pair[0].key, v),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -81,7 +179,7 @@ class SegmentsSelection extends StatelessWidget {
                   child: _buildCheckbox(
                     label: pair[1].label,
                     value: _getValue(pair[1].key),
-                    onChanged: (v) => onChange(pair[1].key, v),
+                    onChanged: (v) => _handleSegmentChange(pair[1].key, v),
                   ),
                 ),
               ],
@@ -89,10 +187,10 @@ class SegmentsSelection extends StatelessWidget {
           );
         }),
         const SizedBox(height: 8),
-        if (onViewBrokeragePlan != null) ...[
+        if (widget.onViewBrokeragePlan != null) ...[
           Center(
             child: TextButton(
-              onPressed: onViewBrokeragePlan,
+              onPressed: widget.onViewBrokeragePlan,
               style: TextButton.styleFrom(
                 foregroundColor: _linkBlue,
                 padding: EdgeInsets.zero,
@@ -125,11 +223,10 @@ class SegmentsSelection extends StatelessWidget {
           const SizedBox(height: 24),
         ] else
           const SizedBox(height: 16),
-        
-        // Next/Submit button
-        if (onSubmit != null)
+
+        if (widget.onSubmit != null)
           ElevatedButton(
-            onPressed: submitLoading ? null : onSubmit,
+            onPressed: widget.submitLoading ? null : widget.onSubmit,
             style: ElevatedButton.styleFrom(
               backgroundColor: KycTheme.primary,
               foregroundColor: Colors.white,
@@ -138,7 +235,7 @@ class SegmentsSelection extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            child: submitLoading
+            child: widget.submitLoading
                 ? const SizedBox(
                     height: 22,
                     width: 22,
@@ -212,4 +309,45 @@ class _CheckboxItem {
   final String key;
 
   const _CheckboxItem({required this.label, required this.key});
+}
+
+class _FoDocBullet extends StatelessWidget {
+  final String text;
+  const _FoDocBullet({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 7, right: 10, left: 4),
+            child: SizedBox(
+              width: 5,
+              height: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: KycTheme.textPrimary,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: KycTheme.textPrimary,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

@@ -1,8 +1,8 @@
 /// Environment configuration for API URLs and default workflow
 class EnvConfig {
-  static const String apiUrlLocal = 'https://livetest.meon.co.in'; //n 'https://ekyc.stoxbox.in/    https://live.meon.co.in
-  static const String apiUrl = 'https://livetest.meon.co.in'; //n 'https://live.meon.co.in
-  static const String ssoSecretKey = '1J6GNJclpKCp3wGLldxpz7zAk7FymqoP';
+  static const String apiUrlLocal = 'https://live.meon.co.in'; //n 'https://ekyc.stoxbox.in/    https://live.meon.co.in
+  static const String apiUrl = 'https://live.meon.co.in'; //n 'https://live.meon.co.in
+  static const String ssoSecretKey = 'IBZmvgxvGUHgxNVpoXoK1c3fFVL76P0j';
 
   /// Default company and workflow (static for now)
   static const String companyName = 'bpwealth'; //'bpwealth'; mandotsecurities

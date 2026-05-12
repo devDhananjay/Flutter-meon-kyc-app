@@ -168,7 +168,7 @@ class _HomePageState extends State<HomePage> {
     _ssoInProgress = true;
     try {
       // Static mobile/email for now (as requested by user).
-      const mobileNumber = '9411441937';
+      const mobileNumber = '9411441933';
       const email = 'dhananjay@meon.co.in';
 
       debugPrint('[HomePage] No access token - attempting SSO login...');
