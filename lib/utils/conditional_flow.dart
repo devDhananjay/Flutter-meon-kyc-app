@@ -142,15 +142,284 @@ List<String> getWatchedFields(List<dynamic>? conditionalFlow) {
   return set.toList();
 }
 
+bool _jsonTruthy(dynamic v) {
+  if (v == true) return true;
+  if (v == false || v == null) return false;
+  if (v is num) return v != 0;
+  final s = v.toString().trim().toLowerCase();
+  return s == 'true' || s == '1' || s == 'yes';
+}
+
+/// Whether get-context / workflow lists this field for the end-user form.
+///
+/// Uses [adminFieldShow]: when true, the field is treated as visible even if
+/// `fieldShow` is false. **Only use this on BP Wealth `personal_details`** (see
+/// [kycFieldVisibleForFormStep]); on all other steps use [kycApiFieldVisibleStrictFieldShow]
+/// so `fieldShow: false` stays hidden (old app behaviour).
+bool kycApiFieldInitiallyVisible(Map<dynamic, dynamic> f) {
+  if (_jsonTruthy(f['adminFieldShow'])) return true;
+  final fs = f['fieldShow'];
+  if (fs == null) return true;
+  return _jsonTruthy(fs);
+}
+
+/// Visibility from `fieldShow` only — same as legacy `getVisibleFields` (`fieldShow ?? true`).
+/// Does **not** look at `adminFieldShow` (admin-only fields must not appear on nominee etc.).
+bool kycApiFieldVisibleStrictFieldShow(Map<dynamic, dynamic> f) {
+  final fs = f['fieldShow'];
+  if (fs == null) return true;
+  return _jsonTruthy(fs);
+}
+
+/// BP Wealth `personal_details` only: standing-instruction style questions that the
+/// web UI shows even when `fieldShow` is false (expandable on web). Do not use globally.
+const Set<String> kBpWealthPersonalDetailsStandingFieldNames = {
+  'electronic_transaction',
+  'annual_report',
+  'receive_contract',
+  'directly_bank_account',
+  'credit_account',
+  'rta',
+  'dp_accept',
+  'sebi_3years',
+  'debitbalance',
+  // Web "Standing Instructions" accordion — common API name variants
+  'holding_cum_transaction_statement',
+  'holding_transaction_statement',
+  'transaction_statement_frequency',
+  'cum_holding_statement',
+  'holding_statement_frequency',
+  'statement_frequency',
+  'cum_transaction_statement',
+  'dis_booklet',
+  'dis_book',
+  'dis',
+  'delivery_instruction_slip',
+  'dis_slip',
+};
+
+/// BP Wealth personal_details — fields in the **main** block (web 2nd screenshot only).
+const Set<String> kBpWealthPersonalDetailsMainScreenFieldNames = {
+  'fathers_name',
+  'father_name',
+  'father',
+  'fathername',
+  'mothers_name',
+  'mother_name',
+  'mother',
+  'mothername',
+  'gender',
+  'marital_status',
+  'maritalstatus',
+  'education',
+  'annual_income',
+  'income',
+  'gross_annual_income',
+  'annualincome',
+  'trading_experience',
+  'tradingexperience',
+  'politically_exposed',
+  'pep',
+  'political_exposed',
+  'occupation',
+  'citizen_of_india',
+  'citizen',
+  'indian_citizen',
+  'citizenindia',
+  'ddpi',
+  'execute_ddpi',
+  'demat_debit_pledge',
+  'tax_residency',
+  'tax_residency_outside_india',
+  'taxresidency',
+  'penny_drop_condition',
+};
+
+/// DP / tariff consent checkbox — **outside** Standing Instructions accordion (web design).
+bool bpWealthPersonalDetailsTariffConsentCheckboxField(Map<dynamic, dynamic> f) {
+  if ((f['type']?.toString() ?? '').toLowerCase() != 'checkbox') return false;
+  final dn = (f['displayName']?.toString() ?? '').toLowerCase();
+  return dn.contains('standing instruction') || dn.contains('tariff structure');
+}
+
+/// Combined user-facing copy (API sometimes uses [label] / [title] instead of [displayName]).
+String bpWealthFieldUserFacingTextLower(Map<dynamic, dynamic> f) {
+  final buf = StringBuffer();
+  for (final k in ['displayName', 'label', 'title', 'placeholder', 'question']) {
+    final s = f[k]?.toString().trim();
+    if (s == null || s.isEmpty) continue;
+    if (buf.isNotEmpty) buf.write(' ');
+    buf.write(s);
+  }
+  return buf.toString().toLowerCase();
+}
+
+/// "How frequently do you want to receive your holding cum Transaction statement?" —
+/// backend [name] varies; match by user-facing text and common [name] substrings.
+bool bpWealthPersonalDetailsHoldingStatementFrequencyField(
+  Map<dynamic, dynamic> f,
+) {
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (nl.contains('holding') &&
+      nl.contains('statement') &&
+      (nl.contains('transaction') ||
+          nl.contains('cum') ||
+          nl.contains('freq') ||
+          nl.contains('stmt'))) {
+    return true;
+  }
+
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  if (dn.isEmpty) return false;
+
+  final hasHolding = dn.contains('holding');
+  final hasStatement = dn.contains('statement');
+  final hasTransaction = dn.contains('transaction');
+  final hasCum = dn.contains('cum');
+  final hasFreq = dn.contains('frequen') || dn.contains('how often');
+
+  if (hasHolding &&
+      hasStatement &&
+      (hasTransaction || hasCum || hasFreq || dn.contains('receive'))) {
+    return true;
+  }
+  if (hasStatement &&
+      hasFreq &&
+      (hasTransaction || hasCum || hasHolding || dn.contains('sebi'))) {
+    return true;
+  }
+  return false;
+}
+
+/// Fields rendered **inside** the Standing Instructions expandable only (not tariff consent).
+bool bpWealthPersonalDetailsStandingSectionField(Map<dynamic, dynamic> f) {
+  final name = f['name']?.toString();
+  if (name != null &&
+      kBpWealthPersonalDetailsStandingFieldNames.contains(name)) {
+    return true;
+  }
+  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f);
+}
+
+bool bpWealthPersonalDetailsHideDobField(
+  String? company,
+  String? position,
+  String? pageLabel,
+  String? name,
+) {
+  if (!bpWealthPersonalDetailsStep(company, position, pageLabel)) return false;
+  if (name == null) return false;
+  final n = name.toLowerCase();
+  if (n == 'dob') return true;
+  if (n.contains('date_of_birth')) return true;
+  if (n.contains('birth_date')) return true;
+  if (n.contains('dob')) return true;
+  return false;
+}
+
+bool bpWealthPersonalDetailsStep(
+  String? company,
+  String? position,
+  String? pageLabel,
+) {
+  if (company == null) return false;
+  if (company.toLowerCase().trim() != 'bpwealth') return false;
+  final pos = position?.toLowerCase() ?? '';
+  final label = pageLabel?.toLowerCase() ?? '';
+  return pos == 'personal_details' || label == 'personal_details';
+}
+
+bool bpWealthPersonalDetailsForceShowStandingField(
+  String? company,
+  String? position,
+  String? pageLabel,
+  String? fieldName,
+) {
+  if (fieldName == null) return false;
+  if (!bpWealthPersonalDetailsStep(company, position, pageLabel)) return false;
+  return kBpWealthPersonalDetailsStandingFieldNames.contains(fieldName);
+}
+
+/// Same as [bpWealthPersonalDetailsForceShowStandingField] but includes holding/statement frequency by display text.
+bool bpWealthPersonalDetailsForceShowStandingMap(
+  String? company,
+  String? position,
+  String? pageLabel,
+  Map<dynamic, dynamic> f,
+) {
+  if (!bpWealthPersonalDetailsStep(company, position, pageLabel)) return false;
+  final name = f['name']?.toString();
+  if (name != null &&
+      kBpWealthPersonalDetailsStandingFieldNames.contains(name)) {
+    return true;
+  }
+  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f);
+}
+
+/// API visibility plus BP Wealth personal-details standing override (fieldShow false).
+bool kycFieldVisibleForFormStep(
+  Map<dynamic, dynamic> f, {
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  final name = f['name']?.toString();
+  if (bpWealthPersonalDetailsHideDobField(company, position, pageLabel, name)) {
+    return false;
+  }
+  if (bpWealthPersonalDetailsStep(company, position, pageLabel)) {
+    if (bpWealthPersonalDetailsTariffConsentCheckboxField(f)) {
+      return true;
+    }
+    if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) {
+      return kycApiFieldInitiallyVisible(f) ||
+          bpWealthPersonalDetailsForceShowStandingMap(
+            company,
+            position,
+            pageLabel,
+            f,
+          );
+    }
+    if (name == null) return false;
+    if (kBpWealthPersonalDetailsMainScreenFieldNames.contains(name)) {
+      // Web main grid only — show even if API hid the field.
+      return true;
+    }
+    if (kBpWealthPersonalDetailsStandingFieldNames.contains(name)) {
+      return kycApiFieldInitiallyVisible(f) ||
+          bpWealthPersonalDetailsForceShowStandingField(
+            company,
+            position,
+            pageLabel,
+            name,
+          );
+    }
+    return false;
+  }
+  // Non–personal_details: never honour adminFieldShow for UI (avoids extra fields on nominee etc.).
+  return kycApiFieldVisibleStrictFieldShow(f);
+}
+
 List<dynamic> getVisibleFields(
   List<dynamic> fields,
-  Map<String, bool> fieldVisibility,
-) {
+  Map<String, bool> fieldVisibility, {
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
   return fields.where((f) {
     if (f is! Map) return false;
     final name = f['name']?.toString();
-    final show = f['fieldShow'] ?? true;
-    if (name == null) return false;
+    final show = kycFieldVisibleForFormStep(
+      f,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    if (name == null) {
+      if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) return false;
+      return show;
+    }
     final visible = fieldVisibility[name] ?? true;
     return show && visible;
   }).toList();

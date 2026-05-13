@@ -15,6 +15,7 @@ import 'package:meon_kyc/firebase_options.dart';
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
 import 'package:meon_kyc/api/sso_api.dart';
+import 'package:meon_kyc/sso/sso_temp_credentials_gate.dart';
 import 'package:meon_kyc/components/form_field_widget.dart';
 import 'package:meon_kyc/components/kyc_layout.dart';
 import 'package:meon_kyc/components/kyc_stepper_bar.dart';
@@ -25,11 +26,14 @@ import 'package:meon_kyc/components/segments_selection.dart';
 import 'package:meon_kyc/components/brokerage_plan_dialog.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/hooks/conditional_form.dart';
+import 'package:meon_kyc/utils/conditional_flow.dart';
+import 'package:meon_kyc/utils/kyc_date_utils.dart';
 import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 class HomePage extends StatefulWidget {
   final String company;
@@ -162,14 +166,23 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ------------------------------------------------
-  Future<bool> _trySsoLoginIfNeeded(AppStore store) async {
+  Future<bool> _trySsoLoginIfNeeded(
+    BuildContext context,
+    AppStore store,
+  ) async {
     if (_ssoAttempted || _ssoInProgress) return _ssoAttempted;
 
     _ssoInProgress = true;
     try {
-      // Static mobile/email for now (as requested by user).
-      const mobileNumber = '9411441933';
-      const email = 'dhananjay@meon.co.in';
+      if (!context.mounted) return false;
+      final creds = await resolveSsoCredentialsForSsoApi(context);
+      if (!context.mounted) return false;
+      if (creds == null) {
+        debugPrint('[HomePage] SSO skipped — no credentials (dialog dismissed?)');
+        return false;
+      }
+      final mobileNumber = creds.mobileNumber;
+      final email = creds.email;
 
       debugPrint('[HomePage] No access token - attempting SSO login...');
       final tokens = await SsoAPI.getSsoRouteTokens(
@@ -239,7 +252,9 @@ class _HomePageState extends State<HomePage> {
       if (shouldTrySso) {
         debugPrint('[HomePage] First-load: forcing SSO attempt (hasToken=$hasToken)');
         if (mounted) setState(() => _submitLoading = true);
-        final ssoOk = await _trySsoLoginIfNeeded(store);
+        final ssoOk = context.mounted
+            ? await _trySsoLoginIfNeeded(context, store)
+            : false;
         if (mounted) setState(() => _submitLoading = false);
         hasToken = hasToken || ssoOk;
       } else if (!_ssoAttempted) {
@@ -793,6 +808,226 @@ class _HomePageState extends State<HomePage> {
     return store.fields;
   }
 
+  /// Position + page label for form validation (same resolution as [_buildForm]).
+  ({String? position, String? pageLabel}) _submitValidationStep(AppStore store) {
+    final withAuth = store.fieldsWithAuth as Map?;
+    final c = withAuth?['context'] as Map?;
+    String? position = c?['position']?.toString().toLowerCase();
+    String? pageLabel = c?['page']?['data']?['label']?.toString().toLowerCase();
+    if ((position ?? '').isEmpty || (pageLabel ?? '').isEmpty) {
+      final workflow = store.fields as Map?;
+      position = (workflow?['position']?.toString() ?? '').toLowerCase();
+      pageLabel = (workflow?['data']?['label']?.toString() ?? '').toLowerCase();
+    }
+    return (position: position, pageLabel: pageLabel);
+  }
+
+  /// BP Wealth personal-details: UI grouping for standing-instruction fields (collapsed by default).
+  bool _bpWealthPersonalDetailsStandingUi(String? position, String? pageLabel) {
+    return _isBpWealthCompany &&
+        ((position ?? '') == 'personal_details' ||
+            (pageLabel ?? '') == 'personal_details');
+  }
+
+  /// PAN capture (`detailspan`) and PAN verify (`pan`): show DOB as **DD/MM/YYYY**.
+  bool _useDdMmYyyyPanDateStep(String? position, String? pageLabel) {
+    final p = (position ?? '').toLowerCase();
+    final l = (pageLabel ?? '').toLowerCase();
+    return p == 'pan' || l == 'pan' || p == 'detailspan' || l == 'detailspan';
+  }
+
+  /// Primary submit text: strip trailing arrows/chevrons from API `buttonName` (avoids double-arrow UI).
+  String _primarySubmitLabel({
+    required bool isMobileStep,
+    required Map? submitButton,
+  }) {
+    if (isMobileStep) return 'Send OTP';
+    var s = (submitButton?['buttonName'] ?? 'Submit').toString().trim();
+    if (s.isEmpty) s = 'Submit';
+    while (true) {
+      final t = s.replaceFirst(RegExp(r'[\s→➜➤▶›>]+$'), '');
+      if (t == s || t.isEmpty) break;
+      s = t.trim();
+    }
+    return s.isEmpty ? 'Submit' : s;
+  }
+
+  /// One dynamic form row (shared by main list and Standing Instructions expansion).
+  Widget _buildFormFieldRow({
+    required Map<dynamic, dynamic> field,
+    required Map? otpField,
+    required String? otpFieldName,
+    required bool hasAadharImage,
+    required dynamic activeFields,
+    required AppStore store,
+    required List<dynamic> fieldList,
+    required String? position,
+    required String? pageLabel,
+    required Map? ctx,
+  }) {
+    final name = field['name']?.toString() ?? '';
+    final type = field['type']?.toString() ?? 'text';
+    final lowerName = name.toLowerCase();
+    final isAadharImageField =
+        lowerName == 'aadhar_image' || lowerName == 'aadhaar_image';
+    if (isAadharImageField && hasAadharImage) {
+      return const SizedBox.shrink();
+    }
+    if (otpField != null && name == otpFieldName) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: _buildOtpVerifyCard(otpField, activeFields),
+      );
+    }
+
+    final label = ctx?['page']?['data']?['label']?.toString()?.toLowerCase();
+    final isBankScreen = position == 'bank' ||
+        position == 'bank_details' ||
+        label == 'bank';
+    final isIfscField = isBankScreen &&
+        (name == 'ifsc' || name.toLowerCase().contains('ifsc'));
+
+    final editableFields = _formNotifier.editableFieldsList;
+    final disable = editableFields.any((e) => e is Map && e['name'] == name);
+
+    final isEmailStep = position == 'email' ||
+        position == 'emailid' ||
+        position == 'email_id' ||
+        label == 'email';
+    final isEmailField = (name.toLowerCase() == 'email' ||
+            name.toLowerCase() == 'email_id' ||
+            name.toLowerCase() == 'emailid' ||
+            name.toLowerCase().contains('email')) &&
+        type == 'text';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FormFieldWidget(
+            name: name,
+            displayName: field['displayName'] ?? name,
+            type: type,
+            fileType: field['fileType'] as List?,
+            size: field['size'],
+            mandatory: field['mandatory'] == true,
+            validation: field['validation'],
+            popupAfterSubmit: activeFields?['popupAfterSubmit'] as List?,
+            value: _coalesceFormFieldValue(
+              _formNotifier.formData[name],
+              field['value'],
+            ),
+            onGoogleSignIn: _handleGoogleSignIn,
+            googleSignInLoading: _googleSignInLoading,
+            onChange: (n, v) {
+              final f = fieldList.cast<Map?>().firstWhere(
+                    (x) => x?['name'] == n,
+                    orElse: () => null,
+                  );
+              _formNotifier.handleChange(
+                n,
+                v,
+                type: f?['type'] ?? 'text',
+                validationType: f?['validation']?.toString(),
+                validateWith: f?['validateWith']?.toString(),
+              );
+              if (pageLabel == 'mobile' &&
+                  (n == 'mobile' || n == 'phone' || n == 'mobile_number')) {
+                setState(() => _showMobileError = false);
+              }
+            },
+            onBlur: (n) {
+              _formNotifier.handleBlur(
+                n,
+                position: position,
+                pageLabel: pageLabel,
+              );
+              if (isIfscField) {
+                final ifscValue = _formNotifier.formData[n]?.toString() ?? '';
+                if (ifscValue.length == 11) {
+                  _fetchBankDetailsByIfsc(ifscValue);
+                }
+              }
+            },
+            values: field['values'] as List?,
+            visible: true,
+            errorField: _formNotifier.errors[name],
+            rows: field['rows'] is int
+                ? field['rows']
+                : int.tryParse(field['rows']?.toString() ?? ''),
+            cols: field['cols'] is int
+                ? field['cols']
+                : int.tryParse(field['cols']?.toString() ?? ''),
+            urlCompany: widget.company,
+            workflowKey:
+                (store.fieldsWithAuth as Map?)?['context']?['workflow_key']?.toString(),
+            disable: disable,
+            apiFieldMeta: field,
+            useDdMmYyyyDateDisplay: _useDdMmYyyyPanDateStep(position, pageLabel),
+          ),
+          if (isEmailStep && isEmailField) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _googleSignInLoading ? null : _handleGoogleSignIn,
+              icon: const Icon(Icons.g_mobiledata, size: 20),
+              label: Text(
+                  _googleSignInLoading ? 'Signing in...' : 'Sign in with Google'),
+              style: OutlinedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                side: BorderSide(color: KycTheme.primary),
+                foregroundColor: KycTheme.primary,
+              ),
+            ),
+          ],
+          if (isIfscField) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () {
+                final ifscValue = _formNotifier.formData[name]?.toString() ?? '';
+                if (ifscValue.length == 11) {
+                  _fetchBankDetailsByIfsc(ifscValue);
+                } else {
+                  Fluttertoast.showToast(
+                      msg: 'Please enter valid 11-digit IFSC code',
+                      gravity: ToastGravity.TOP);
+                }
+              },
+              icon: const Icon(Icons.search, size: 20),
+              label: const Text('Fetch Bank Details'),
+              style: OutlinedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                side: BorderSide(color: KycTheme.primary),
+                foregroundColor: KycTheme.primary,
+              ),
+            ),
+          ],
+          if (pageLabel == 'mobile' &&
+              (name == 'mobile' || name == 'phone' || name == 'mobile_number') &&
+              _showMobileError) ...[
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.error_outline, size: 16, color: Colors.red.shade700),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Please enter a valid 10-digit mobile number',
+                    style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>> _prepareFormData(bool skipValidation) async {
     final data = Map<String, dynamic>.from(_formNotifier.formData);
     // Do not send `save` in kyc-post-v2 body (backend expectation).
@@ -800,6 +1035,19 @@ class _HomePageState extends State<HomePage> {
     // Add brokerage_plan for segments screen
     final store = context.read<AppStore>();
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
+    var panPos = ctx?['position']?.toString().toLowerCase() ?? '';
+    var panLbl = ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+    if (panPos.isEmpty || panLbl.isEmpty) {
+      final workflow = store.fields as Map?;
+      panPos = (workflow?['position']?.toString() ?? panPos).toLowerCase();
+      panLbl = (workflow?['data']?['label']?.toString() ?? panLbl).toLowerCase();
+    }
+    if (_useDdMmYyyyPanDateStep(panPos, panLbl)) {
+      for (final key in ['pan_dob_for_match', 'dob']) {
+        final ddMm = tryFormatKycDateValueAsDdMmYyyy(data[key]);
+        if (ddMm != null) data[key] = ddMm;
+      }
+    }
     final position = ctx?['position']?.toString()?.toLowerCase();
     if (position == 'segments') {
       data['brokerage_plan'] = 'Brokerage Plan';
@@ -889,7 +1137,12 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (!skipValidation) {
-      final isValid = _formNotifier.validate();
+      final step = _submitValidationStep(store);
+      final isValid = _formNotifier.validate(
+        company: widget.company,
+        position: step.position,
+        pageLabel: step.pageLabel,
+      );
       if (!isValid) {
         debugPrint('[HomePage] Send OTP / Submit: validation failed');
         final errors = _formNotifier.errors;
@@ -1228,7 +1481,12 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (!skipValidation) {
-      final isValid = _formNotifier.validate();
+      final step = _submitValidationStep(store);
+      final isValid = _formNotifier.validate(
+        company: widget.company,
+        position: step.position,
+        pageLabel: step.pageLabel,
+      );
       debugPrint('[HomePage] Form validation result: $isValid');
       if (!isValid) {
         debugPrint('[HomePage] Validation failed, returning early');
@@ -2341,8 +2599,15 @@ class _HomePageState extends State<HomePage> {
       final existing = _formNotifier.formData[name];
       if (!_shouldMergeFromApi(existing)) continue;
 
-      final apiValue = f['value'];
+      dynamic apiValue = f['value'];
+      if (apiValue == null || (apiValue is String && apiValue.trim().isEmpty)) {
+        final pv = f['prepopulateValue'];
+        if (pv != null && pv.toString().trim().isNotEmpty) {
+          apiValue = pv;
+        }
+      }
       if (apiValue == null) continue;
+      if (apiValue is String && apiValue.trim().isEmpty) continue;
 
       final type = f['type']?.toString() ?? '';
       final validation = f['validation']?.toString();
@@ -2412,6 +2677,114 @@ class _HomePageState extends State<HomePage> {
     _mergePersonalDetailsFromFieldDefinitions(fieldList);
     _normalizePersonalDetailRadios(fieldList); // radio + select (dropdowns)
     _applyPersonalDetailsDefaults(fieldList);
+    _applyBpWealthStandingInstructionScreenshotDefaults(fieldList);
+  }
+
+  /// Web standing-instructions accordion defaults (screenshot parity) when value still unset.
+  void _applyBpWealthStandingInstructionScreenshotDefaults(
+    List<dynamic> fieldList,
+  ) {
+    if (!_isBpWealthCompany) return;
+
+    String? _pickElectronic(List? values) {
+      if (values == null) return null;
+      for (final o in values) {
+        final s = o.toString();
+        if (s.toLowerCase().contains('elect')) return s;
+      }
+      return null;
+    }
+
+    String? _pickSebiRegulations(List? values) {
+      if (values == null) return null;
+      for (final o in values) {
+        final s = o.toString();
+        final sl = s.toLowerCase();
+        if (sl.contains('sebi') && sl.contains('regul')) return s;
+        if (sl.contains('as per')) return s;
+      }
+      return null;
+    }
+
+    void applyYesNo(String fieldName, String yesOrNo) {
+      for (final f in fieldList) {
+        if (f is! Map) continue;
+        if (f['name']?.toString() != fieldName) continue;
+        final type = f['type']?.toString() ?? '';
+        if (type != 'radio' && type != 'select') return;
+        if (!_shouldMergeFromApi(_formNotifier.formData[fieldName])) return;
+        final values = f['values'] as List?;
+        final pick = _matchRadioOption(values, yesOrNo);
+        if (pick != null) {
+          _formNotifier.handleChange(
+            fieldName,
+            pick,
+            type: type,
+            validationType: f['validation']?.toString(),
+          );
+        }
+        return;
+      }
+    }
+
+    void applyElectronic(String fieldName) {
+      for (final f in fieldList) {
+        if (f is! Map) continue;
+        if (f['name']?.toString() != fieldName) continue;
+        final type = f['type']?.toString() ?? '';
+        if (type != 'radio' && type != 'select') return;
+        if (!_shouldMergeFromApi(_formNotifier.formData[fieldName])) return;
+        final values = f['values'] as List?;
+        final raw = _pickElectronic(values);
+        if (raw == null) return;
+        final normalized = _normalizeRadioToOptions(raw, values);
+        _formNotifier.handleChange(
+          fieldName,
+          normalized,
+          type: type,
+          validationType: f['validation']?.toString(),
+        );
+        return;
+      }
+    }
+
+    void applyStatementFrequencyByDisplayName() {
+      for (final f in fieldList) {
+        if (f is! Map) continue;
+        final name = f['name']?.toString();
+        if (name == null) continue;
+        if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) continue;
+        final type = f['type']?.toString() ?? '';
+        if (type != 'radio' && type != 'select') continue;
+        if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
+        final values = f['values'] as List?;
+        final raw = _pickSebiRegulations(values);
+        if (raw == null) continue;
+        final normalized = _normalizeRadioToOptions(raw, values);
+        _formNotifier.handleChange(
+          name,
+          normalized,
+          type: type,
+          validationType: f['validation']?.toString(),
+        );
+      }
+    }
+
+    applyYesNo('sebi_3years', 'No');
+    applyYesNo('directly_bank_account', 'Yes');
+    applyYesNo('credit_account', 'Yes');
+    applyYesNo('rta', 'Yes');
+    applyYesNo('dp_accept', 'No');
+    applyYesNo('electronic_transaction', 'Yes');
+    applyElectronic('receive_contract');
+    applyElectronic('annual_report');
+    applyStatementFrequencyByDisplayName();
+    applyYesNo('debitbalance', 'Yes');
+    applyYesNo('dis_booklet', 'No');
+    applyYesNo('dis_book', 'No');
+    applyYesNo('dis', 'No');
+    applyYesNo('delivery_instruction_slip', 'No');
+    applyYesNo('dis_slip', 'No');
   }
 
   /// Personal details step: defaults when API/dropoff did not pre-fill.
@@ -2500,6 +2873,492 @@ class _HomePageState extends State<HomePage> {
         }
       }
     }
+  }
+
+  int _bpWealthPersonalMainSortKey(String? name) {
+    if (name == null) return 99999;
+    final n = name.toLowerCase();
+    const order = <String>[
+      'fathers_name',
+      'father_name',
+      'father',
+      'fathername',
+      'mothers_name',
+      'mother_name',
+      'mother',
+      'mothername',
+      'gender',
+      'marital_status',
+      'maritalstatus',
+      'education',
+      'annual_income',
+      'income',
+      'gross_annual_income',
+      'annualincome',
+      'trading_experience',
+      'tradingexperience',
+      'politically_exposed',
+      'pep',
+      'political_exposed',
+      'occupation',
+      'citizen_of_india',
+      'citizen',
+      'indian_citizen',
+      'citizenindia',
+      'ddpi',
+      'execute_ddpi',
+      'demat_debit_pledge',
+      'tax_residency',
+      'tax_residency_outside_india',
+      'taxresidency',
+      'penny_drop_condition',
+    ];
+    final i = order.indexOf(n);
+    if (i >= 0) return i;
+    return 9000 + n.hashCode.remainder(10000);
+  }
+
+  int _bpWealthStandingSortKey(Map<dynamic, dynamic> f) {
+    if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) {
+      return 8;
+    }
+    final name = f['name']?.toString();
+    if (name == null) return 99999;
+    const order = <String>[
+      'sebi_3years',
+      'directly_bank_account',
+      'credit_account',
+      'rta',
+      'dp_accept',
+      'electronic_transaction',
+      'receive_contract',
+      'annual_report',
+      'holding_cum_transaction_statement',
+      'holding_transaction_statement',
+      'transaction_statement_frequency',
+      'cum_holding_statement',
+      'debitbalance',
+      'dis_booklet',
+      'dis_book',
+      'dis',
+      'delivery_instruction_slip',
+      'dis_slip',
+    ];
+    final i = order.indexOf(name);
+    if (i >= 0) return i;
+    return 8000 + name.hashCode.remainder(1000);
+  }
+
+  static const String _kBpWealthTariffPdfUrl =
+      'https://ekyc.stoxbox.in/static/static_upload_files/bpwealth/organized%20(19).pdf';
+
+  /// Direct PDF URLs often render blank in Android [WebView]; Google viewer embed is reliable.
+  static Uri _bpWealthTariffPdfEmbeddedViewerUri() {
+    final raw = Uri.parse(_kBpWealthTariffPdfUrl);
+    return Uri.parse(
+      'https://docs.google.com/viewer?url=${Uri.encodeComponent(raw.toString())}&embedded=true',
+    );
+  }
+
+  Future<void> _openBpWealthTariffPdfExternally() async {
+    final uri = Uri.parse(_kBpWealthTariffPdfUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  void _showBpWealthTariffPdfModal() {
+    final viewerUri = _bpWealthTariffPdfEmbeddedViewerUri();
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.white)
+      ..loadRequest(viewerUri);
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        final h = MediaQuery.of(ctx).size.height * 0.85;
+        final w = MediaQuery.of(ctx).size.width - 24;
+        return Dialog(
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+          child: SizedBox(
+            width: w,
+            height: h,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ColoredBox(
+                  color: KycTheme.primary,
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
+                          child: Text(
+                            'DP Standing Instructions & Tariff',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(child: WebViewWidget(controller: controller)),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      await _openBpWealthTariffPdfExternally();
+                    },
+                    icon: const Icon(Icons.open_in_browser, size: 20),
+                    label: const Text('Open PDF in browser'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// BP Wealth personal_details: web-like header, single-column main (2nd screenshot fields only),
+  /// Standing accordion, then tariff consent + View (PDF) **below** accordion.
+  List<Widget> _buildBpWealthPersonalWebFormLayout({
+    required List<dynamic> visibleFieldsForDisplay,
+    required Map? otpField,
+    required String? otpFieldName,
+    required bool hasAadharImage,
+    required dynamic activeFields,
+    required AppStore store,
+    required List<dynamic> fieldList,
+    required String? position,
+    required String? pageLabel,
+    required Map? ctx,
+  }) {
+    final maps = visibleFieldsForDisplay
+        .whereType<Map>()
+        .map((e) => Map<dynamic, dynamic>.from(e))
+        .toList();
+
+    final main = <Map<dynamic, dynamic>>[];
+    final standing = <Map<dynamic, dynamic>>[];
+    Map<dynamic, dynamic>? consentField;
+
+    for (final f in maps) {
+      if (bpWealthPersonalDetailsTariffConsentCheckboxField(f)) {
+        consentField = f;
+        continue;
+      }
+      // Must use [bpWealthPersonalDetailsStandingSectionField] — not only
+      // [kBpWealthPersonalDetailsStandingFieldNames], so displayName-based
+      // rows (e.g. holding cum transaction statement frequency) land here.
+      if (bpWealthPersonalDetailsStandingSectionField(f)) {
+        standing.add(f);
+      } else {
+        final n = f['name']?.toString();
+        if (n != null &&
+            kBpWealthPersonalDetailsMainScreenFieldNames.contains(n)) {
+          main.add(f);
+        }
+      }
+    }
+
+    if (consentField == null) {
+      for (final raw in fieldList) {
+        if (raw is! Map) continue;
+        final f = Map<dynamic, dynamic>.from(raw);
+        if (bpWealthPersonalDetailsTariffConsentCheckboxField(f)) {
+          consentField = f;
+          break;
+        }
+      }
+    }
+
+    main.sort((a, b) => _bpWealthPersonalMainSortKey(a['name']?.toString())
+        .compareTo(_bpWealthPersonalMainSortKey(b['name']?.toString())));
+    standing.sort((a, b) =>
+        _bpWealthStandingSortKey(a).compareTo(_bpWealthStandingSortKey(b)));
+
+    final out = <Widget>[
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        decoration: BoxDecoration(
+          color: KycTheme.primary,
+          borderRadius: BorderRadius.circular(KycTheme.radiusSm),
+        ),
+        child: const Text(
+          'Personal Details',
+          style: TextStyle(
+            fontSize: KycTheme.fontSizeTitleSm,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+      ),
+      const SizedBox(height: 16),
+      ...main.map(
+        (f) => Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: _buildFormFieldRow(
+            field: f,
+            otpField: otpField,
+            otpFieldName: otpFieldName,
+            hasAadharImage: hasAadharImage,
+            activeFields: activeFields,
+            store: store,
+            fieldList: fieldList,
+            position: position,
+            pageLabel: pageLabel,
+            ctx: ctx,
+          ),
+        ),
+      ),
+    ];
+
+    if (standing.isNotEmpty) {
+      out.add(const SizedBox(height: 8));
+      out.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              key: const PageStorageKey<String>('bpwealth_standing_instructions'),
+              initiallyExpanded: false,
+              tilePadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              collapsedShape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(KycTheme.radiusSm),
+                side: const BorderSide(color: KycTheme.border),
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(KycTheme.radiusSm),
+                side: const BorderSide(color: KycTheme.border),
+              ),
+              title: const Text(
+                'Standing instructions',
+                style: TextStyle(
+                  fontSize: KycTheme.fontSizeBodyLg,
+                  fontWeight: FontWeight.w600,
+                  color: KycTheme.textPrimary,
+                ),
+              ),
+              subtitle: const Text(
+                'DP preferences & statement options',
+                style: TextStyle(
+                  fontSize: KycTheme.fontSizeCaption,
+                  color: KycTheme.textSecondary,
+                ),
+              ),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: standing
+                        .map(
+                          (g) => _buildFormFieldRow(
+                            field: g,
+                            otpField: otpField,
+                            otpFieldName: otpFieldName,
+                            hasAadharImage: hasAadharImage,
+                            activeFields: activeFields,
+                            store: store,
+                            fieldList: fieldList,
+                            position: position,
+                            pageLabel: pageLabel,
+                            ctx: ctx,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (consentField != null) {
+      out.add(const SizedBox(height: 8));
+      out.add(
+        _buildFormFieldRow(
+          field: consentField,
+          otpField: otpField,
+          otpFieldName: otpFieldName,
+          hasAadharImage: hasAadharImage,
+          activeFields: activeFields,
+          store: store,
+          fieldList: fieldList,
+          position: position,
+          pageLabel: pageLabel,
+          ctx: ctx,
+        ),
+      );
+    } else {
+      out.add(const SizedBox(height: 8));
+      out.add(
+        Text(
+          'I have read and understood the contents pertaining to the DP Standing Instructions and Tariff Structure details. I hereby agree and give my consent to the same.',
+          style: TextStyle(
+            fontSize: KycTheme.fontSizeBody,
+            color: KycTheme.textPrimary,
+            height: 1.35,
+          ),
+        ),
+      );
+    }
+
+    out.add(const SizedBox(height: 12));
+    out.add(
+      Align(
+        alignment: Alignment.centerLeft,
+        child: FilledButton(
+          onPressed: _showBpWealthTariffPdfModal,
+          style: FilledButton.styleFrom(
+            backgroundColor: KycTheme.primary,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          ),
+          child: const Text('View'),
+        ),
+      ),
+    );
+
+    return out;
+  }
+
+  /// Default: sequential rows + BP Wealth standing expansion (non–personal_details).
+  List<Widget> _buildSequencedFormRowsWithStandingExpansion({
+    required List<dynamic> visibleFieldsForDisplay,
+    required Map? otpField,
+    required String? otpFieldName,
+    required bool hasAadharImage,
+    required dynamic activeFields,
+    required AppStore store,
+    required List<dynamic> fieldList,
+    required String? position,
+    required String? pageLabel,
+    required Map? ctx,
+  }) {
+    final rows = <Widget>[];
+    var idx = 0;
+    while (idx < visibleFieldsForDisplay.length) {
+      final raw = visibleFieldsForDisplay[idx];
+      if (raw is! Map) {
+        idx++;
+        continue;
+      }
+      final fieldMap = Map<dynamic, dynamic>.from(raw);
+      if (_bpWealthPersonalDetailsStandingUi(position, pageLabel) &&
+          bpWealthPersonalDetailsStandingSectionField(fieldMap)) {
+        final group = <Map<dynamic, dynamic>>[];
+        while (idx < visibleFieldsForDisplay.length) {
+          final r2 = visibleFieldsForDisplay[idx];
+          if (r2 is! Map) break;
+          final m2 = Map<dynamic, dynamic>.from(r2);
+          if (!_bpWealthPersonalDetailsStandingUi(position, pageLabel) ||
+              !bpWealthPersonalDetailsStandingSectionField(m2)) {
+            break;
+          }
+          group.add(m2);
+          idx++;
+        }
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Theme(
+              data: Theme.of(context).copyWith(
+                dividerColor: Colors.transparent,
+              ),
+              child: ExpansionTile(
+                key: const PageStorageKey<String>('bpwealth_standing_instructions'),
+                initiallyExpanded: false,
+                tilePadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                collapsedShape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(KycTheme.radiusSm),
+                  side: const BorderSide(color: KycTheme.border),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(KycTheme.radiusSm),
+                  side: const BorderSide(color: KycTheme.border),
+                ),
+                title: const Text(
+                  'Standing instructions & declarations',
+                  style: TextStyle(
+                    fontSize: KycTheme.fontSizeBodyLg,
+                    fontWeight: FontWeight.w600,
+                    color: KycTheme.textPrimary,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Tap to expand (same as website)',
+                  style: TextStyle(
+                    fontSize: KycTheme.fontSizeCaption,
+                    color: KycTheme.textSecondary,
+                  ),
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: group
+                          .map(
+                            (g) => _buildFormFieldRow(
+                              field: g,
+                              otpField: otpField,
+                              otpFieldName: otpFieldName,
+                              hasAadharImage: hasAadharImage,
+                              activeFields: activeFields,
+                              store: store,
+                              fieldList: fieldList,
+                              position: position,
+                              pageLabel: pageLabel,
+                              ctx: ctx,
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+      rows.add(
+        _buildFormFieldRow(
+          field: fieldMap,
+          otpField: otpField,
+          otpFieldName: otpFieldName,
+          hasAadharImage: hasAadharImage,
+          activeFields: activeFields,
+          store: store,
+          fieldList: fieldList,
+          position: position,
+          pageLabel: pageLabel,
+          ctx: ctx,
+        ),
+      );
+      idx++;
+    }
+    return rows;
   }
 
   Widget _buildForm(
@@ -2607,10 +3466,15 @@ class _HomePageState extends State<HomePage> {
     final visibleFields = fieldList.where((f) {
       if (f is! Map) return false;
       final name = f['name']?.toString();
-      final initialShow = f['fieldShow'] ?? true;
-      
+      final initialShow = kycFieldVisibleForFormStep(
+        f,
+        company: widget.company,
+        position: position,
+        pageLabel: pageLabel,
+      );
+
       // If conditional flow has explicitly set visibility, use that (takes precedence)
-      // Otherwise, use initial fieldShow value from API
+      // Otherwise, use API visibility (+ BP Wealth personal_details standing override)
       final dynamicVisibility = _formNotifier.fieldVisibility[name];
       final show = dynamicVisibility ?? initialShow;
       
@@ -2787,160 +3651,31 @@ class _HomePageState extends State<HomePage> {
               ),
               const SizedBox(height: 16),
             ],
-            ...visibleFieldsForDisplay.map((field) {
-              if (field is! Map) return const SizedBox.shrink();
-              final name = field['name']?.toString() ?? '';
-              final type = field['type']?.toString() ?? 'text';
-              final lowerName = name.toLowerCase();
-              final isAadharImageField =
-                  lowerName == 'aadhar_image' || lowerName == 'aadhaar_image';
-              if (isAadharImageField && hasAadharImage) {
-                // Image already rendered at top of form; hide underlying field
-                return const SizedBox.shrink();
-              }
-              if (otpField != null && name == otpFieldName) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: _buildOtpVerifyCard(otpField, activeFields),
-                );
-              }
-              
-              // Check if this is IFSC field on bank / bank_details screen
-              // Use position and ctx already declared at function start
-              final label = ctx?['page']?['data']?['label']?.toString()?.toLowerCase();
-              final isBankScreen = position == 'bank' ||
-                  position == 'bank_details' ||
-                  label == 'bank';
-              final isIfscField = isBankScreen &&
-                  (name == 'ifsc' || name.toLowerCase().contains('ifsc'));
-              
-              final editableFields = _formNotifier.editableFieldsList;
-              final disable = editableFields.any((e) => e is Map && e['name'] == name);
-              
-              // Check if this is email field on email step
-              // Support multiple position keys / labels: "email", "email_id", "emailid"
-              final isEmailStep = position == 'email' ||
-                  position == 'emailid' ||
-                  position == 'email_id' ||
-                  label == 'email';
-              final isEmailField = (name.toLowerCase() == 'email' || 
-                                    name.toLowerCase() == 'email_id' || 
-                                    name.toLowerCase() == 'emailid' ||
-                                    name.toLowerCase().contains('email')) &&
-                                   type == 'text';
-              
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FormFieldWidget(
-                      name: name,
-                      displayName: field['displayName'] ?? name,
-                      type: type,
-                      fileType: field['fileType'] as List?,
-                      size: field['size'],
-                      mandatory: field['mandatory'] == true,
-                      validation: field['validation'],
-                      popupAfterSubmit: activeFields?['popupAfterSubmit'] as List?,
-                      value: _coalesceFormFieldValue(
-                        _formNotifier.formData[name],
-                        field['value'],
-                      ),
-                      onGoogleSignIn: _handleGoogleSignIn,
-                      googleSignInLoading: _googleSignInLoading,
-                      onChange: (n, v) {
-                        final f = fieldList.cast<Map?>().firstWhere(
-                              (x) => x?['name'] == n,
-                              orElse: () => null,
-                            );
-                        _formNotifier.handleChange(
-                          n,
-                          v,
-                          type: f?['type'] ?? 'text',
-                          validationType: f?['validation']?.toString(),
-                          validateWith: f?['validateWith']?.toString(),
-                        );
-                        if (pageLabel == 'mobile' && (n == 'mobile' || n == 'phone' || n == 'mobile_number')) {
-                          setState(() => _showMobileError = false);
-                        }
-                      },
-                      onBlur: (n) {
-                        _formNotifier.handleBlur(n);
-                        // Auto-fetch on blur for IFSC field
-                        if (isIfscField) {
-                          final ifscValue = _formNotifier.formData[n]?.toString() ?? '';
-                          if (ifscValue.length == 11) {
-                            _fetchBankDetailsByIfsc(ifscValue);
-                          }
-                        }
-                      },
-                      values: field['values'] as List?,
-                      visible: true,
-                      errorField: _formNotifier.errors[name],
-                      rows: field['rows'] is int ? field['rows'] : int.tryParse(field['rows']?.toString() ?? ''),
-                      cols: field['cols'] is int ? field['cols'] : int.tryParse(field['cols']?.toString() ?? ''),
-                      urlCompany: widget.company,
-                      workflowKey: (store.fieldsWithAuth as Map?)?['context']?['workflow_key']?.toString(),
-                      disable: disable,
-                    ),
-                    // Add "Sign in with Google" button below email field on email step
-                    if (isEmailStep && isEmailField) ...[
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: _googleSignInLoading ? null : _handleGoogleSignIn,
-                        icon: const Icon(Icons.g_mobiledata, size: 20),
-                        label: Text(_googleSignInLoading ? 'Signing in...' : 'Sign in with Google'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                          side: BorderSide(color: KycTheme.primary),
-                          foregroundColor: KycTheme.primary,
-                        ),
-                      ),
-                    ],
-                    // Add "Fetch Bank Details" button below IFSC field
-                    if (isIfscField) ...[
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () {
-                          final ifscValue = _formNotifier.formData[name]?.toString() ?? '';
-                          if (ifscValue.length == 11) {
-                            _fetchBankDetailsByIfsc(ifscValue);
-                          } else {
-                            Fluttertoast.showToast(msg: 'Please enter valid 11-digit IFSC code', gravity: ToastGravity.TOP);
-                          }
-                        },
-                        icon: const Icon(Icons.search, size: 20),
-                        label: const Text('Fetch Bank Details'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                          side: BorderSide(color: KycTheme.primary),
-                          foregroundColor: KycTheme.primary,
-                        ),
-                      ),
-                    ],
-                    // Show error below mobile input when validation fails on Send OTP
-                    if (pageLabel == 'mobile' && (name == 'mobile' || name == 'phone' || name == 'mobile_number') && _showMobileError) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(Icons.error_outline, size: 16, color: Colors.red.shade700),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                              'Please enter a valid 10-digit mobile number',
-                              style: TextStyle(fontSize: 12, color: Colors.red.shade700),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              );
-            }),
+            ...(_bpWealthPersonalDetailsStandingUi(position, pageLabel)
+                ? _buildBpWealthPersonalWebFormLayout(
+                    visibleFieldsForDisplay: visibleFieldsForDisplay,
+                    otpField: otpField,
+                    otpFieldName: otpFieldName,
+                    hasAadharImage: hasAadharImage,
+                    activeFields: activeFields,
+                    store: store,
+                    fieldList: fieldList,
+                    position: position,
+                    pageLabel: pageLabel,
+                    ctx: ctx,
+                  )
+                : _buildSequencedFormRowsWithStandingExpansion(
+                    visibleFieldsForDisplay: visibleFieldsForDisplay,
+                    otpField: otpField,
+                    otpFieldName: otpFieldName,
+                    hasAadharImage: hasAadharImage,
+                    activeFields: activeFields,
+                    store: store,
+                    fieldList: fieldList,
+                    position: position,
+                    pageLabel: pageLabel,
+                    ctx: ctx,
+                  )),
             // Terms & Conditions and Aadhaar note (mobile login step only)
             // Show only when API page label AND position both indicate "mobile"
             if (pageLabel == 'mobile') ...[
@@ -3056,13 +3791,12 @@ class _HomePageState extends State<HomePage> {
                   : Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(isMobileStep
-                            ? 'Send OTP'
-                            : (submitButton?['buttonName'] ?? 'Submit')),
-                        if (!isMobileStep) ...[
-                          const SizedBox(width: 8),
-                          const Icon(Icons.arrow_forward, size: 20, color: Colors.white),
-                        ],
+                        Text(
+                          _primarySubmitLabel(
+                            isMobileStep: isMobileStep,
+                            submitButton: submitButton,
+                          ),
+                        ),
                       ],
                     ),
             ),

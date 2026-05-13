@@ -7,37 +7,9 @@ import 'package:intl/intl.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:meon_kyc/utils/kyc_date_utils.dart';
 
 // BugFixes: date helpers + select value resolution + date picker use existing API value (dropoff).
-
-/// Stored value is ISO `yyyy-MM-dd`; UI shows US-style `MM/dd/yyyy`.
-DateTime? _parseDateFieldValue(dynamic value) {
-  if (value == null) return null;
-  final s = value.toString().trim();
-  if (s.isEmpty) return null;
-  final normalized = s.replaceAll('/', '-');
-  final d = DateTime.tryParse(normalized);
-  if (d != null) return d;
-  final m = RegExp(r'^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$').firstMatch(s);
-  if (m != null) {
-    final month = int.tryParse(m.group(1)!);
-    final day = int.tryParse(m.group(2)!);
-    final year = int.tryParse(m.group(3)!);
-    if (month != null && day != null && year != null) {
-      return DateTime(year, month, day);
-    }
-  }
-  return null;
-}
-
-String _formatDateFieldDisplay(dynamic value) {
-  if (value == null) return 'Select date';
-  final s = value.toString().trim();
-  if (s.isEmpty) return 'Select date';
-  final d = _parseDateFieldValue(value);
-  if (d == null) return s;
-  return DateFormat('MM/dd/yyyy').format(d);
-}
 
 class FormFieldWidget extends StatefulWidget {
   final String name;
@@ -62,6 +34,10 @@ class FormFieldWidget extends StatefulWidget {
   /// When [validation] is `googleSignIn`, invoked instead of the empty stub.
   final Future<void> Function()? onGoogleSignIn;
   final bool googleSignInLoading;
+  /// Full field map from API — used for `date` [minDateType]/[maxDateValue] etc.
+  final Map<dynamic, dynamic>? apiFieldMeta;
+  /// When true (PAN / detailspan steps), date fields show **DD/MM/YYYY** instead of MM/dd/yyyy.
+  final bool useDdMmYyyyDateDisplay;
 
   const FormFieldWidget({
     super.key,
@@ -86,6 +62,8 @@ class FormFieldWidget extends StatefulWidget {
     this.disable = false,
     this.onGoogleSignIn,
     this.googleSignInLoading = false,
+    this.apiFieldMeta,
+    this.useDdMmYyyyDateDisplay = false,
   });
 
   @override
@@ -108,6 +86,18 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   TextEditingController? _textareaController;
   TextEditingController? _passwordController;
 
+  /// Stored value remains ISO `yyyy-MM-dd`; label uses step-specific pattern.
+  String _formatDateFieldDisplay(dynamic value) {
+    if (value == null) return 'Select date';
+    final s = value.toString().trim();
+    if (s.isEmpty) return 'Select date';
+    final d = parseKycDateValue(value);
+    if (d == null) return s;
+    final pattern =
+        widget.useDdMmYyyyDateDisplay ? 'dd/MM/yyyy' : 'MM/dd/yyyy';
+    return DateFormat(pattern).format(d);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -115,8 +105,15 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   }
 
   void _initializeControllers() {
-    final value = widget.value?.toString() ?? '';
+    var value = widget.value?.toString() ?? '';
     if (widget.type == 'text') {
+      if (_isMobileField) {
+        final digits = value.replaceAll(RegExp(r'\D'), '');
+        value = digits.length > 10 ? digits.substring(0, 10) : digits;
+      } else if (_isPanField) {
+        value = value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+        if (value.length > 10) value = value.substring(0, 10);
+      }
       _textController = TextEditingController(text: value);
     } else if (widget.type == 'number') {
       _numberController = TextEditingController(text: value);
@@ -140,6 +137,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (_isMobileField) {
           final digits = newValue.replaceAll(RegExp(r'\D'), '');
           textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+        } else if (_isPanField) {
+          textValue = newValue.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+          if (textValue.length > 10) textValue = textValue.substring(0, 10);
         }
         if (_textController!.text != textValue) {
           _textController!.text = textValue;
@@ -222,14 +222,18 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         field,
         if (widget.errorField != null && widget.errorField!.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(top: 4, left: 4),
+            padding: const EdgeInsets.only(top: 4, left: 4, right: 4),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Icon(Icons.error_outline, size: 16, color: Colors.red.shade700),
                 const SizedBox(width: 4),
-                Text(
-                  widget.errorField!,
-                  style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                Expanded(
+                  child: Text(
+                    widget.errorField!,
+                    style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                    softWrap: true,
+                  ),
                 ),
               ],
             ),
@@ -309,12 +313,22 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         name == 'phone';
   }
 
+  bool get _isPanField {
+    final v = widget.validation?.toString().toLowerCase() ?? '';
+    if (v == 'pan') return true;
+    final n = widget.name.toLowerCase();
+    return n == 'pan_number' || n == 'temp_pan_no' || n == 'pan_no';
+  }
+
   Widget _buildText() {
     if (_textController == null) {
       String raw = widget.value?.toString() ?? '';
       if (_isMobileField) {
         final digits = raw.replaceAll(RegExp(r'\D'), '');
         raw = digits.length > 10 ? digits.substring(0, 10) : digits;
+      } else if (_isPanField) {
+        raw = raw.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+        if (raw.length > 10) raw = raw.substring(0, 10);
       }
       _textController = TextEditingController(text: raw);
     }
@@ -326,13 +340,20 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           controller: _textController,
           enabled: !widget.disable,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
-          maxLength: _isMobileField ? 10 : null,
+          textCapitalization:
+              _isPanField ? TextCapitalization.characters : TextCapitalization.none,
+          maxLength: _isMobileField ? 10 : (_isPanField ? 10 : null),
           inputFormatters: _isMobileField
               ? [
                   FilteringTextInputFormatter.digitsOnly,
                   LengthLimitingTextInputFormatter(10),
                 ]
-              : null,
+              : _isPanField
+                  ? [
+                      FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
+                      LengthLimitingTextInputFormatter(10),
+                    ]
+                  : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
             hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
@@ -353,7 +374,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                     ),
                   )
                 : null,
-            counterText: _isMobileField ? '' : null,
+            counterText: (_isMobileField || _isPanField) ? '' : null,
           ),
         ),
       ],
@@ -505,16 +526,21 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               ? null
               : () async {
                   final now = DateTime.now();
-                  final first = DateTime(1900);
-                  final existing = _parseDateFieldValue(widget.value);
-                  var initial = existing ?? now;
-                  if (initial.isAfter(now)) initial = now;
+                  final today = DateTime(now.year, now.month, now.day);
+                  final bounds = widget.apiFieldMeta != null
+                      ? kycDobPickerBoundsFromField(widget.apiFieldMeta!)
+                      : null;
+                  final first = bounds?.first ?? DateTime(1900, 1, 1);
+                  final last = bounds?.last ?? today;
+                  final existing = parseKycDateValue(widget.value);
+                  var initial = existing ?? last;
+                  if (initial.isAfter(last)) initial = last;
                   if (initial.isBefore(first)) initial = first;
                   final d = await showDatePicker(
                     context: context,
                     initialDate: initial,
                     firstDate: first,
-                    lastDate: now,
+                    lastDate: last,
                   );
                   if (d != null) {
                     widget.onChange(widget.name, d.toIso8601String().split('T')[0]);

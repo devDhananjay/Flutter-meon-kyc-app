@@ -1,4 +1,5 @@
 import 'package:meon_kyc/utils/conditional_flow.dart';
+import 'package:meon_kyc/utils/kyc_date_utils.dart';
 
 String? _required(dynamic value, String fieldName) {
   if (value == null || value.toString().trim().isEmpty) {
@@ -37,12 +38,17 @@ String? _email(dynamic value) {
       : 'Please enter a valid email address';
 }
 
+/// Indian PAN: exactly 10 characters — 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F).
 String? _pan(dynamic value) {
   if (value == null || value.toString().trim().isEmpty) return null;
-  return RegExp(r'^[A-Za-z]{5}[0-9]{4}[A-Za-z]{1}$')
-          .hasMatch(value.toString().trim().toUpperCase())
-      ? null
-      : 'Please enter a valid PAN number';
+  final s = value.toString().trim().toUpperCase();
+  if (s.length != 10) {
+    return 'PAN must be exactly 10 characters (5 letters + 4 numbers + 1 letter)';
+  }
+  if (!RegExp(r'^[A-Z]{5}[0-9]{4}[A-Z]$').hasMatch(s)) {
+    return 'Invalid PAN: use 5 letters, then 4 digits, then 1 letter (e.g. ABCDE1234F)';
+  }
+  return null;
 }
 
 String? _ifsc(dynamic value) {
@@ -100,15 +106,48 @@ final Map<String, String? Function(dynamic)> _fieldValidators = {
   'number': _number,
 };
 
+/// PAN module (`position` / `pageLabel` `pan`): [pan_number] uses `validation: "no"` in API
+/// but must still match Indian PAN format; [pan_dob_for_match] must be in API date range.
+bool _implicitPanFormatField(Map<String, dynamic> field) {
+  final n = (field['name']?.toString() ?? '').toLowerCase();
+  final lbl = (field['label']?.toString() ?? '').toLowerCase();
+  return n == 'pan_number' ||
+      n == 'temp_pan_no' ||
+      n == 'pan_no' ||
+      lbl == 'pan_number' ||
+      lbl == 'temp_pan_no';
+}
+
+bool _panModuleStep(String? position, String? pageLabel) {
+  final p = (position ?? '').toLowerCase();
+  final l = (pageLabel ?? '').toLowerCase();
+  return p == 'pan' || l == 'pan';
+}
+
+/// On PAN verify screen, these inputs must be filled even if API `mandatory` is false.
+bool _panModuleRequiredField(
+  Map<String, dynamic> field,
+  String? position,
+  String? pageLabel,
+) {
+  if (!_panModuleStep(position, pageLabel)) return false;
+  final n = (field['name']?.toString() ?? '').toLowerCase();
+  return n == 'pan_number' || n == 'pan_dob_for_match';
+}
+
 List<String> validateFieldWithConditions(
   Map<String, dynamic> field,
   dynamic value,
   Map<String, dynamic> formData,
   List<dynamic>? conditionalFlow, {
   Map<String, bool> fieldRequirements = const {},
+  String? position,
+  String? pageLabel,
 }) {
   final errors = <String>[];
-  final isRequired = fieldRequirements[field['name']] ?? field['mandatory'] == true;
+  final reqOverride = fieldRequirements[field['name']];
+  final isRequired = reqOverride ??
+      (field['mandatory'] == true || _panModuleRequiredField(field, position, pageLabel));
 
   if (isRequired) {
     final err = _required(value, field['displayName'] ?? field['name'] ?? 'Field');
@@ -136,13 +175,27 @@ List<String> validateFieldWithConditions(
 
   if (value == null || value.toString().trim().isEmpty) return errors;
 
-  final validationType = field['validation'];
-  if (validationType != null && validationType != 'no') {
+  final validationRaw = field['validation']?.toString().trim() ?? '';
+  final validationType = validationRaw.isEmpty ||
+          validationRaw.toLowerCase() == 'no'
+      ? null
+      : validationRaw.toLowerCase();
+  if (validationType != null) {
     final fn = _fieldValidators[validationType];
     if (fn != null) {
       final err = fn(value);
       if (err != null) errors.add(err);
     }
+  }
+  if (validationType != 'pan' && _implicitPanFormatField(field)) {
+    final err = _pan(value);
+    if (err != null) errors.add(err);
+  }
+
+  final fieldType = field['type']?.toString().toLowerCase();
+  if (fieldType == 'date') {
+    final err = validateDobAgainstFieldBounds(field, value);
+    if (err != null) errors.add(err);
   }
 
   final minLen = field['minLength'];
@@ -163,13 +216,22 @@ List<String> validateFieldWithConditions(
 Map<String, String> validateFormWithConditions(
   List<dynamic>? fields,
   Map<String, dynamic> formData,
-  List<dynamic>? conditionalFlow,
-) {
+  List<dynamic>? conditionalFlow, {
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
   final errors = <String, String>{};
   if (fields == null) return errors;
 
   final flowState = evaluateConditionalFlow(conditionalFlow, formData);
-  final visibleFields = getVisibleFields(fields, flowState.fieldVisibility);
+  final visibleFields = getVisibleFields(
+    fields,
+    flowState.fieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
 
   for (final f in visibleFields) {
     if (f is! Map) continue;
@@ -181,6 +243,8 @@ Map<String, String> validateFormWithConditions(
       formData,
       conditionalFlow,
       fieldRequirements: flowState.fieldRequirements,
+      position: position,
+      pageLabel: pageLabel,
     );
     if (fieldErrors.isNotEmpty) errors[name] = fieldErrors.first;
   }

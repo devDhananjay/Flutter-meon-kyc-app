@@ -84,10 +84,19 @@ class ConditionalFormNotifier extends ChangeNotifier {
       return value.toString();
     }
     var processed = value.toString();
-    final maxLen = validationMaxLengths[validationType ?? ''] ?? 35;
-    if (processed.length > maxLen) processed = processed.substring(0, maxLen);
+    final nl = name.toLowerCase();
+    final effectiveValidation = () {
+      final vt = validationType?.toString().trim();
+      if (vt != null && vt.isNotEmpty && vt.toLowerCase() != 'no') {
+        return vt.toLowerCase();
+      }
+      if (nl == 'pan_number' || nl == 'temp_pan_no' || nl == 'pan_no') {
+        return 'pan';
+      }
+      return vt?.toLowerCase();
+    }();
 
-    switch (validationType) {
+    switch (effectiveValidation) {
       case 'mobile':
       case 'aadhaar':
       case 'pincode':
@@ -105,10 +114,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
         processed = processed.replaceAll(RegExp(r'[^a-zA-Z\s]'), '');
         break;
       default:
-        if (validationType != 'no' && processed.length > 35) {
-          processed = processed.substring(0, 35);
-        }
+        break;
     }
+    final cap = validationMaxLengths[effectiveValidation ?? ''] ?? 35;
+    if (processed.length > cap) processed = processed.substring(0, cap);
     return processed;
   }
 
@@ -178,7 +187,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
     }
   }
 
-  void handleBlur(String fieldName) {
+  void handleBlur(
+    String fieldName, {
+    String? position,
+    String? pageLabel,
+  }) {
     final field = _fields?.cast<Map<String, dynamic>?>().firstWhere(
           (f) => f?['name'] == fieldName,
           orElse: () => null,
@@ -189,15 +202,30 @@ class ConditionalFormNotifier extends ChangeNotifier {
       formData[fieldName],
       formData,
       _conditionalFlow,
+      position: position,
+      pageLabel: pageLabel,
     );
     if (fieldErrors.isNotEmpty) {
       errors[fieldName] = fieldErrors.first;
+    } else {
+      errors.remove(fieldName);
     }
     notifyListeners();
   }
 
-  bool validate() {
-    errors = validateFormWithConditions(_fields, formData, _conditionalFlow);
+  bool validate({
+    String? company,
+    String? position,
+    String? pageLabel,
+  }) {
+    errors = validateFormWithConditions(
+      _fields,
+      formData,
+      _conditionalFlow,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
     notifyListeners();
     return errors.isEmpty;
   }
