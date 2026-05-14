@@ -82,7 +82,7 @@ class _HomePageState extends State<HomePage> {
   bool _ssoAttempted = false;
   bool _ssoInProgress = false;
 
-  /// Kept across `_formNotifier.resetForm()` inside `_handleSubmitResponse` so `mobile_otp`
+  /// Kept when rehydrating after get-context (see `_handleSubmitResponse`): `mobile_otp`
   /// resend + header text still know the number (get-context fields often omit it).
   String? _persistedMobileDigitsForOtp;
   String? _persistedEmailForOtp;
@@ -1328,8 +1328,7 @@ class _HomePageState extends State<HomePage> {
         if (emailBeforeReset.contains('@')) {
           _persistedEmailForOtp = emailBeforeReset;
         }
-        _formNotifier.resetForm();
-        // Keep loading indicator visible during get-context call for smooth transition
+        // Keep filled values visible until get-context returns; then clear and apply new step.
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
           if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
@@ -1345,6 +1344,11 @@ class _HomePageState extends State<HomePage> {
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
           return;
         }
+        _formNotifier.resetForm();
+        final activeAfterSubmit = _getActiveFields(store);
+        final listAfterSubmit = (activeAfterSubmit?['fields'] as List?) ?? [];
+        final flowAfterSubmit = activeAfterSubmit?['conditionalFlow'] as List?;
+        _formNotifier.updateFields(listAfterSubmit, flowAfterSubmit);
         if (mounted) {
           final authResponse = store.fieldsWithAuth;
           if (authResponse is Map && authResponse['is_admin'] == true) {
@@ -1698,7 +1702,7 @@ class _HomePageState extends State<HomePage> {
       final isSuccess = res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true;
       if (isSuccess) {
         StorageService.setUserStep(body?['step']?.toString() ?? '');
-        // Email step → email_otp: resetForm() clears email; persist from payload before reset.
+        // Persist email for OTP UI before any reset (payload + snapshot still valid here).
         final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
         final emailFromPayload = (data['email'] ?? data['email_id'] ?? data['emailId'])
                 ?.toString()
@@ -1710,8 +1714,8 @@ class _HomePageState extends State<HomePage> {
           final resolved = _resolveEmailForOtpUi(formSnapshot);
           if (resolved.contains('@')) _persistedEmailForOtp = resolved;
         }
-        _formNotifier.resetForm();
-        // Keep loading indicator visible during get-context call for smooth transition
+        // Do not reset the form before get-context: the UI would show empty fields while the
+        // request is in flight even though the save succeeded. Clear + rehydrate only after fresh context.
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
           if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
@@ -1729,6 +1733,11 @@ class _HomePageState extends State<HomePage> {
           if (mounted) setState(() => _submitLoading = false);
           return;
         }
+        _formNotifier.resetForm();
+        final activeAfter = _getActiveFields(store);
+        final listAfter = (activeAfter?['fields'] as List?) ?? [];
+        final flowAfter = activeAfter?['conditionalFlow'] as List?;
+        _formNotifier.updateFields(listAfter, flowAfter);
         if (mounted) {
           final authResponse = store.fieldsWithAuth;
           if (authResponse is Map && authResponse['is_admin'] == true) {
