@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 import 'package:meon_kyc/components/otp_input.dart';
+import 'package:meon_kyc/components/loading_button.dart';
 
 /// OTP verify block: instruction + Edit, single OTP input, Resend countdown, Verify button
 /// OTP expiry comes from API: fields[].otpExpiry
@@ -17,6 +18,7 @@ class OtpVerifySection extends StatefulWidget {
   /// OTP expiry config from API: {expiryTime, isExpiryEnabled, time}
   final Map<String, dynamic>? otpExpiry;
   final bool verifyLoading;
+  final bool resendLoading;
   /// OTP length (default: 6) — max digits; Verify enabled when digits >= minOtpLength (6)
   final int otpLength;
   /// When true, show 6 separate OTP boxes (email_otp); when false, single field (mobile_otp)
@@ -30,6 +32,7 @@ class OtpVerifySection extends StatefulWidget {
     this.onResendOtp,
     this.otpExpiry,
     this.verifyLoading = false,
+    this.resendLoading = false,
     this.otpLength = 6,
     this.useSixBoxes = false,
   });
@@ -111,7 +114,6 @@ class _OtpVerifySectionState extends State<OtpVerifySection> {
 
   @override
   Widget build(BuildContext context) {
-    final canResend = _remainingSeconds == 0 && widget.onResendOtp != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -171,7 +173,29 @@ class _OtpVerifySectionState extends State<OtpVerifySection> {
                 color: KycTheme.textSecondary,
               ),
             ),
-            if (_remainingSeconds == 0 && !_isExpired && widget.onResendOtp != null)
+            if (widget.resendLoading)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: KycTheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Resending...',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: KycTheme.textSecondary,
+                    ),
+                  ),
+                ],
+              )
+            else if (_remainingSeconds == 0 && !_isExpired && widget.onResendOtp != null)
               GestureDetector(
                 onTap: () {
                   widget.onResendOtp?.call();
@@ -215,30 +239,22 @@ class _OtpVerifySectionState extends State<OtpVerifySection> {
         ),
         const SizedBox(height: 24),
         // Verify button - disabled if expired or incomplete
-        SizedBox(
+        LoadingButton(
+          onPressed: (_otp.length < OtpVerifySection.minOtpLength || _isExpired)
+              ? null
+              : () => widget.onVerify(_otp),
+          isLoading: widget.verifyLoading,
+          label: 'Verify',
+          loadingLabel: 'Verifying...',
           width: double.infinity,
-          child: ElevatedButton(
-            onPressed: (widget.verifyLoading || _otp.length < OtpVerifySection.minOtpLength || _isExpired)
-                ? null
-                : () => widget.onVerify(_otp),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: KycTheme.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
+          height: 54,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: KycTheme.primary,
+            disabledBackgroundColor: KycTheme.primary.withValues(alpha: 0.5),
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
             ),
-            child: widget.verifyLoading
-                ? const SizedBox(
-                    height: 22,
-                    width: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Text('Verify'),
           ),
         ),
       ],

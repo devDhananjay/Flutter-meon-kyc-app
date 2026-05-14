@@ -94,6 +94,16 @@ String? _maxLength(dynamic value, int max) {
   return value.toString().length <= max ? null : 'Maximum length is $max';
 }
 
+String? _noSpecialCharacter(dynamic value) {
+  if (value == null || value.toString().trim().isEmpty) return null;
+  final s = value.toString().trim();
+  // Names: letters, spaces, hyphen, apostrophe (e.g. O'Brien, Mary-Jane) — no @#123 etc.
+  if (!RegExp(r"^[a-zA-Z\s'\-]+$").hasMatch(s)) {
+    return 'Only letters, spaces, hyphen and apostrophe are allowed';
+  }
+  return null;
+}
+
 final Map<String, String? Function(dynamic)> _fieldValidators = {
   'mobile': _mobile,
   'email': _email,
@@ -104,6 +114,7 @@ final Map<String, String? Function(dynamic)> _fieldValidators = {
   'aadhaar': _aadhaar,
   'pincode': _pincode,
   'number': _number,
+  'nospecialcharacter': _noSpecialCharacter,
 };
 
 /// PAN module (`position` / `pageLabel` `pan`): [pan_number] uses `validation: "no"` in API

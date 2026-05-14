@@ -113,6 +113,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       } else if (_isPanField) {
         value = value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
         if (value.length > 10) value = value.substring(0, 10);
+      } else if (_isNoSpecialCharacterField) {
+        value = value.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
       }
       _textController = TextEditingController(text: value);
     } else if (widget.type == 'number') {
@@ -140,6 +142,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         } else if (_isPanField) {
           textValue = newValue.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
           if (textValue.length > 10) textValue = textValue.substring(0, 10);
+        } else if (_isNoSpecialCharacterField) {
+          textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
         }
         if (_textController!.text != textValue) {
           _textController!.text = textValue;
@@ -293,9 +297,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     if (type == 'password') {
       return const Icon(Icons.lock_outline, color: KycTheme.textSecondary);
     }
-    // Number fields
+    // Number fields — `numbers_outlined` renders like "#" on some devices/fonts; no prefix icon.
     if (type == 'number' || validation == 'number') {
-      return const Icon(Icons.numbers_outlined, color: KycTheme.textSecondary);
+      return null;
     }
     // File upload fields
     if (type == 'file') {
@@ -320,6 +324,11 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     return n == 'pan_number' || n == 'temp_pan_no' || n == 'pan_no';
   }
 
+  bool get _isNoSpecialCharacterField {
+    final v = widget.validation?.toString().toLowerCase().trim() ?? '';
+    return v == 'nospecialcharacter';
+  }
+
   Widget _buildText() {
     if (_textController == null) {
       String raw = widget.value?.toString() ?? '';
@@ -329,6 +338,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       } else if (_isPanField) {
         raw = raw.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
         if (raw.length > 10) raw = raw.substring(0, 10);
+      } else if (_isNoSpecialCharacterField) {
+        raw = raw.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
       }
       _textController = TextEditingController(text: raw);
     }
@@ -353,7 +364,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                       FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
                       LengthLimitingTextInputFormatter(10),
                     ]
-                  : null,
+                  : _isNoSpecialCharacterField
+                      ? [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r"[a-zA-Z\s'\-]"),
+                          ),
+                        ]
+                      : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: InputDecoration(
             hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
@@ -374,7 +391,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                     ),
                   )
                 : null,
-            counterText: (_isMobileField || _isPanField) ? '' : null,
+            counterText:
+                (_isMobileField || _isPanField || _isNoSpecialCharacterField)
+                    ? ''
+                    : null,
           ),
         ),
       ],
@@ -467,26 +487,58 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   }
 
   Widget _buildSelect() {
-    final options = widget.values ?? [];
+    final rawOptions = widget.values ?? [];
 
-    /// Match API/dropoff value to a dropdown item (exact or case-insensitive).
-    String? _resolveSelectChoice(String? raw, List<dynamic> opts) {
+    /// API may send plain strings or `{label, value}` maps. Dropdown values must be unique.
+    List<MapEntry<String, String>> _normalizedSelectEntries(List<dynamic> opts) {
+      final seenLower = <String>{};
+      final out = <MapEntry<String, String>>[];
+      for (final e in opts) {
+        String value;
+        String label;
+        if (e is Map) {
+          final m = Map<String, dynamic>.from(e as Map);
+          label = (m['label'] ??
+                  m['displayName'] ??
+                  m['text'] ??
+                  m['value'] ??
+                  '')
+              .toString()
+              .trim();
+          value = (m['value'] ?? m['label'] ?? label).toString().trim();
+          if (value.isEmpty && label.isNotEmpty) value = label;
+          if (label.isEmpty) label = value;
+        } else {
+          final s = e.toString().trim();
+          value = s;
+          label = s;
+        }
+        if (value.isEmpty) continue;
+        final dedupeKey = value.toLowerCase();
+        if (seenLower.contains(dedupeKey)) continue;
+        seenLower.add(dedupeKey);
+        out.add(MapEntry(value, label));
+      }
+      return out;
+    }
+
+    /// Match stored form / API value to exactly one option [MapEntry.key] (dropdown value).
+    String? _resolveSelectValue(String? raw, List<MapEntry<String, String>> entries) {
       if (raw == null || raw.trim().isEmpty) return null;
       final t = raw.trim();
-      for (final e in opts) {
-        final s = e.toString();
-        if (s == t) return s;
+      for (final e in entries) {
+        if (e.key == t || e.value == t) return e.key;
       }
       final tl = t.toLowerCase();
-      for (final e in opts) {
-        final s = e.toString();
-        if (s.toLowerCase().trim() == tl) return s;
+      for (final e in entries) {
+        if (e.key.toLowerCase() == tl || e.value.toLowerCase() == tl) return e.key;
       }
       return null;
     }
 
+    final entries = _normalizedSelectEntries(rawOptions);
     final currentRaw = widget.value?.toString();
-    final resolvedValue = _resolveSelectChoice(currentRaw, options);
+    final resolvedValue = _resolveSelectValue(currentRaw, entries);
     final isValidValue = resolvedValue != null;
 
     return Column(
@@ -498,15 +550,17 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           decoration: const InputDecoration(border: OutlineInputBorder()),
           hint: Text(widget.displayName),
           isExpanded: true, // Prevents overflow by expanding to available width
-          items: options
-              .map((e) => DropdownMenuItem(
-                    value: e.toString(),
-                    child: Text(
-                      e.toString(),
-                      overflow: TextOverflow.ellipsis, // Truncate long text with ...
-                      maxLines: 1,
-                    ),
-                  ))
+          items: entries
+              .map(
+                (e) => DropdownMenuItem<String>(
+                  value: e.key,
+                  child: Text(
+                    e.value,
+                    overflow: TextOverflow.ellipsis, // Truncate long text with ...
+                    maxLines: 1,
+                  ),
+                ),
+              )
               .toList(),
           onChanged: widget.disable
               ? null

@@ -54,6 +54,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late ConditionalFormNotifier _formNotifier;
   bool _submitLoading = false;
+  bool _resendOtpLoading = false;
   bool _webViewTransitionActive = false;
   bool _logoutLoading = false;
   // Non-null when an API call fails while we're returning from WebView.
@@ -85,6 +86,10 @@ class _HomePageState extends State<HomePage> {
   /// resend + header text still know the number (get-context fields often omit it).
   String? _persistedMobileDigitsForOtp;
   String? _persistedEmailForOtp;
+
+  /// Segments step only: user must open brokerage dialog and tap Done — never default-apply.
+  String? _segmentsBrokerageStepKey;
+  bool _segmentsBrokerageUserConfirmed = false;
 
   @override
   void initState() {
@@ -1050,8 +1055,8 @@ class _HomePageState extends State<HomePage> {
     }
     final position = ctx?['position']?.toString()?.toLowerCase();
     if (position == 'segments') {
-      data['brokerage_plan'] = 'Brokerage Plan';
       // UI no longer exposes MTF / currency; keep payload aligned with backend.
+      // `brokerage_plan` is only sent when the user confirms via the dialog (non-empty in form).
       data['mtf'] = false;
       data['nse_currency'] = false;
       data['bse_currency'] = false;
@@ -2145,36 +2150,42 @@ class _HomePageState extends State<HomePage> {
                 );
               }
 
-              // Opaque white screen shown just before navigating to WebView.
+              // Subtle loader shown just before navigating to WebView.
               // Paired with the FadeTransition on the webview route to guarantee
-              // zero flash of home-page UI during the transition.
+              // smooth transition without flash of home-page UI.
               if (_webViewTransitionActive) {
-                return const Scaffold(
+                return Scaffold(
                   backgroundColor: Colors.white,
-                  body: SizedBox.expand(
-                    child: ColoredBox(color: Colors.white),
+                  body: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 3,
+                            color: KycTheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Opening verification...',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: KycTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 );
               }
 
               // Handle loading states - full screen when no stepper, else loader below stepper
-              // Full-screen loader during submit so users don't see the old/login screen
-              // while API response is pending (especially during redirect flows like RPD).
-              if (_submitLoading) {
-                return Scaffold(
-                  backgroundColor: KycTheme.background,
-                  body: SafeArea(
-                    child: showStepper
-                        ? Column(
-                            children: [
-                              stepperWidget,
-                              const Expanded(child: Loader(message: 'Loading...')),
-                            ],
-                          )
-                        : SizedBox.expand(child: const Loader(message: 'Loading...')),
-                  ),
-                );
-              }
+              // Note: _submitLoading no longer blocks the full screen - it only shows inline button loading
+              // for better UX (users can still see form data and context while API is processing)
 
               if (store.loading) {
                 return Scaffold(
@@ -2184,10 +2195,15 @@ class _HomePageState extends State<HomePage> {
                         ? Column(
                             children: [
                               stepperWidget,
-                              const Expanded(child: Loader(message: 'Loading...')),
+                              const Expanded(child: Loader(
+                                message: 'Setting up your KYC journey...',
+                                minimal: true,
+                              )),
                             ],
                           )
-                        : const Loader(message: 'Loading...'),
+                        : const Loader(
+                            message: 'Setting up your KYC journey...',
+                          ),
                   ),
                 );
               }
@@ -2235,7 +2251,9 @@ class _HomePageState extends State<HomePage> {
               }
               
               // Show loader BELOW stepper when fetching get-context (full screen when first step)
-              if (store.loadingWithAuth) {
+              // BUT: don't show if we're already in a submit flow (button is showing loader)
+              // This prevents the jarring transition from button loader → full screen loader
+              if (store.loadingWithAuth && !_submitLoading) {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
@@ -2243,10 +2261,15 @@ class _HomePageState extends State<HomePage> {
                         ? Column(
                             children: [
                               stepperWidget,
-                              const Expanded(child: Loader(message: 'Loading...')),
+                              const Expanded(child: Loader(
+                                message: 'Loading your details...',
+                                minimal: true,
+                              )),
                             ],
                           )
-                        : const Loader(message: 'Loading...'),
+                        : const Loader(
+                            message: 'Loading your details...',
+                          ),
                   ),
                 );
               }
@@ -2575,17 +2598,19 @@ class _HomePageState extends State<HomePage> {
     return raw.toString();
   }
 
-  /// Prefer in-memory value; if unset or blank string, use workflow `field['value']` (dropoff).
+  /// Prefer in-memory value; if unset (`null` / missing), use workflow `field['value']` (dropoff).
+  /// Blank string means the user cleared the field — do **not** substitute API prepopulate again.
   dynamic _coalesceFormFieldValue(dynamic formValue, dynamic fieldValue) {
     if (formValue == null) return fieldValue;
-    if (formValue is String && formValue.trim().isEmpty) return fieldValue;
+    if (formValue is String && formValue.trim().isEmpty) return formValue;
     return formValue;
   }
 
   /// True when [formData] has no meaningful value yet (merge dropoff/API into form).
+  /// Blank string means the user cleared the field — do not merge API prepopulate again.
   bool _shouldMergeFromApi(dynamic existing) {
     if (existing == null) return true;
-    if (existing is String && existing.trim().isEmpty) return true;
+    if (existing is String && existing.trim().isEmpty) return false;
     return false;
   }
 
@@ -3091,23 +3116,7 @@ class _HomePageState extends State<HomePage> {
         _bpWealthStandingSortKey(a).compareTo(_bpWealthStandingSortKey(b)));
 
     final out = <Widget>[
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-        decoration: BoxDecoration(
-          color: KycTheme.primary,
-          borderRadius: BorderRadius.circular(KycTheme.radiusSm),
-        ),
-        child: const Text(
-          'Personal Details',
-          style: TextStyle(
-            fontSize: KycTheme.fontSizeTitleSm,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
-          ),
-        ),
-      ),
-      const SizedBox(height: 16),
+      const SizedBox(height: 8),
       ...main.map(
         (f) => Padding(
           padding: const EdgeInsets.only(bottom: 16),
@@ -3387,6 +3396,33 @@ class _HomePageState extends State<HomePage> {
 
     final isSegmentsScreen = position == 'segments';
 
+    if (isSegmentsScreen) {
+      final pageId = ctx?['page']?['id']?.toString() ?? '';
+      final stepKey = '${position ?? ''}|$pageId';
+      if (stepKey != _segmentsBrokerageStepKey) {
+        _segmentsBrokerageStepKey = stepKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (_segmentsBrokerageStepKey != stepKey) return;
+          _segmentsBrokerageUserConfirmed = false;
+          final bp = _formNotifier.formData['brokerage_plan']?.toString().trim() ?? '';
+          if (bp.isNotEmpty) {
+            _formNotifier.handleChange('brokerage_plan', '');
+          }
+          setState(() {});
+        });
+      }
+    } else {
+      if (_segmentsBrokerageStepKey != null) {
+        _segmentsBrokerageStepKey = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _segmentsBrokerageUserConfirmed = false;
+          setState(() {});
+        });
+      }
+    }
+
     // BP Wealth requirement: on Segments step, preselect all segment checkboxes
     // by default. We only set keys that are currently unset so user edits are
     // preserved on rebuilds.
@@ -3409,14 +3445,6 @@ class _HomePageState extends State<HomePage> {
       if (didApplyDefaults) {
         debugPrint(
             '[HomePage] Applied default segment selections for bpwealth');
-      }
-
-      // UI says "Default Brokerage plan applied"; keep validation state aligned
-      // so user is not blocked with "Please select brokerage plan".
-      final brokerage = _formNotifier.formData['brokerage_plan']?.toString().trim() ?? '';
-      if (brokerage.isEmpty) {
-        _formNotifier.handleChange('brokerage_plan', 'Brokerage Plan');
-        debugPrint('[HomePage] Applied default brokerage_plan for segments');
       }
     }
 
@@ -3446,13 +3474,30 @@ class _HomePageState extends State<HomePage> {
             BrokeragePlanDialog.show(
               context,
               () {
-                // Set brokerage_plan in form data when user clicks Done
+                // Only after user taps Done in the dialog
                 _formNotifier.handleChange('brokerage_plan', 'Brokerage Plan');
-                Fluttertoast.showToast(msg: 'Brokerage Plan selected', gravity: ToastGravity.TOP);
+                setState(() {
+                  _segmentsBrokerageUserConfirmed = true;
+                });
+                Fluttertoast.showToast(
+                    msg: 'Brokerage plan applied', gravity: ToastGravity.TOP);
               },
             );
           },
           onSubmit: _submitLoading ? null : () {
+            final hasPlan = _segmentsBrokerageUserConfirmed &&
+                (_formNotifier.formData['brokerage_plan']?.toString().trim().isNotEmpty ??
+                    false);
+            if (!hasPlan) {
+              Fluttertoast.showToast(
+                msg: 'Please select a brokerage plan to continue',
+                gravity: ToastGravity.TOP,
+                backgroundColor: Colors.orange.shade700,
+                textColor: Colors.white,
+              );
+              return;
+            }
+            
             if (isAuth) {
               _handleCommonSubmit(false);
             } else {
@@ -3460,6 +3505,9 @@ class _HomePageState extends State<HomePage> {
             }
           },
           submitLoading: _submitLoading,
+          hasBrokeragePlanSelected: _segmentsBrokerageUserConfirmed &&
+              (_formNotifier.formData['brokerage_plan']?.toString().trim().isNotEmpty ??
+                  false),
         ),
       );
     }
@@ -4196,7 +4244,7 @@ class _HomePageState extends State<HomePage> {
     final store = context.read<AppStore>();
     FocusScope.of(context).unfocus();
     if (!mounted) return;
-    setState(() => _submitLoading = true);
+    setState(() => _resendOtpLoading = true);
     try {
       final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
       final resendPositionSegment =
@@ -4210,7 +4258,7 @@ class _HomePageState extends State<HomePage> {
       );
     } finally {
       if (mounted) {
-        setState(() => _submitLoading = false);
+        setState(() => _resendOtpLoading = false);
       }
     }
   }
@@ -4221,7 +4269,7 @@ class _HomePageState extends State<HomePage> {
     _persistedEmailForOtp = trimmed;
     FocusScope.of(context).unfocus();
     if (!mounted) return;
-    setState(() => _submitLoading = true);
+    setState(() => _resendOtpLoading = true);
     try {
       final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
       final resendPositionSegment =
@@ -4240,7 +4288,7 @@ class _HomePageState extends State<HomePage> {
       Fluttertoast.showToast(msg: 'Failed to resend email OTP', gravity: ToastGravity.TOP);
     } finally {
       if (mounted) {
-        setState(() => _submitLoading = false);
+        setState(() => _resendOtpLoading = false);
       }
     }
   }
@@ -4326,6 +4374,7 @@ class _HomePageState extends State<HomePage> {
           },
           otpExpiry: otpExpiry,
           verifyLoading: _submitLoading,
+          resendLoading: _resendOtpLoading,
           useSixBoxes: false, // Email OTP: single input per Figma (no 6 boxes)
         ),
         const SizedBox(height: 20),

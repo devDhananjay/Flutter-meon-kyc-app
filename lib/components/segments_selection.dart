@@ -7,12 +7,18 @@ import 'package:meon_kyc/theme/kyc_theme.dart';
 ///
 /// UX: when user toggles NSE FO / BSE FO from OFF -> ON, show a one-time
 /// reminder modal listing the financial documents required to enable FO.
+///
+/// Brokerage Plan: User must view/select a brokerage plan before proceeding.
+/// Shows "Please select brokerage plan" until user clicks "View Brokerage Plan".
+/// After viewing, shows "Brokerage plan selected" confirmation.
 class SegmentsSelection extends StatefulWidget {
   final Map<String, dynamic> formData;
   final void Function(String name, dynamic value) onChange;
   final VoidCallback? onViewBrokeragePlan;
   final VoidCallback? onSubmit;
   final bool submitLoading;
+  /// Whether the user has viewed/selected the brokerage plan
+  final bool hasBrokeragePlanSelected;
 
   const SegmentsSelection({
     super.key,
@@ -21,6 +27,7 @@ class SegmentsSelection extends StatefulWidget {
     this.onViewBrokeragePlan,
     this.onSubmit,
     this.submitLoading = false,
+    this.hasBrokeragePlanSelected = false,
   });
 
   @override
@@ -209,14 +216,18 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
             ),
           ),
           const SizedBox(height: 8),
-          const Center(
+          Center(
             child: Text(
-              'Default Brokerage plan applied',
+              widget.hasBrokeragePlanSelected
+                  ? 'Brokerage plan applied'
+                  : 'Please select brokerage plan',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: KycTheme.success,
+                color: widget.hasBrokeragePlanSelected 
+                    ? KycTheme.success 
+                    : const Color(0xFFDC2626), // Red color for warning
               ),
             ),
           ),
@@ -226,9 +237,13 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
 
         if (widget.onSubmit != null)
           ElevatedButton(
-            onPressed: widget.submitLoading ? null : widget.onSubmit,
+            onPressed: (widget.submitLoading || 
+                       (widget.onViewBrokeragePlan != null && !widget.hasBrokeragePlanSelected))
+                ? null 
+                : widget.onSubmit,
             style: ElevatedButton.styleFrom(
               backgroundColor: KycTheme.primary,
+              disabledBackgroundColor: KycTheme.primary.withValues(alpha: 0.5),
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(
@@ -244,9 +259,11 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                       color: Colors.white,
                     ),
                   )
-                : const Text(
-                    'Next',
-                    style: TextStyle(
+                : Text(
+                    widget.hasBrokeragePlanSelected || widget.onViewBrokeragePlan == null
+                        ? 'Next'
+                        : 'Select Plan to Continue',
+                    style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),

@@ -43,7 +43,13 @@ class ConditionalFormNotifier extends ChangeNotifier {
           if (val == null) continue;
           final name = f['name'];
           final current = formData[name];
-          // BugFixes: treat blank string as unset so get-context dropoff can populate.
+          // User cleared this field to empty — keep it; do not re-apply API `value` on refresh.
+          if (formData.containsKey(name) &&
+              current is String &&
+              current.trim().isEmpty) {
+            continue;
+          }
+          // First paint / missing key: merge dropoff from API.
           final unset = current == null ||
               (current is String && current.trim().isEmpty);
           if (!formData.containsKey(name) || unset) {
@@ -112,6 +118,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
         break;
       case 'name':
         processed = processed.replaceAll(RegExp(r'[^a-zA-Z\s]'), '');
+        break;
+      case 'nospecialcharacter':
+        processed =
+            processed.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
         break;
       default:
         break;
