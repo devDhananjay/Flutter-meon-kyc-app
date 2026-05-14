@@ -379,6 +379,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         path.contains('facefinder');
   }
 
+  /// On iOS, disabling `scrollIntoView` breaks OTP and form flows; keep the hook only for
+  /// IPV/Face Finder where a stable camera layout is preferred.
+  bool _shouldInjectNoAutoScrollJs(String? url) {
+    if (url == null || url.isEmpty) return true;
+    if (!Platform.isIOS) return true;
+    return _isIpvOrFaceFinderUrl(url);
+  }
+
   bool _isReversePennyDropUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return false;
@@ -1066,9 +1074,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // iOS: shrink the scaffold when the keyboard opens so WKWebView can reflow (CAMS AA OTP,
+    // Digio UPI popup, etc.). Android unchanged. scrollIntoView stays enabled except on IPV/Face.
     return Scaffold(
       backgroundColor: Colors.white,
-      resizeToAvoidBottomInset: false,
+      resizeToAvoidBottomInset: Platform.isIOS,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -1417,7 +1427,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               _scheduleCloudesignRecovery(controller, urlStr);
                             }
                             await _onPageFinished(urlStr);
-                            await _injectNoAutoScrollJs(controller);
+                            if (_shouldInjectNoAutoScrollJs(urlStr)) {
+                              await _injectNoAutoScrollJs(controller);
+                            }
                             return;
                           }
                         }
@@ -1481,7 +1493,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         }
 
                         await _onPageFinished(urlStr);
-                        await _injectNoAutoScrollJs(controller);
+                        if (_shouldInjectNoAutoScrollJs(urlStr)) {
+                          await _injectNoAutoScrollJs(controller);
+                        }
                         if (_isReversePennyDropUrl(urlStr)) {
                           if (!_rpdSigningSessionFlagReset) {
                             try {
@@ -1699,7 +1713,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         },
                         onLoadStop: (controller, url) async {
                           if (url != null) {
-                            await _injectNoAutoScrollJs(controller);
+                            if (_shouldInjectNoAutoScrollJs(url.toString())) {
+                              await _injectNoAutoScrollJs(controller);
+                            }
 
                             if (_isReversePennyDropUrl(url.toString())) {
                               if (!_rpdSigningSessionFlagReset) {

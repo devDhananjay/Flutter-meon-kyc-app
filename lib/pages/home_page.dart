@@ -2994,66 +2994,18 @@ class _HomePageState extends State<HomePage> {
 
   void _showBpWealthTariffPdfModal() {
     final viewerUri = _bpWealthTariffPdfEmbeddedViewerUri();
-    final controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.white)
-      ..loadRequest(viewerUri);
-
+    final mq = MediaQuery.of(context);
+    final h = mq.size.height * 0.85;
+    final w = mq.size.width - 24;
     showDialog<void>(
       context: context,
       barrierDismissible: true,
-      builder: (ctx) {
-        final h = MediaQuery.of(ctx).size.height * 0.85;
-        final w = MediaQuery.of(ctx).size.width - 24;
-        return Dialog(
-          insetPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
-          child: SizedBox(
-            width: w,
-            height: h,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ColoredBox(
-                  color: KycTheme.primary,
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
-                          child: Text(
-                            'DP Standing Instructions & Tariff',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white),
-                        onPressed: () => Navigator.of(ctx).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(child: WebViewWidget(controller: controller)),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                  child: TextButton.icon(
-                    onPressed: () async {
-                      await _openBpWealthTariffPdfExternally();
-                    },
-                    icon: const Icon(Icons.open_in_browser, size: 20),
-                    label: const Text('Open PDF in browser'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      builder: (ctx) => _BpWealthTariffPdfDialog(
+        viewerUri: viewerUri,
+        width: w,
+        height: h,
+        onOpenExternal: _openBpWealthTariffPdfExternally,
+      ),
     );
   }
 
@@ -4386,6 +4338,152 @@ class _HomePageState extends State<HomePage> {
           },
         ),
       ],
+    );
+  }
+}
+
+/// BP Wealth personal details — tariff PDF in a dialog with loader until WebView settles.
+class _BpWealthTariffPdfDialog extends StatefulWidget {
+  final Uri viewerUri;
+  final double width;
+  final double height;
+  final Future<void> Function() onOpenExternal;
+
+  const _BpWealthTariffPdfDialog({
+    required this.viewerUri,
+    required this.width,
+    required this.height,
+    required this.onOpenExternal,
+  });
+
+  @override
+  State<_BpWealthTariffPdfDialog> createState() => _BpWealthTariffPdfDialogState();
+}
+
+class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
+  late final WebViewController _controller;
+  bool _loading = true;
+  Timer? _hideDebounce;
+  Timer? _maxWait;
+
+  @override
+  void initState() {
+    super.initState();
+    _maxWait = Timer(const Duration(seconds: 25), () {
+      if (mounted && _loading) setState(() => _loading = false);
+    });
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.white)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (_) => _scheduleHideLoader(),
+          onWebResourceError: (_) => _scheduleHideLoader(),
+        ),
+      )
+      ..loadRequest(widget.viewerUri);
+  }
+
+  /// Google embedded viewer can fire several finishes in a row; debounce so the loader
+  /// stays until the last navigation of a burst settles.
+  void _scheduleHideLoader() {
+    _hideDebounce?.cancel();
+    _hideDebounce = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _hideDebounce?.cancel();
+    _maxWait?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+      child: SizedBox(
+        width: widget.width,
+        height: widget.height,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ColoredBox(
+              color: KycTheme.primary,
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
+                      child: Text(
+                        'DP Standing Instructions & Tariff',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  WebViewWidget(controller: _controller),
+                  if (_loading)
+                    ColoredBox(
+                      color: Colors.white,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(
+                              width: 36,
+                              height: 36,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                color: KycTheme.primary,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Loading PDF…',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: TextButton.icon(
+                onPressed: () async {
+                  await widget.onOpenExternal();
+                },
+                icon: const Icon(Icons.open_in_browser, size: 20),
+                label: const Text('Open PDF in browser'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
