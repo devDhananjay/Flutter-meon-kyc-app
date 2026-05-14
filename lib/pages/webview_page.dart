@@ -111,12 +111,57 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         path.contains('/cloudesign/document-');
   }
 
+  /// Visible document text — used to detect transient JSON bridge pages before PDF/eSign is ready.
+  Future<String> _readMainFrameBodyText(InAppWebViewController controller) async {
+    try {
+      final result = await controller.evaluateJavascript(
+        source: r'''(() => {
+          try {
+            var b = document.body;
+            if (!b) return '';
+            return (b.innerText || b.textContent || '').trim();
+          } catch (e) { return ''; }
+        })()''',
+      );
+      if (result == null) return '';
+      if (result is String) return result.trim();
+      return result.toString().trim();
+    } catch (e) {
+      debugPrint('[WebView] _readMainFrameBodyText error: $e');
+      return '';
+    }
+  }
+
+  /// Cloudesign / eSign sometimes returns a short JSON error (e.g. Invalid Token) or a
+  /// Chromium-style "Pretty print" JSON view; auto-reload then loads the real document.
+  /// Treat as transient: keep the loader overlay so users never see raw JSON.
+  bool _isTransientEsignBridgePayload(String url, String bodyText) {
+    if (!_isCloudesignDocumentUrl(url) && !_isEsignPdfHeavyUrl(url)) return false;
+    final t = bodyText.trim().toLowerCase();
+    if (t.isEmpty || t.length > 8000) return false;
+
+    final pretty = t.contains('pretty print');
+    final hasMsgKey = t.contains('"msg"');
+    final statusFalse = t.contains('"status":false') ||
+        t.contains('"status": false') ||
+        t.contains('"success":false') ||
+        t.contains('"success": false');
+    final tokenOrPdf = t.contains('invalid token') ||
+        t.contains('pdf is not generated') ||
+        t.contains('journey status');
+
+    if (statusFalse && hasMsgKey) return true;
+    if (pretty && (statusFalse || tokenOrPdf)) return true;
+    if (tokenOrPdf && hasMsgKey && t.length < 600) return true;
+    return false;
+  }
+
   static const Duration _defaultLoadTimeout = Duration(seconds: 15);
   static const Duration _esignLoadTimeout = Duration(seconds: 45);
 
   /// Starts hint timers and a timeout. Call on every `onLoadStart`; cancel on `onLoadStop`.
-  void _startLoadTimers({String? url}) {
-    _cancelLoadTimers();
+  void _startLoadTimers({String? url, bool resetMessageOnCancel = true}) {
+    _cancelLoadTimers(resetLoadingMessage: resetMessageOnCancel);
 
     final sample = (url ?? _currentUrl).toLowerCase();
     final heavy = _isEsignPdfHeavyUrl(sample);
@@ -1353,6 +1398,30 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         // so pdf.js / canvas can paint (avoids blank flash).
                         _cancelLoadTimers(resetLoadingMessage: false);
                         final heavyDoc = _isEsignPdfHeavyUrl(urlStr);
+
+                        // Hide transient JSON / "Pretty print" bridge responses until auto-reload succeeds.
+                        if (heavyDoc || _isCloudesignDocumentUrl(urlStr)) {
+                          final bodyText = await _readMainFrameBodyText(controller);
+                          if (_isTransientEsignBridgePayload(urlStr, bodyText)) {
+                            debugPrint(
+                                '[WebView] Transient eSign/JSON payload detected — keeping loader until retry succeeds');
+                            if (!mounted) return;
+                            setState(() {
+                              _isLoading = true;
+                              _hasError = false;
+                              _loadingMessage = 'Preparing eSign document...';
+                              _currentUrl = urlStr;
+                            });
+                            _startLoadTimers(url: urlStr, resetMessageOnCancel: false);
+                            if (_isCloudesignDocumentUrl(urlStr) && !_redirectHandled) {
+                              _scheduleCloudesignRecovery(controller, urlStr);
+                            }
+                            await _onPageFinished(urlStr);
+                            await _injectNoAutoScrollJs(controller);
+                            return;
+                          }
+                        }
+
                         if (heavyDoc && mounted) {
                           setState(() => _loadingMessage = 'Rendering document...');
                           await Future.delayed(const Duration(milliseconds: 1400));
