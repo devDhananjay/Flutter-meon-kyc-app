@@ -129,41 +129,44 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   @override
   void didUpdateWidget(FormFieldWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Only update controller if value changed externally (not from user typing)
+    // Sync controllers whenever the coalesced [widget.value] differs from what is shown.
+    // IFSC auto-fill updates [formData] programmatically; we must not rely only on
+    // `oldWidget.value != widget.value` (e.g. same string identity, or missed rebuild edge cases).
+    _syncControllersFromWidgetValue();
+  }
+
+  void _syncControllersFromWidgetValue() {
     final newValue = widget.value?.toString() ?? '';
-    final oldValue = oldWidget.value?.toString() ?? '';
-    
-    if (newValue != oldValue) {
-      String textValue = newValue;
-      if (widget.type == 'text' && _textController != null) {
-        if (_isMobileField) {
-          final digits = newValue.replaceAll(RegExp(r'\D'), '');
-          textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
-        } else if (_isPanField) {
-          textValue = newValue.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
-          if (textValue.length > 10) textValue = textValue.substring(0, 10);
-        } else if (_isNoSpecialCharacterField) {
-          textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
-        }
-        if (_textController!.text != textValue) {
-          _textController!.text = textValue;
-        }
-      } else if (widget.type == 'number' && _numberController != null) {
-        if (_isMobileField) {
-          final digits = newValue.replaceAll(RegExp(r'\D'), '');
-          textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
-        }
-        if (_numberController!.text != textValue) {
-          _numberController!.text = textValue;
-        }
-      } else if (widget.type == 'textarea' && _textareaController != null) {
-        if (_textareaController!.text != newValue) {
-          _textareaController!.text = newValue;
-        }
-      } else if (widget.type == 'password' && _passwordController != null) {
-        if (_passwordController!.text != newValue) {
-          _passwordController!.text = newValue;
-        }
+    if (widget.type == 'text' && _textController != null) {
+      var textValue = newValue;
+      if (_isMobileField) {
+        final digits = newValue.replaceAll(RegExp(r'\D'), '');
+        textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+      } else if (_isPanField) {
+        textValue = newValue.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+        if (textValue.length > 10) textValue = textValue.substring(0, 10);
+      } else if (_isNoSpecialCharacterField) {
+        textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      }
+      if (_textController!.text != textValue) {
+        _textController!.text = textValue;
+      }
+    } else if (widget.type == 'number' && _numberController != null) {
+      var textValue = newValue;
+      if (_isMobileField) {
+        final digits = newValue.replaceAll(RegExp(r'\D'), '');
+        textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+      }
+      if (_numberController!.text != textValue) {
+        _numberController!.text = textValue;
+      }
+    } else if (widget.type == 'textarea' && _textareaController != null) {
+      if (_textareaController!.text != newValue) {
+        _textareaController!.text = newValue;
+      }
+    } else if (widget.type == 'password' && _passwordController != null) {
+      if (_passwordController!.text != newValue) {
+        _passwordController!.text = newValue;
       }
     }
   }

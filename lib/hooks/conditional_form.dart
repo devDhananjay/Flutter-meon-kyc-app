@@ -84,6 +84,15 @@ class ConditionalFormNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Writes [updates] into [formData] as-is (no [_processValue] / length caps) and notifies.
+  /// Used for IFSC lookup auto-fill so long bank addresses are not truncated like [handleChange].
+  void applyExternalFormValues(Map<String, dynamic> updates) {
+    for (final e in updates.entries) {
+      formData[e.key] = e.value;
+    }
+    notifyListeners();
+  }
+
   String _processValue(String name, dynamic value, String type, String? validationType, String? validateWith) {
     // BugFixes: dropdown (select) values must not be truncated like generic text.
     if (type == 'checkbox' || type == 'file' || type == 'select') {

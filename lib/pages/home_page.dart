@@ -912,6 +912,7 @@ class _HomePageState extends State<HomePage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           FormFieldWidget(
+            key: ValueKey<String>(name),
             name: name,
             displayName: field['displayName'] ?? name,
             type: type,
@@ -1060,6 +1061,10 @@ class _HomePageState extends State<HomePage> {
       data['mtf'] = false;
       data['nse_currency'] = false;
       data['bse_currency'] = false;
+      // Mandatory segments (live parity): always submitted as true.
+      data['nse_cash'] = true;
+      data['bse_cash'] = true;
+      data['mf'] = true;
     }
     final fields = _getActiveFields(context.read<AppStore>());
     if (fields == null) return data;
@@ -1434,6 +1439,145 @@ class _HomePageState extends State<HomePage> {
     return pos.isNotEmpty || idx.isNotEmpty ? '$pos$idx' : '';
   }
 
+  /// Bank `kyc-post-v2` can return HTTP 200 with `success: false` and either:
+  /// - `msg` containing "Penny Drop Verified" (confirm save), or
+  /// - eKYC name-mismatch / retry flow with top-level `pennydrop` (e.g. unsuccessful message).
+  static bool _isPennyDropVerifiedAwaitingSaveOrRetake(Map? body) {
+    if (body == null) return false;
+    final msg = body['msg']?.toString().toLowerCase().trim() ?? '';
+    if (msg.contains('penny drop verified')) return true;
+    final pennydrop = body['pennydrop']?.toString().trim() ?? '';
+    if (pennydrop.isNotEmpty) return true;
+    return false;
+  }
+
+  static String _stripBasicHtmlForDialog(String s) {
+    if (s.isEmpty) return '';
+    var t = s.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+    t = t.replaceAll(RegExp(r'<[^>]+>'), '');
+    return t.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
+
+  /// Prefer cleaned `msg`; fall back to `pennydrop` for eKYC mismatch responses.
+  static String _pennyDropSaveRetakeDialogTitle(Map body) {
+    final rawMsg = body['msg']?.toString().trim() ?? '';
+    final fromMsg = _stripBasicHtmlForDialog(rawMsg);
+    if (fromMsg.isNotEmpty) return fromMsg;
+    final p = body['pennydrop']?.toString().trim() ?? '';
+    if (p.isNotEmpty) return p;
+    return 'Penny drop';
+  }
+
+  Future<String?> _showPennyDropVerifiedSaveRetakeDialog(String title) async {
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        title: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 220),
+          child: SingleChildScrollView(
+            child: Text(title),
+          ),
+        ),
+        content: const Text(
+          'Save these bank details, or retake penny drop verification.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('retake'),
+            child: const Text('Retake'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop('save'),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _afterKycPostV2Success(
+    AppStore store,
+    Map<String, dynamic>? body,
+    Map<String, dynamic> submissionData,
+  ) async {
+    StorageService.setUserStep(body?['step']?.toString() ?? '');
+    // Persist email for OTP UI before any reset (payload + snapshot still valid here).
+    final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
+    final emailFromPayload = (submissionData['email'] ??
+            submissionData['email_id'] ??
+            submissionData['emailId'])
+            ?.toString()
+            .trim() ??
+        '';
+    if (emailFromPayload.contains('@')) {
+      _persistedEmailForOtp = emailFromPayload;
+    } else {
+      final resolved = _resolveEmailForOtpUi(formSnapshot);
+      if (resolved.contains('@')) _persistedEmailForOtp = resolved;
+    }
+    // Do not reset the form before get-context: the UI would show empty fields while the
+    // request is in flight even though the save succeeded. Clear + rehydrate only after fresh context.
+    await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
+    if (mounted && store.errorWithAuth != null) {
+      if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
+        debugPrint(
+            '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
+        Fluttertoast.showToast(
+          msg: 'Could not refresh your progress. Please try again.',
+          gravity: ToastGravity.TOP,
+        );
+        if (mounted) setState(() => _submitLoading = false);
+        return;
+      }
+      await _clearCookiesAndRefresh();
+      Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
+      if (mounted) setState(() => _submitLoading = false);
+      return;
+    }
+    _formNotifier.resetForm();
+    final activeAfter = _getActiveFields(store);
+    final listAfter = (activeAfter?['fields'] as List?) ?? [];
+    final flowAfter = activeAfter?['conditionalFlow'] as List?;
+    _formNotifier.updateFields(listAfter, flowAfter);
+    if (mounted) {
+      final authResponse = store.fieldsWithAuth;
+      if (authResponse is Map && authResponse['is_admin'] == true) {
+        debugPrint('[HomePage] Common submit indicates completion (is_admin=true) - navigating to completed');
+        await store.fetchUserDetails();
+        if (!mounted) return;
+        if (store.userDetails != null) {
+          setState(() => _submitLoading = false);
+          context.go('/${widget.company}/${widget.workflowName}/completed');
+          return;
+        }
+      }
+    }
+    if (mounted) {
+      final ctx = store.fieldsWithAuth as Map?;
+      final pos =
+          ctx?['context']?['position']?.toString().toLowerCase() ?? '';
+      if (pos == 'email_otp') {
+        _applyPersistedEmailToForm();
+        debugPrint(
+            '[HomePage] email_otp: applied persisted email for UI: $_persistedEmailForOtp');
+      }
+    }
+    // Small delay for smooth UI transition
+    if (mounted) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      setState(() => _submitLoading = false);
+      // Check for redirect before navigating
+      await _checkAndHandleRedirect(store);
+      if (!mounted) return;
+      // Only navigate if not redirected
+      final response = store.fieldsWithAuth;
+      if (response is! Map || response['redirect'] != true) {
+        context.go('/${widget.company}/${widget.workflowName}');
+      }
+    }
+  }
+
   Future<void> _handleCommonSubmit(bool skipValidation) async {
     debugPrint('[HomePage] _handleCommonSubmit CALLED - skipValidation=$skipValidation');
     final store = context.read<AppStore>();
@@ -1701,78 +1845,46 @@ class _HomePageState extends State<HomePage> {
       }
       final isSuccess = res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true;
       if (isSuccess) {
-        StorageService.setUserStep(body?['step']?.toString() ?? '');
-        // Persist email for OTP UI before any reset (payload + snapshot still valid here).
-        final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
-        final emailFromPayload = (data['email'] ?? data['email_id'] ?? data['emailId'])
-                ?.toString()
-                .trim() ??
-            '';
-        if (emailFromPayload.contains('@')) {
-          _persistedEmailForOtp = emailFromPayload;
+        await _afterKycPostV2Success(store, body, data);
+      } else if (res.statusCode >= 200 &&
+          res.statusCode < 300 &&
+          _isPennyDropVerifiedAwaitingSaveOrRetake(body)) {
+        if (mounted) setState(() => _submitLoading = false);
+        final dialogTitle = _pennyDropSaveRetakeDialogTitle(body!);
+        final choice = await _showPennyDropVerifiedSaveRetakeDialog(dialogTitle);
+        if (!mounted) return;
+        if (choice == null) return;
+        setState(() => _submitLoading = true);
+        final retryPayload = Map<String, dynamic>.from(data);
+        retryPayload.remove('save');
+        retryPayload.remove('retake');
+        if (choice == 'save') {
+          retryPayload['save'] = true;
         } else {
-          final resolved = _resolveEmailForOtpUi(formSnapshot);
-          if (resolved.contains('@')) _persistedEmailForOtp = resolved;
+          retryPayload['retake'] = true;
         }
-        // Do not reset the form before get-context: the UI would show empty fields while the
-        // request is in flight even though the save succeeded. Clear + rehydrate only after fresh context.
-        await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
-        if (mounted && store.errorWithAuth != null) {
-          if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
-            debugPrint(
-                '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
-            Fluttertoast.showToast(
-              msg: 'Could not refresh your progress. Please try again.',
-              gravity: ToastGravity.TOP,
-            );
-            if (mounted) setState(() => _submitLoading = false);
-            return;
-          }
-          await _clearCookiesAndRefresh();
-          Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
+        debugPrint(
+            '[HomePage] Penny drop follow-up POST ($choice): $endpoint');
+        final res2 = await client.post(
+          endpoint,
+          body: retryPayload,
+          headers: {'Content-Type': 'application/json'},
+        );
+        Map<String, dynamic>? body2;
+        try {
+          body2 = jsonDecode(res2.body) as Map<String, dynamic>?;
+        } catch (_) {
+          body2 = null;
+        }
+        final ok2 = res2.statusCode >= 200 &&
+            res2.statusCode < 300 &&
+            body2?['success'] == true;
+        if (ok2) {
+          await _afterKycPostV2Success(store, body2, retryPayload);
+        } else {
+          final err2 = _errorMessageFromResponse(res2.statusCode, res2.body);
+          Fluttertoast.showToast(msg: err2, gravity: ToastGravity.TOP);
           if (mounted) setState(() => _submitLoading = false);
-          return;
-        }
-        _formNotifier.resetForm();
-        final activeAfter = _getActiveFields(store);
-        final listAfter = (activeAfter?['fields'] as List?) ?? [];
-        final flowAfter = activeAfter?['conditionalFlow'] as List?;
-        _formNotifier.updateFields(listAfter, flowAfter);
-        if (mounted) {
-          final authResponse = store.fieldsWithAuth;
-          if (authResponse is Map && authResponse['is_admin'] == true) {
-            debugPrint('[HomePage] Common submit indicates completion (is_admin=true) - navigating to completed');
-            await store.fetchUserDetails();
-            if (!mounted) return;
-            if (store.userDetails != null) {
-              setState(() => _submitLoading = false);
-              context.go('/${widget.company}/${widget.workflowName}/completed');
-              return;
-            }
-          }
-        }
-        if (mounted) {
-          final ctx = store.fieldsWithAuth as Map?;
-          final pos =
-              ctx?['context']?['position']?.toString().toLowerCase() ?? '';
-          if (pos == 'email_otp') {
-            _applyPersistedEmailToForm();
-            debugPrint(
-                '[HomePage] email_otp: applied persisted email for UI: $_persistedEmailForOtp');
-          }
-        }
-        // Small delay for smooth UI transition
-        if (mounted) {
-          await Future.delayed(const Duration(milliseconds: 300));
-          setState(() => _submitLoading = false);
-          // Check for redirect before navigating
-          await _checkAndHandleRedirect(store);
-          if (!mounted) return;
-          // Only navigate if not redirected
-          final response = store.fieldsWithAuth;
-          if (response is! Map || response['redirect'] != true) {
-            context.go('/${widget.company}/${widget.workflowName}');
-          }
         }
       } else {
         final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
@@ -1864,11 +1976,12 @@ class _HomePageState extends State<HomePage> {
             if (fieldNames.contains('branchName')) updates['branchName'] = v;
           }
 
-          // address → bank_address / bankAddress
+          // address → bank_address / bankAddress / bank_add (payload alias on some workflows)
           if (data['address'] != null) {
             final v = data['address'];
             if (fieldNames.contains('bank_address')) updates['bank_address'] = v;
             if (fieldNames.contains('bankAddress')) updates['bankAddress'] = v;
+            if (fieldNames.contains('bank_add')) updates['bank_add'] = v;
           }
 
           // city → bank_city
@@ -1903,17 +2016,13 @@ class _HomePageState extends State<HomePage> {
           if (updates.isEmpty) {
             debugPrint('[HomePage] No matching bank fields found to update for this screen.');
           } else {
-            // Batch update formData and trigger UI rebuild
-            setState(() {
-              for (final e in updates.entries) {
-                debugPrint('[HomePage] Updating field: ${e.key} = ${e.value}');
-                _formNotifier.formData[e.key] = e.value;
-              }
-            });
-            
-            // Notify listeners to rebuild UI
-            _formNotifier.notifyListeners();
-            
+            for (final e in updates.entries) {
+              debugPrint('[HomePage] Updating field: ${e.key} = ${e.value}');
+            }
+            // Use notifier API (not raw map + notifyListeners) so Provider/Consumer rebuilds;
+            // avoid handleChange here — it runs [_processValue] and truncates generic text to 35 chars.
+            _formNotifier.applyExternalFormValues(updates);
+            if (mounted) setState(() {});
             Fluttertoast.showToast(msg: 'Bank details fetched successfully', gravity: ToastGravity.TOP);
             debugPrint('[HomePage] Auto-filled ${updates.length} bank fields - UI should update now');
           }
@@ -3384,28 +3493,26 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    // BP Wealth requirement: on Segments step, preselect all segment checkboxes
-    // by default. We only set keys that are currently unset so user edits are
-    // preserved on rebuilds.
+    // BP Wealth segments: NSE Cash, BSE Cash, MF are mandatory (cannot untick).
+    // Other segments default to on when unset only — do not re-tick everything on rebuild.
     if (isSegmentsScreen && widget.company.toLowerCase() == 'bpwealth') {
-      const segmentKeys = <String>[
-        'nse_cash',
-        'nse_fo',
-        'nse_slbm',
-        'bse_cash',
-        'bse_fo',
-        'mf',
-      ];
+      const mandatorySegmentKeys = <String>['nse_cash', 'bse_cash', 'mf'];
+      const optionalDefaultKeys = <String>['nse_fo', 'nse_slbm', 'bse_fo'];
       var didApplyDefaults = false;
-      for (final key in segmentKeys) {
+      for (final key in mandatorySegmentKeys) {
+        if (_formNotifier.formData[key] != true) {
+          _formNotifier.handleChange(key, true);
+          didApplyDefaults = true;
+        }
+      }
+      for (final key in optionalDefaultKeys) {
         if (_formNotifier.formData[key] == null) {
-          _formNotifier.formData[key] = true;
+          _formNotifier.handleChange(key, true);
           didApplyDefaults = true;
         }
       }
       if (didApplyDefaults) {
-        debugPrint(
-            '[HomePage] Applied default segment selections for bpwealth');
+        debugPrint('[HomePage] Applied segment defaults for bpwealth');
       }
     }
 
@@ -3429,6 +3536,9 @@ class _HomePageState extends State<HomePage> {
         child: SegmentsSelection(
           formData: _formNotifier.formData,
           onChange: (name, value) {
+            if (name == 'nse_cash' || name == 'bse_cash' || name == 'mf') {
+              if (value != true) return;
+            }
             _formNotifier.handleChange(name, value);
           },
           onViewBrokeragePlan: () {

@@ -36,6 +36,12 @@ class SegmentsSelection extends StatefulWidget {
 
 class _SegmentsSelectionState extends State<SegmentsSelection> {
   static const Set<String> _foKeys = {'nse_fo', 'bse_fo'};
+  /// Mandatory segments (live parity): always on, user cannot untick.
+  static const Set<String> _lockedSegmentKeys = {
+    'nse_cash',
+    'bse_cash',
+    'mf',
+  };
   static const _linkBlue = Color(0xFF2563EB);
 
   bool _getValue(String key) {
@@ -54,6 +60,9 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
   }
 
   void _handleSegmentChange(String name, dynamic value) {
+    if (_lockedSegmentKeys.contains(name) && !_coerceBool(value)) {
+      return;
+    }
     final wasEnabled = _getValue(name);
     final willEnable = _coerceBool(value);
 
@@ -177,7 +186,10 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                 Expanded(
                   child: _buildCheckbox(
                     label: pair[0].label,
-                    value: _getValue(pair[0].key),
+                    value: _lockedSegmentKeys.contains(pair[0].key)
+                        ? true
+                        : _getValue(pair[0].key),
+                    locked: _lockedSegmentKeys.contains(pair[0].key),
                     onChanged: (v) => _handleSegmentChange(pair[0].key, v),
                   ),
                 ),
@@ -185,7 +197,10 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                 Expanded(
                   child: _buildCheckbox(
                     label: pair[1].label,
-                    value: _getValue(pair[1].key),
+                    value: _lockedSegmentKeys.contains(pair[1].key)
+                        ? true
+                        : _getValue(pair[1].key),
+                    locked: _lockedSegmentKeys.contains(pair[1].key),
                     onChanged: (v) => _handleSegmentChange(pair[1].key, v),
                   ),
                 ),
@@ -277,45 +292,51 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     required String label,
     required bool value,
     required void Function(bool) onChanged,
+    bool locked = false,
   }) {
-    return InkWell(
-      onTap: () => onChanged(!value),
-      borderRadius: BorderRadius.circular(8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            width: 22,
-            height: 22,
-            decoration: BoxDecoration(
-              color: value ? KycTheme.buttonEnabledPurple : Colors.transparent,
-              border: Border.all(
-                color: KycTheme.buttonEnabledPurple,
-                width: 2,
+    return Opacity(
+      opacity: locked ? 0.92 : 1,
+      child: InkWell(
+        onTap: locked ? null : () => onChanged(!value),
+        borderRadius: BorderRadius.circular(8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: value ? KycTheme.buttonEnabledPurple : Colors.transparent,
+                border: Border.all(
+                  color: KycTheme.buttonEnabledPurple,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(6),
               ),
-              borderRadius: BorderRadius.circular(6),
+              child: value
+                  ? const Icon(
+                      Icons.check,
+                      size: 12,
+                      color: Colors.white,
+                    )
+                  : null,
             ),
-            child: value
-                ? const Icon(
-                    Icons.check,
-                    size: 12,
-                    color: Colors.white,
-                  )
-                : null,
-          ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(
-              label,
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: KycTheme.textPrimary,
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: locked
+                      ? KycTheme.textSecondary
+                      : KycTheme.textPrimary,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

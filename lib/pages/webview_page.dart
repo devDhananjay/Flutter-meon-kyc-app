@@ -1,9 +1,13 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:http/http.dart' as http;
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
@@ -90,6 +94,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   Timer? _cloudesignRecoveryTimer;
   bool _cloudesignOpenedExternally = false;
 
+  /// True while an eSign PDF save is in flight (ignore duplicate download events).
+  bool _esignPdfDownloadInProgress = false;
+
+  final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
+  /// pdf.js can fire several `onDownloadStartRequest` events for one toolbar tap.
+  DateTime? _lastEsignPdfDownloadEventAt;
+
   /// eSign / PDF (pdf.js) pages often need more time than a normal HTML page.
   bool _isEsignPdfHeavyUrl(String url) {
     final u = url.toLowerCase();
@@ -109,6 +122,295 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final path = uri.path.toLowerCase();
     return (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
         path.contains('/cloudesign/document-');
+  }
+
+  bool _isProceedToEsignFlowContext([String? url]) {
+    final sample = (url ?? _currentUrl).toLowerCase();
+    if (_isEsignPdfHeavyUrl(sample) || _isCloudesignDocumentUrl(sample)) {
+      return true;
+    }
+    return widget.title.toLowerCase().contains('esign');
+  }
+
+  bool _looksLikePdfFileNavigation(String url) {
+    final lower = url.toLowerCase();
+    if (lower.endsWith('.pdf')) return true;
+    if (lower.contains('application/pdf')) return true;
+    if (lower.contains('content-disposition=attachment') &&
+        lower.contains('pdf')) {
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _resetEsignDownloadUserGesture(
+      InAppWebViewController controller) async {
+    try {
+      await controller.evaluateJavascript(
+        source: 'try { window.__meonUserGestureForDownload = false; } catch(e) {}',
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _injectEsignDownloadUserGestureTracker(
+      InAppWebViewController controller) async {
+    const script = r'''
+      (function() {
+        try {
+          if (window.__meonEsignDownloadHookInstalled) return;
+          window.__meonEsignDownloadHookInstalled = true;
+          window.__meonUserGestureForDownload = false;
+          function arm() { window.__meonUserGestureForDownload = true; }
+          ['click', 'touchstart', 'pointerdown'].forEach(function(evt) {
+            document.addEventListener(evt, arm, true);
+          });
+        } catch (e) {}
+      })();
+    ''';
+    try {
+      await controller.evaluateJavascript(source: script);
+    } catch (e) {
+      debugPrint('[WebView] Error injecting eSign download gesture tracker: $e');
+    }
+  }
+
+  Future<bool> _hasEsignDownloadUserGesture(
+      InAppWebViewController controller) async {
+    try {
+      final result = await controller.evaluateJavascript(
+        source: 'window.__meonUserGestureForDownload === true',
+      );
+      if (result is bool) return result;
+      return result?.toString().toLowerCase() == 'true';
+    } catch (e) {
+      debugPrint('[WebView] Error reading eSign download gesture flag: $e');
+      return false;
+    }
+  }
+
+  String _sanitizeDownloadFilename(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'kyc_esign_document.pdf';
+    return trimmed.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_');
+  }
+
+  String _filenameFromDownloadUrl(String url) {
+    if (url.toLowerCase().startsWith('blob:')) {
+      return 'kyc_esign_document.pdf';
+    }
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return 'kyc_esign_document.pdf';
+    }
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty) return 'kyc_esign_document.pdf';
+    final last = segments.last;
+    if (last.toLowerCase().endsWith('.pdf')) {
+      return _sanitizeDownloadFilename(last);
+    }
+    return 'kyc_esign_document.pdf';
+  }
+
+  /// pdf.js on eSign uses in-memory `blob:https://...` URLs. Those only exist inside this
+  /// WebView — never pass them to Dart [http.get]. Read bytes in-page via [callAsyncJavaScript].
+  Future<Uint8List> _readBlobUrlBytesInWebView(
+    InAppWebViewController controller,
+    String blobUrl,
+  ) async {
+    final result = await controller.callAsyncJavaScript(
+      functionBody: '''
+        const response = await fetch(arguments.blobUrl);
+        if (!response.ok) {
+          throw new Error('fetch failed: ' + response.status);
+        }
+        const blob = await response.blob();
+        const buffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+      ''',
+      arguments: {'blobUrl': blobUrl},
+    );
+
+    if (result == null) {
+      throw Exception('WebView did not return blob bytes');
+    }
+    if (result.error != null && result.error!.trim().isNotEmpty) {
+      throw Exception(result.error!.trim());
+    }
+    final value = result.value;
+    if (value == null || value.toString().isEmpty) {
+      throw Exception('Empty blob bytes from WebView');
+    }
+    return base64Decode(value.toString());
+  }
+
+  void _showEsignDownloadMessage(
+    String message, {
+    bool isError = false,
+    bool clearPrevious = true,
+  }) {
+    if (!mounted) return;
+    final messenger =
+        _scaffoldMessengerKey.currentState ?? ScaffoldMessenger.maybeOf(context);
+    if (messenger != null) {
+      if (clearPrevious) {
+        messenger.hideCurrentSnackBar();
+      }
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            message,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              height: 1.35,
+            ),
+          ),
+          backgroundColor: isError ? Colors.red.shade700 : KycTheme.primary,
+          duration: Duration(seconds: isError ? 4 : 10),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(12, 0, 12, 28),
+        ),
+      );
+    }
+    // Short toast as backup (no gravity — avoids Android text-toast issues).
+    final summary = message.split('\n').first.trim();
+    if (summary.isNotEmpty) {
+      Fluttertoast.cancel();
+      Fluttertoast.showToast(
+        msg: summary,
+        toastLength: Toast.LENGTH_LONG,
+      );
+    }
+  }
+
+  Future<void> _handleEsignPdfDownload(
+    InAppWebViewController controller, {
+    required WebUri downloadUrl,
+    String? suggestedFilename,
+    String? userAgent,
+    String? mimeType,
+  }) async {
+    if (!mounted) return;
+    if (!_isProceedToEsignFlowContext()) {
+      debugPrint('[WebView] Ignoring download outside eSign/PDF context');
+      return;
+    }
+    if (_esignPdfDownloadInProgress) return;
+
+    final allowed = await _hasEsignDownloadUserGesture(controller);
+    if (!allowed) {
+      debugPrint(
+          '[WebView] Blocked PDF download without user tap (auto-download prevented)');
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_lastEsignPdfDownloadEventAt != null &&
+        now.difference(_lastEsignPdfDownloadEventAt!) <
+            const Duration(seconds: 3)) {
+      debugPrint('[WebView] Ignoring duplicate PDF download event');
+      return;
+    }
+    _lastEsignPdfDownloadEventAt = now;
+
+    _esignPdfDownloadInProgress = true;
+    try {
+      var filename = suggestedFilename?.trim();
+      if (filename == null || filename.isEmpty) {
+        filename = _filenameFromDownloadUrl(downloadUrl.toString());
+      }
+      filename = _sanitizeDownloadFilename(filename);
+      final mime = mimeType?.toLowerCase() ?? '';
+      if (!filename.toLowerCase().endsWith('.pdf') && mime.contains('pdf')) {
+        filename = '$filename.pdf';
+      }
+
+      final docsDir = await getApplicationDocumentsDirectory();
+      final downloadsDir = Directory('${docsDir.path}/esign_downloads');
+      if (!await downloadsDir.exists()) {
+        await downloadsDir.create(recursive: true);
+      }
+
+      var savePath = '${downloadsDir.path}/$filename';
+      if (await File(savePath).exists()) {
+        final stamp = DateTime.now().millisecondsSinceEpoch;
+        savePath = '${downloadsDir.path}/${stamp}_$filename';
+      }
+
+      final urlStr = downloadUrl.toString();
+      final Uint8List fileBytes;
+      if (urlStr.toLowerCase().startsWith('blob:')) {
+        debugPrint(
+            '[WebView] Saving PDF from in-WebView blob (not an HTTP download URL)');
+        fileBytes = await _readBlobUrlBytesInWebView(controller, urlStr);
+        if (fileBytes.isEmpty) {
+          throw Exception('Downloaded PDF is empty');
+        }
+      } else {
+        final httpUri = Uri.parse(urlStr);
+        if (!httpUri.hasScheme || httpUri.host.isEmpty) {
+          throw Exception('Invalid download URL');
+        }
+        final cookieBase = WebUri(_currentUrl);
+        final cookies = await CookieManager.instance().getCookies(url: cookieBase);
+        final headers = <String, String>{};
+        if (userAgent != null && userAgent.trim().isNotEmpty) {
+          headers['User-Agent'] = userAgent;
+        }
+        if (cookies.isNotEmpty) {
+          headers['Cookie'] =
+              cookies.map((c) => '${c.name}=${c.value}').join('; ');
+        }
+        final response = await http.get(httpUri, headers: headers);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
+        fileBytes = response.bodyBytes;
+      }
+
+      await File(savePath).writeAsBytes(fileBytes, flush: true);
+      debugPrint('[WebView] eSign PDF saved: $savePath');
+      final savedName = savePath.split('/').last;
+      _showEsignDownloadMessage(
+        'PDF downloaded successfully\n$savedName\n$savePath',
+      );
+    } catch (e) {
+      debugPrint('[WebView] eSign PDF download failed: $e');
+      _showEsignDownloadMessage(
+        'Download failed. Please try again.',
+        isError: true,
+      );
+    } finally {
+      _esignPdfDownloadInProgress = false;
+    }
+  }
+
+  /// Android: WebView signals a download (often `blob:https://...` from pdf.js).
+  /// Without user tap we ignore it (no auto-save on load). With tap we read blob in-page.
+  Future<void> _onDownloadStartRequest(
+    InAppWebViewController controller,
+    DownloadStartRequest downloadStartRequest,
+  ) async {
+    final url = downloadStartRequest.url;
+    if (url == null) return;
+    debugPrint('[WebView] onDownloadStartRequest: $url');
+    if (!_isProceedToEsignFlowContext()) return;
+    if (!await _hasEsignDownloadUserGesture(controller)) {
+      debugPrint('[WebView] Ignoring download start (no user tap yet)');
+      return;
+    }
+    await _handleEsignPdfDownload(
+      controller,
+      downloadUrl: url,
+      suggestedFilename: downloadStartRequest.suggestedFilename,
+      userAgent: downloadStartRequest.userAgent,
+      mimeType: downloadStartRequest.mimeType,
+    );
   }
 
   /// Visible document text — used to detect transient JSON bridge pages before PDF/eSign is ready.
@@ -1076,7 +1378,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     // iOS: shrink the scaffold when the keyboard opens so WKWebView can reflow (CAMS AA OTP,
     // Digio UPI popup, etc.). Android unchanged. scrollIntoView stays enabled except on IPV/Face.
-    return Scaffold(
+    return ScaffoldMessenger(
+      key: _scaffoldMessengerKey,
+      child: Scaffold(
       backgroundColor: Colors.white,
       resizeToAvoidBottomInset: Platform.isIOS,
       appBar: AppBar(
@@ -1134,6 +1438,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     initialUrlRequest: URLRequest(url: WebUri(widget.url)),
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
+                      // eSign pdf.js uses blob: URLs — listen here, save in-page (see _onDownloadStartRequest).
+                      useOnDownloadStart: true,
                       // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
                       javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
                       supportMultipleWindows: _enablePopupWindows,
@@ -1150,6 +1456,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       // Enable geolocation for IPV/Face Finder (required for location-based verification)
                       geolocationEnabled: true,
                     ),
+                    onDownloadStartRequest: _onDownloadStartRequest,
                     onWebViewCreated: (controller) {
                       _webViewController = controller;
 
@@ -1202,6 +1509,34 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
                       final url = uri.toString();
                       debugPrint('[WebView] Navigation request: $url');
+
+                      // iOS: allow WebView-native download after user tap (blob/https).
+                      if (Platform.isIOS) {
+                        final shouldPerformDownload =
+                            navigationAction.shouldPerformDownload ?? false;
+                        if (shouldPerformDownload &&
+                            _isProceedToEsignFlowContext()) {
+                          final allowed =
+                              await _hasEsignDownloadUserGesture(controller);
+                          if (!allowed) {
+                            debugPrint(
+                                '[WebView] Blocked iOS PDF download without user tap');
+                            return NavigationActionPolicy.CANCEL;
+                          }
+                          debugPrint(
+                              '[WebView] Allowing iOS WebView native download');
+                          return NavigationActionPolicy.ALLOW;
+                        }
+                      }
+
+                      // Block direct PDF navigations on eSign until user taps download.
+                      if (_isProceedToEsignFlowContext() &&
+                          _looksLikePdfFileNavigation(url) &&
+                          !await _hasEsignDownloadUserGesture(controller)) {
+                        debugPrint(
+                            '[WebView] Blocked auto PDF navigation: $url');
+                        return NavigationActionPolicy.CANCEL;
+                      }
 
                       // Always cancel intent: URLs on Android to prevent ERR_UNKNOWN_URL_SCHEME error
                       if (Platform.isAndroid &&
@@ -1290,13 +1625,18 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     },
                     onLoadStart: (controller, url) async {
                       if (url != null && !_redirectHandled) {
+                        final urlStr = url.toString();
                         setState(() {
                           _isLoading = true;
                           _hasError = false;
-                          _currentUrl = url.toString();
+                          _currentUrl = urlStr;
                         });
-                        _startLoadTimers(url: url.toString());
+                        _startLoadTimers(url: urlStr);
                         debugPrint('[WebView] Page started: $url');
+
+                        if (_isProceedToEsignFlowContext(urlStr)) {
+                          await _resetEsignDownloadUserGesture(controller);
+                        }
 
                         // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
                         // Close WebView immediately on success redirect (don't wait for page load)
@@ -1447,6 +1787,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _loadingMessage = 'Loading...';
                         });
                         debugPrint('[WebView] Page finished: $url');
+
+                        if (_isProceedToEsignFlowContext(urlStr)) {
+                          await _injectEsignDownloadUserGestureTracker(controller);
+                        }
 
                         // Recovery: cloudesign can hang blank; run controlled retries and external fallback.
                         if (_isCloudesignDocumentUrl(urlStr) && !_redirectHandled) {
@@ -1848,6 +2192,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               ),
           ],
         ),
+      ),
       ),
     );
   }
