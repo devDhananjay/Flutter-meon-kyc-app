@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 int _calculateAge(DateTime dob) {
   final today = DateTime.now();
   var age = today.year - dob.year;
@@ -20,12 +22,34 @@ int? _tryAge(dynamic fieldValue) {
 }
 
 final Map<String, bool Function(dynamic, dynamic)> _conditionOperators = {
-  'equals': (a, b) => a.toString() == b.toString(),
+  'equals': (a, b) {
+    // Case-insensitive comparison for Yes/No values (nominee conditions)
+    final aStr = a.toString().trim().toLowerCase();
+    final bStr = b.toString().trim().toLowerCase();
+    return aStr == bStr;
+  },
   'contains': (a, b) {
     if (a is List) return a.contains(b);
-    return a.toString().contains(b.toString());
+    // Handle checkbox boolean values (true/false) matching against string 'true'/'false'
+    if (a is bool) {
+      final bStr = b.toString().trim().toLowerCase();
+      return (a && bStr == 'true') || (!a && bStr == 'false');
+    }
+    final aStr = a.toString().trim().toLowerCase();
+    final bStr = b.toString().trim().toLowerCase();
+    return aStr.contains(bStr);
   },
-  'notEquals': (a, b) => a.toString() != b.toString(),
+  'notEquals': (a, b) {
+    final aStr = a.toString().trim().toLowerCase();
+    final bStr = b.toString().trim().toLowerCase();
+    return aStr != bStr;
+  },
+  'notequals': (a, b) {
+    // Alias for notEquals (JSON uses lowercase variant)
+    final aStr = a.toString().trim().toLowerCase();
+    final bStr = b.toString().trim().toLowerCase();
+    return aStr != bStr;
+  },
   'greaterthan': (a, b) {
     if (b == null || b.toString().isEmpty) return false;
     final age = _tryAge(a);
@@ -72,6 +96,44 @@ List<Map<String, dynamic>> getConditionsForField(
       .toList();
 }
 
+/// Maps nominee address fields to user's address fields for prePopulate
+String? _getNomineeAddressSourceField(String nomineeField) {
+  // Map nominee1_add1 -> add1, address_line1, current_add1, etc.
+  if (nomineeField.endsWith('_add1')) return 'add1';
+  if (nomineeField.endsWith('_add2')) return 'add2';
+  if (nomineeField.endsWith('_city') || nomineeField == 'nominee_1_city' || 
+      nomineeField == 'nominee_2_city') {
+    return 'city';
+  }
+  if (nomineeField.endsWith('_state')) return 'state';
+  if (nomineeField.endsWith('_country')) return 'country';
+  if (nomineeField.endsWith('_pincode')) return 'pincode';
+  return null;
+}
+
+/// Gets address value from formData, trying multiple field name variants
+String _getAddressValue(Map<String, dynamic> formData, String baseField) {
+  // Try exact match first
+  if (formData[baseField] != null && formData[baseField].toString().trim().isNotEmpty) {
+    return formData[baseField].toString();
+  }
+  // Try common variants
+  final variants = [
+    baseField,
+    'current_$baseField',
+    'permanent_$baseField',
+    '${baseField}_line1', // for add1
+    'address_$baseField',
+  ];
+  for (final variant in variants) {
+    final val = formData[variant];
+    if (val != null && val.toString().trim().isNotEmpty) {
+      return val.toString();
+    }
+  }
+  return '';
+}
+
 ConditionalFlowState evaluateConditionalFlowForField(
   List<dynamic>? conditionalFlow,
   Map<String, dynamic> formData,
@@ -85,11 +147,25 @@ ConditionalFlowState evaluateConditionalFlowForField(
 
   for (final condition in conditions) {
     final fieldValue = formData[condition['field']];
-    final inputValue = condition['inputValue'];
+    var inputValue = condition['inputValue'];
     final operator = condition['operator'] ?? 'equals';
+    
+    // For age-based conditions (DOB fields), use dateValue ONLY if inputValue is empty
+    final dateType = condition['dateType'];
+    final dateValue = condition['dateValue'];
+    if (dateType != null && dateValue != null && 
+        (inputValue == null || inputValue.toString().trim().isEmpty)) {
+      inputValue = dateValue;
+      debugPrint('[ConditionalForm] Age condition: field=${condition['field']}, operator=$operator, dateValue=$dateValue');
+    }
+    
     final opFn = _conditionOperators[operator];
     if (opFn == null) continue;
-    if (!opFn(fieldValue, inputValue)) continue;
+    
+    final matches = opFn(fieldValue, inputValue);
+    if (!matches) continue;
+    
+    debugPrint('[ConditionalForm] ✅ Condition matched: ${condition['field']} $operator $inputValue');
 
     final thenList = condition['then'];
     if (thenList is! List) continue;
@@ -103,15 +179,25 @@ ConditionalFlowState evaluateConditionalFlowForField(
       switch (actionType) {
         case 'hide':
           state.fieldVisibility[selected] = false;
+          debugPrint('[ConditionalForm] 🔒 Hide: $selected');
           break;
         case 'show':
           state.fieldVisibility[selected] = true;
+          debugPrint('[ConditionalForm] 👁️ Show: $selected');
           break;
         case 'empty':
           state.formData[selected] = '';
           break;
         case 'prePopulate':
-          state.formData[selected] = action['value']?.toString() ?? '';
+          // Handle nominee address prePopulate (when value is empty, copy from user address)
+          var prePopValue = action['value']?.toString() ?? '';
+          if (prePopValue.isEmpty) {
+            final sourceField = _getNomineeAddressSourceField(selected);
+            if (sourceField != null) {
+              prePopValue = _getAddressValue(formData, sourceField);
+            }
+          }
+          state.formData[selected] = prePopValue;
           break;
         case 'true':
           state.formData[selected] = true;
@@ -527,8 +613,17 @@ ConditionalFlowState evaluateConditionalFlow(
   for (final condition in conditionalFlow) {
     if (condition is! Map) continue;
     final fieldValue = formData[condition['field']];
-    final inputValue = condition['inputValue'];
+    var inputValue = condition['inputValue'];
     final operator = condition['operator'] ?? 'equals';
+    
+    // For age-based conditions (DOB fields), use dateValue ONLY if inputValue is empty
+    final dateType = condition['dateType'];
+    final dateValue = condition['dateValue'];
+    if (dateType != null && dateValue != null && 
+        (inputValue == null || inputValue.toString().trim().isEmpty)) {
+      inputValue = dateValue;
+    }
+    
     final opFn = _conditionOperators[operator];
     if (opFn == null || !opFn(fieldValue, inputValue)) continue;
 
@@ -544,15 +639,31 @@ ConditionalFlowState evaluateConditionalFlow(
       switch (actionType) {
         case 'hide':
           state.fieldVisibility[selected] = false;
+          debugPrint('[ConditionalForm] 🔒 Hide: $selected');
           break;
         case 'show':
           state.fieldVisibility[selected] = true;
+          debugPrint('[ConditionalForm] 👁️ Show: $selected');
           break;
         case 'empty':
           state.formData[selected] = '';
           break;
         case 'prePopulate':
-          state.formData[selected] = action['value']?.toString() ?? '';
+          // Handle nominee address prePopulate (when value is empty, copy from user address)
+          var prePopValue = action['value']?.toString() ?? '';
+          if (prePopValue.isEmpty) {
+            final sourceField = _getNomineeAddressSourceField(selected);
+            if (sourceField != null) {
+              prePopValue = _getAddressValue(formData, sourceField);
+            }
+          }
+          state.formData[selected] = prePopValue;
+          break;
+        case 'true':
+          state.formData[selected] = true;
+          break;
+        case 'false':
+          state.formData[selected] = false;
           break;
         case 'enable':
           final enableVal = action['enable'];

@@ -827,6 +827,41 @@ class _HomePageState extends State<HomePage> {
     return (position: position, pageLabel: pageLabel);
   }
 
+  void _showValidationFailureToast() {
+    final formToast = _formNotifier.validationToastMessage;
+    if (formToast != null && formToast.trim().isNotEmpty) {
+      Fluttertoast.showToast(
+        msg: formToast,
+        toastLength: Toast.LENGTH_LONG,
+        gravity: ToastGravity.TOP,
+        backgroundColor: Colors.red.shade700,
+        textColor: Colors.white,
+      );
+      return;
+    }
+    final errors = _formNotifier.errors;
+    if (errors.isNotEmpty) {
+      final firstError = errors.values.first;
+      if (firstError != null && firstError.toString().isNotEmpty) {
+        Fluttertoast.showToast(
+          msg: firstError.toString(),
+          toastLength: Toast.LENGTH_LONG,
+          gravity: ToastGravity.TOP,
+          backgroundColor: Colors.red.shade700,
+          textColor: Colors.white,
+        );
+        return;
+      }
+    }
+    Fluttertoast.showToast(
+      msg: 'Please fill all required fields correctly',
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.red.shade700,
+      textColor: Colors.white,
+    );
+  }
+
   /// BP Wealth personal-details: UI grouping for standing-instruction fields (collapsed by default).
   bool _bpWealthPersonalDetailsStandingUi(String? position, String? pageLabel) {
     return _isBpWealthCompany &&
@@ -1313,30 +1348,8 @@ class _HomePageState extends State<HomePage> {
       );
       if (!isValid) {
         debugPrint('[HomePage] Send OTP / Submit: validation failed');
-        final errors = _formNotifier.errors;
-        debugPrint('[HomePage] Validation errors: $errors');
-        
-        // Show toast with first validation error
-        if (errors.isNotEmpty) {
-          final firstError = errors.values.first;
-          if (firstError != null && firstError.toString().isNotEmpty) {
-            Fluttertoast.showToast(
-              msg: firstError.toString(),
-              toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.TOP,
-              backgroundColor: Colors.red.shade700,
-              textColor: Colors.white,
-            );
-          } else {
-            Fluttertoast.showToast(
-              msg: 'Please fill all required fields correctly',
-              toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.TOP,
-              backgroundColor: Colors.red.shade700,
-              textColor: Colors.white,
-            );
-          }
-        }
+        debugPrint('[HomePage] Validation errors: ${_formNotifier.errors}');
+        _showValidationFailureToast();
         return;
       }
     }
@@ -1801,30 +1814,8 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] Form validation result: $isValid');
       if (!isValid) {
         debugPrint('[HomePage] Validation failed, returning early');
-        final errors = _formNotifier.errors;
-        debugPrint('[HomePage] Validation errors: $errors');
-        
-        // Show toast with first validation error
-        if (errors.isNotEmpty) {
-          final firstError = errors.values.first;
-          if (firstError != null && firstError.toString().isNotEmpty) {
-            Fluttertoast.showToast(
-              msg: firstError.toString(),
-              toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.TOP,
-              backgroundColor: Colors.red.shade700,
-              textColor: Colors.white,
-            );
-          } else {
-            Fluttertoast.showToast(
-              msg: 'Please fill all required fields correctly',
-              toastLength: Toast.LENGTH_LONG,
-              gravity: ToastGravity.TOP,
-              backgroundColor: Colors.red.shade700,
-              textColor: Colors.white,
-            );
-          }
-        }
+        debugPrint('[HomePage] Validation errors: ${_formNotifier.errors}');
+        _showValidationFailureToast();
         return;
       }
     }

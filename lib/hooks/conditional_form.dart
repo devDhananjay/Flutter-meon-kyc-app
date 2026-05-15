@@ -18,6 +18,8 @@ const Map<String, int> validationMaxLengths = {
 class ConditionalFormNotifier extends ChangeNotifier {
   Map<String, dynamic> formData = {};
   Map<String, String> errors = {};
+  /// Form-level message for toast only (not shown under any field).
+  String? validationToastMessage;
   Map<String, bool> fieldVisibility = {};
   Map<String, bool> fieldEditable = {};
 
@@ -62,7 +64,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
       // This ensures correct initial visibility based on pre-filled data
       debugPrint('[ConditionalForm] Applying initial conditional flow for ${watchedFields.length} watched fields');
       for (final watchedField in watchedFields) {
-        if (formData.containsKey(watchedField) && formData[watchedField] != null) {
+        final fieldValue = formData[watchedField];
+        // Evaluate if field has a truthy value OR if it's explicitly false/empty (for checkbox "No" cases)
+        if (formData.containsKey(watchedField) && 
+            (fieldValue != null || fieldValue == false || fieldValue == '')) {
           debugPrint('[ConditionalForm] Evaluating initial state for: $watchedField = ${formData[watchedField]}');
           _applyConditionalLogic(watchedField);
         }
@@ -79,6 +84,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
   void resetForm() {
     formData = {};
     errors = {};
+    validationToastMessage = null;
     fieldVisibility = {};
     fieldEditable = {};
     notifyListeners();
@@ -234,6 +240,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
     String? position,
     String? pageLabel,
   }) {
+    validationToastMessage = null;
     errors = validateFormWithConditions(
       _fields,
       formData,
@@ -241,7 +248,23 @@ class ConditionalFormNotifier extends ChangeNotifier {
       company: company,
       position: position,
       pageLabel: pageLabel,
+      runtimeFieldVisibility: fieldVisibility,
     );
+
+    final nomineePctError = validateNomineePercentageTotal(
+      fields: _fields,
+      formData: formData,
+      runtimeFieldVisibility: fieldVisibility,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    if (nomineePctError != null) {
+      validationToastMessage = nomineePctError;
+      notifyListeners();
+      return false;
+    }
+
     notifyListeners();
     return errors.isEmpty;
   }
