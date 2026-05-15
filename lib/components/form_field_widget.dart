@@ -332,6 +332,44 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     return v == 'nospecialcharacter';
   }
 
+  static final BorderRadius _fieldBorderRadius =
+      BorderRadius.circular(KycTheme.radiusMd);
+
+  OutlineInputBorder _outlineFieldBorder({Color? color, double width = 1}) {
+    return OutlineInputBorder(
+      borderRadius: _fieldBorderRadius,
+      borderSide: BorderSide(color: color ?? KycTheme.border, width: width),
+    );
+  }
+
+  /// Matches app [InputDecorationTheme] — disabled/read-only fields keep rounded corners.
+  InputDecoration _fieldInputDecoration({
+    String? hintText,
+    Widget? prefixIcon,
+    Widget? prefix,
+    Widget? suffixIcon,
+    String? counterText,
+    bool alignLabelWithHint = false,
+  }) {
+    final readOnlyLook = widget.disable;
+    return InputDecoration(
+      hintText: hintText,
+      prefixIcon: prefixIcon,
+      prefix: prefix,
+      suffixIcon: suffixIcon,
+      counterText: counterText,
+      alignLabelWithHint: alignLabelWithHint,
+      filled: true,
+      fillColor: readOnlyLook ? const Color(0xFFF1F5F9) : KycTheme.surface,
+      border: _outlineFieldBorder(),
+      enabledBorder: _outlineFieldBorder(),
+      focusedBorder: _outlineFieldBorder(color: KycTheme.primary, width: 2),
+      disabledBorder: _outlineFieldBorder(),
+      errorBorder: _outlineFieldBorder(color: Colors.red),
+      focusedErrorBorder: _outlineFieldBorder(color: Colors.red, width: 2),
+    );
+  }
+
   Widget _buildText() {
     if (_textController == null) {
       String raw = widget.value?.toString() ?? '';
@@ -353,6 +391,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _textController,
           enabled: !widget.disable,
+          readOnly: widget.disable,
+          showCursor: !widget.disable,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
           textCapitalization:
               _isPanField ? TextCapitalization.characters : TextCapitalization.none,
@@ -375,12 +415,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                         ]
                       : null,
           onChanged: (v) => widget.onChange(widget.name, v),
-          decoration: InputDecoration(
+          decoration: _fieldInputDecoration(
             hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
-            border: const OutlineInputBorder(),
-            prefixIcon: _isMobileField
-                ? null
-                : _getFieldIcon(),
+            prefixIcon: _isMobileField ? null : _getFieldIcon(),
             prefix: _isMobileField
                 ? Padding(
                     padding: const EdgeInsets.only(left: 16, right: 12),
@@ -420,6 +457,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _numberController,
           enabled: !widget.disable,
+          readOnly: widget.disable,
+          showCursor: !widget.disable,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.number,
           maxLength: _isMobileField ? 10 : null,
           inputFormatters: _isMobileField
@@ -429,9 +468,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                 ]
               : null,
           onChanged: (v) => widget.onChange(widget.name, v),
-          decoration: InputDecoration(
+          decoration: _fieldInputDecoration(
             hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
-            border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
             counterText: _isMobileField ? '' : null,
           ),
@@ -451,11 +489,12 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _textareaController,
           enabled: !widget.disable,
+          readOnly: widget.disable,
+          showCursor: !widget.disable,
           maxLines: widget.rows ?? 3,
           onChanged: (v) => widget.onChange(widget.name, v),
-          decoration: InputDecoration(
+          decoration: _fieldInputDecoration(
             hintText: '${widget.displayName}',
-            border: const OutlineInputBorder(),
             alignLabelWithHint: true,
           ),
         ),
@@ -475,9 +514,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           controller: _passwordController,
           obscureText: !_showPassword,
           onChanged: (v) => widget.onChange(widget.name, v),
-          decoration: InputDecoration(
+          decoration: _fieldInputDecoration(
             hintText: '${widget.displayName}',
-            border: const OutlineInputBorder(),
             prefixIcon: _getFieldIcon(),
             suffixIcon: IconButton(
               icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility),
@@ -550,7 +588,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         _buildLabel(widget.displayName),
         DropdownButtonFormField<String>(
           value: isValidValue ? resolvedValue : null,
-          decoration: const InputDecoration(border: OutlineInputBorder()),
+          decoration: _fieldInputDecoration(hintText: widget.displayName),
           hint: Text(widget.displayName),
           isExpanded: true, // Prevents overflow by expanding to available width
           items: entries
@@ -605,16 +643,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                   }
                 },
           child: InputDecorator(
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              prefixIcon: _getFieldIcon(),
-            ),
+            decoration: _fieldInputDecoration(prefixIcon: _getFieldIcon()),
             child: Text(
               _formatDateFieldDisplay(widget.value),
               style: TextStyle(
                 color: widget.value != null &&
                         widget.value.toString().trim().isNotEmpty
-                    ? null
+                    ? (widget.disable ? KycTheme.textSecondary : null)
                     : Colors.grey,
               ),
             ),

@@ -254,6 +254,85 @@ String bpWealthFieldUserFacingTextLower(Map<dynamic, dynamic> f) {
   return buf.toString().toLowerCase();
 }
 
+/// DDPI (Demat Debit Pledge Instructions) — field [name] varies across workflows.
+bool isDdpiFormField(Map<dynamic, dynamic> f) {
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (nl == 'ddpi' ||
+      nl == 'execute_ddpi' ||
+      nl == 'demat_debit_pledge' ||
+      nl.contains('ddpi') ||
+      nl.contains('demat_debit')) {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  return dn.contains('ddpi') ||
+      (dn.contains('demat') && dn.contains('debit') && dn.contains('pledge'));
+}
+
+/// User selected Yes / affirmative for DDPI (radio, select, or checkbox).
+bool isDdpiAffirmativeValue(dynamic value) {
+  if (value == null) return false;
+  if (value is bool) return value;
+  final s = value.toString().trim().toLowerCase();
+  if (s.isEmpty) return false;
+  return s == 'yes' || s == 'y' || s == 'true' || s == '1' || s.startsWith('yes');
+}
+
+/// KRA review step — fetched KRA data is display-only (live web parity).
+bool isKraDetailsStep(String? position, String? pageLabel) {
+  final p = (position ?? '').toLowerCase();
+  final l = (pageLabel ?? '').toLowerCase();
+  return p == 'kradetails' || l == 'kradetails';
+}
+
+/// "Do You Want to continue with KRA details?" — user must be able to select Yes/No.
+bool kraDetailsContinueWithKraChoiceField(Map<dynamic, dynamic> field) {
+  final nl = (field['name']?.toString() ?? '').toLowerCase();
+  if (nl == 'kradetail' ||
+      nl == 'kra_detail' ||
+      nl == 'continue_with_kra' ||
+      (nl.contains('kra') && nl.contains('continue'))) {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(field);
+  return dn.contains('continue') && dn.contains('kra');
+}
+
+/// On [isKraDetailsStep], fetched KRA inputs are read-only; [kraDetailsContinueWithKraChoiceField] stays editable.
+bool kraDetailsFormFieldReadOnly(Map<dynamic, dynamic> field) {
+  if (kraDetailsContinueWithKraChoiceField(field)) return false;
+  final type = (field['type']?.toString() ?? '').toLowerCase();
+  return type != 'button' && type != 'hidden';
+}
+
+/// DigiLocker review step — Aadhaar/PAN data fetched from DigiLocker is display-only.
+bool isDigilockerStep(String? position, String? pageLabel) {
+  final p = (position ?? '').toLowerCase();
+  final l = (pageLabel ?? '').toLowerCase();
+  return p == 'digilocker' || l == 'digilocker';
+}
+
+/// On [isDigilockerStep], all visible inputs (name, DOB, address, photo, etc.) are read-only.
+bool digilockerFormFieldReadOnly(Map<dynamic, dynamic> field) {
+  final type = (field['type']?.toString() ?? '').toLowerCase();
+  return type != 'button' && type != 'hidden';
+}
+
+/// Fetched-data review steps where most fields must not be edited (KRA, DigiLocker).
+bool fetchedDataReviewFieldReadOnly(
+  String? position,
+  String? pageLabel,
+  Map<dynamic, dynamic> field,
+) {
+  if (isKraDetailsStep(position, pageLabel)) {
+    return kraDetailsFormFieldReadOnly(field);
+  }
+  if (isDigilockerStep(position, pageLabel)) {
+    return digilockerFormFieldReadOnly(field);
+  }
+  return false;
+}
+
 /// "How frequently do you want to receive your holding cum Transaction statement?" —
 /// backend [name] varies; match by user-facing text and common [name] substrings.
 bool bpWealthPersonalDetailsHoldingStatementFrequencyField(

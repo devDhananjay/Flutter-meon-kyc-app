@@ -834,6 +834,139 @@ class _HomePageState extends State<HomePage> {
             (pageLabel ?? '') == 'personal_details');
   }
 
+  bool _isPersonalDetailsStep(String? position, String? pageLabel) {
+    return (position ?? '') == 'personal_details' ||
+        (pageLabel ?? '') == 'personal_details';
+  }
+
+  Future<void> _showDdpiSebiCircularModal() {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        const bodyStyle = TextStyle(
+          fontSize: 14,
+          color: KycTheme.textPrimary,
+          height: 1.45,
+        );
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(ctx).height * 0.7,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "As per SEBI circular No's: SEBI/HO/MIRSD/DoP/CIR/2022/44 "
+                          'Dated April 04, 2022',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: KycTheme.textPrimary,
+                            height: 1.45,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'The use of DDPI (Demat Debit & Pledge Instruction) will be '
+                          'limited only for below four purposes to authorize BP Equities '
+                          'Pvt. Ltd. to access your Demat account only to meet:',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          '1. Pay-in obligations for settlement or deliveries of trades '
+                          'executed by you.',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '2. To pledge/re-pledge securities to avail margin on trades.',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '3. Mutual Fund Transactions being executed on Stock Exchanges '
+                          'order entry platforms.',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '4. Tendering shares in open offers through Stock Exchanges '
+                          'platforms.',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'In case any changes are required to the above purposes, kindly '
+                          'proceed with the offline account opening process.',
+                          style: bodyStyle,
+                        ),
+                        const SizedBox(height: 12),
+                        Text.rich(
+                          TextSpan(
+                            style: bodyStyle,
+                            children: const [
+                              TextSpan(
+                                text: 'Note: ',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                              TextSpan(
+                                text: 'One-time charge of ₹100/- (excluding GST) will be '
+                                    'debited from your trading ledger account to enable DDPI',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: KycTheme.buttonEnabledPurple,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 40,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'OK',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// PAN capture (`detailspan`) and PAN verify (`pan`): show DOB as **DD/MM/YYYY**.
   bool _useDdMmYyyyPanDateStep(String? position, String? pageLabel) {
     final p = (position ?? '').toLowerCase();
@@ -893,7 +1026,17 @@ class _HomePageState extends State<HomePage> {
         (name == 'ifsc' || name.toLowerCase().contains('ifsc'));
 
     final editableFields = _formNotifier.editableFieldsList;
-    final disable = editableFields.any((e) => e is Map && e['name'] == name);
+    final disableFromConditionalFlow =
+        editableFields.any((e) => e is Map && e['name'] == name);
+    final disableOnFetchedDataReview = fetchedDataReviewFieldReadOnly(
+      position,
+      pageLabel,
+      field,
+    );
+    final isKraContinueChoice = isKraDetailsStep(position, pageLabel) &&
+        kraDetailsContinueWithKraChoiceField(field);
+    final disable = !isKraContinueChoice &&
+        (disableFromConditionalFlow || disableOnFetchedDataReview);
 
     final isEmailStep = position == 'email' ||
         position == 'emailid' ||
@@ -932,6 +1075,15 @@ class _HomePageState extends State<HomePage> {
                     (x) => x?['name'] == n,
                     orElse: () => null,
                   );
+              final previousValue = _formNotifier.formData[n];
+              final changedField = f ?? field;
+              final isDdpiYesOnPersonalDetails = _isPersonalDetailsStep(
+                    position,
+                    pageLabel,
+                  ) &&
+                  isDdpiFormField(changedField) &&
+                  isDdpiAffirmativeValue(v) &&
+                  !isDdpiAffirmativeValue(previousValue);
               _formNotifier.handleChange(
                 n,
                 v,
@@ -939,6 +1091,12 @@ class _HomePageState extends State<HomePage> {
                 validationType: f?['validation']?.toString(),
                 validateWith: f?['validateWith']?.toString(),
               );
+              if (isDdpiYesOnPersonalDetails) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  _showDdpiSebiCircularModal();
+                });
+              }
               if (pageLabel == 'mobile' &&
                   (n == 'mobile' || n == 'phone' || n == 'mobile_number')) {
                 setState(() => _showMobileError = false);
@@ -3555,7 +3713,8 @@ class _HomePageState extends State<HomePage> {
               },
             );
           },
-          onSubmit: _submitLoading ? null : () {
+          onSubmit: () {
+            if (_submitLoading) return;
             final hasPlan = _segmentsBrokerageUserConfirmed &&
                 (_formNotifier.formData['brokerage_plan']?.toString().trim().isNotEmpty ??
                     false);
@@ -3568,7 +3727,7 @@ class _HomePageState extends State<HomePage> {
               );
               return;
             }
-            
+
             if (isAuth) {
               _handleCommonSubmit(false);
             } else {

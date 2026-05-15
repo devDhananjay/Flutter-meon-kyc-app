@@ -190,10 +190,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
     // Update field editable state (enable/disable actions)
     if (state.fieldEditable.isNotEmpty) {
       debugPrint('[ConditionalForm] Editable changes: ${state.fieldEditable}');
-      for (final e in state.fieldEditable.entries) {
-        final key = e.key.replaceAllMapped(RegExp(r'_([a-z])'), (m) => m.group(1)!.toUpperCase());
-        fieldEditable[key] = e.value;
-      }
+      fieldEditable.addAll(state.fieldEditable);
     }
     
     // Update form data (empty, prePopulate, true, false actions)
