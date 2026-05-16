@@ -1524,7 +1524,11 @@ class _HomePageState extends State<HomePage> {
         final activeAfterSubmit = _getActiveFields(store);
         final listAfterSubmit = (activeAfterSubmit?['fields'] as List?) ?? [];
         final flowAfterSubmit = activeAfterSubmit?['conditionalFlow'] as List?;
-        _formNotifier.updateFields(listAfterSubmit, flowAfterSubmit);
+        _formNotifier.updateFields(
+          listAfterSubmit,
+          flowAfterSubmit,
+          fieldsWithAuth: store.fieldsWithAuth,
+        );
         if (mounted) {
           final authResponse = store.fieldsWithAuth;
           if (authResponse is Map && authResponse['is_admin'] == true) {
@@ -1710,7 +1714,11 @@ class _HomePageState extends State<HomePage> {
     final activeAfter = _getActiveFields(store);
     final listAfter = (activeAfter?['fields'] as List?) ?? [];
     final flowAfter = activeAfter?['conditionalFlow'] as List?;
-    _formNotifier.updateFields(listAfter, flowAfter);
+    _formNotifier.updateFields(
+      listAfter,
+      flowAfter,
+      fieldsWithAuth: store.fieldsWithAuth,
+    );
     if (mounted) {
       final authResponse = store.fieldsWithAuth;
       if (authResponse is Map && authResponse['is_admin'] == true) {
@@ -2322,7 +2330,11 @@ class _HomePageState extends State<HomePage> {
               final isAuthenticated = snapshot.data ?? false;
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
-                _formNotifier.updateFields(fieldList, conditionalFlow);
+                _formNotifier.updateFields(
+                  fieldList,
+                  conditionalFlow,
+                  fieldsWithAuth: store.fieldsWithAuth,
+                );
                 // Must run in same callback *after* updateFields so API `value` is in formData first.
                 _runPersonalDetailsBpWealthPipeline(store, fieldList);
               });

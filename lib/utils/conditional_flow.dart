@@ -96,6 +96,504 @@ List<Map<String, dynamic>> getConditionsForField(
       .toList();
 }
 
+/// Nominee address fields controlled by each "same as my address" checkbox.
+const Map<String, List<String>> kNomineeSameAsAddressGroups = {
+  'nominee1_same_as_my_address': [
+    'nominee1_add1',
+    'nominee1_add2',
+    'nominee_1_city',
+    'nominee1_state',
+    'nominee1_country',
+    'nominee1_pincode',
+  ],
+  'nominee2_same_as_my_address': [
+    'nominee2_add1',
+    'nominee2_add2',
+    'nominee_2_city',
+    'nominee2_state',
+    'nominee2_country',
+    'nominee2_pincode',
+  ],
+  'nominee3_same_as_my_address': [
+    'nominee3_add1',
+    'nominee3_add2',
+    'nominee3_city',
+    'nominee3_state',
+    'nominee3_country',
+    'nominee3_pincode',
+  ],
+};
+
+bool isNomineeSameAsMyAddressCheckbox(String? fieldName) {
+  return fieldName != null && fieldName.contains('same_as_my_address');
+}
+
+bool isNomineeAddressTargetField(String? fieldName) {
+  if (fieldName == null) return false;
+  for (final targets in kNomineeSameAsAddressGroups.values) {
+    if (targets.contains(fieldName)) return true;
+  }
+  return false;
+}
+
+bool isCheckboxCheckedValue(dynamic value) {
+  if (value == true) return true;
+  final s = value?.toString().trim().toLowerCase();
+  return s == 'true' || s == '1' || s == 'yes';
+}
+
+Map<String, String> _emptyUserAddressMap() => {
+      'add1': '',
+      'add2': '',
+      'city': '',
+      'state': '',
+      'country': '',
+      'pincode': '',
+    };
+
+Map<String, String> _cachedUserAddress = {};
+
+/// API pre-fills these nominee fields with the applicant address (old on-load behaviour).
+const Map<String, String> kNomineePrefillToAddressComponent = {
+  'nominee1_add1': 'add1',
+  'nominee1_add2': 'add2',
+  'nominee_1_city': 'city',
+  'nominee1_state': 'state',
+  'nominee1_country': 'country',
+  'nominee1_pincode': 'pincode',
+};
+
+const Map<String, List<String>> _userAddressAliases = {
+  'add1': [
+    'add1',
+    'address_line1',
+    'address_line_1',
+    'address1',
+    'addr_line1',
+    'correspondence_add1',
+    'corr_add1',
+    'perm_add1',
+    'permanent_add1',
+    'current_add1',
+    'communication_add1',
+    'residence_add1',
+    'residential_address',
+    'address',
+    'user_address',
+    'permanent_address',
+    'correspondence_address',
+  ],
+  'add2': [
+    'add2',
+    'address_line2',
+    'address_line_2',
+    'address2',
+    'addr_line2',
+    'correspondence_add2',
+    'corr_add2',
+    'perm_add2',
+    'permanent_add2',
+    'current_add2',
+  ],
+  'city': [
+    'city',
+    'user_city',
+    'perm_city',
+    'permanent_city',
+    'correspondence_city',
+    'corr_city',
+    'current_city',
+    'residence_city',
+  ],
+  'state': [
+    'state',
+    'user_state',
+    'perm_state',
+    'permanent_state',
+    'correspondence_state',
+    'current_state',
+  ],
+  'country': [
+    'country',
+    'user_country',
+    'perm_country',
+    'permanent_country',
+    'correspondence_country',
+  ],
+  'pincode': [
+    'pincode',
+    'pin_code',
+    'zip',
+    'zipcode',
+    'postal_code',
+    'perm_pincode',
+    'permanent_pincode',
+    'correspondence_pincode',
+  ],
+};
+
+Map<String, String> _mergeAddressMaps(
+  Map<String, String> base,
+  Map<String, String> overlay,
+) {
+  final out = Map<String, String>.from(base);
+  for (final e in overlay.entries) {
+    if (e.value.trim().isNotEmpty) out[e.key] = e.value.trim();
+  }
+  return out;
+}
+
+bool _isExcludedAddressSourceKey(String key) {
+  final k = key.toLowerCase();
+  if (k.contains('nominee') || k.contains('guardian')) return true;
+  if (k.contains('bank_') || k.startsWith('bank')) return true;
+  if (k.contains('otp') || k.contains('stamp') || k.contains('proof')) {
+    return true;
+  }
+  return false;
+}
+
+void _assignAddressComponent(
+  Map<String, String> result,
+  String fieldName,
+  String value,
+) {
+  if (value.trim().isEmpty || _isExcludedAddressSourceKey(fieldName)) return;
+  final k = fieldName.toLowerCase();
+
+  if (result['add1']!.isEmpty &&
+      (k == 'add1' ||
+          k.endsWith('_add1') ||
+          k.contains('address_line_1') ||
+          k.contains('address_line1') ||
+          (k.contains('address') &&
+              !k.contains('2') &&
+              !k.contains('email')))) {
+    result['add1'] = value.trim();
+    return;
+  }
+  if (result['add2']!.isEmpty &&
+      (k == 'add2' ||
+          k.endsWith('_add2') ||
+          k.contains('address_line_2') ||
+          k.contains('address_line2'))) {
+    result['add2'] = value.trim();
+    return;
+  }
+  if (result['city']!.isEmpty &&
+      (k == 'city' || (k.endsWith('_city') && !k.contains('nominee')))) {
+    result['city'] = value.trim();
+    return;
+  }
+  if (result['state']!.isEmpty &&
+      (k == 'state' || (k.endsWith('_state') && !k.contains('nominee')))) {
+    result['state'] = value.trim();
+    return;
+  }
+  if (result['country']!.isEmpty &&
+      (k == 'country' || (k.endsWith('_country') && !k.contains('nominee')))) {
+    result['country'] = value.trim();
+    return;
+  }
+  if (result['pincode']!.isEmpty &&
+      (k == 'pincode' ||
+          k.contains('pincode') ||
+          k.contains('pin_code') ||
+          k.contains('zipcode') ||
+          k.contains('postal'))) {
+    result['pincode'] = value.trim();
+  }
+}
+
+/// Reads the same address the API used to pre-fill nominee1 fields on page load.
+Map<String, String> extractUserAddressFromNomineePrefill({
+  required Map<String, dynamic> formData,
+  List<dynamic>? stepFields,
+}) {
+  final result = _emptyUserAddressMap();
+  for (final entry in kNomineePrefillToAddressComponent.entries) {
+    final fromForm = formData[entry.key]?.toString().trim();
+    if (fromForm != null && fromForm.isNotEmpty) {
+      result[entry.value] = fromForm;
+    }
+  }
+  if (stepFields != null) {
+    for (final f in stepFields) {
+      if (f is! Map) continue;
+      final name = f['name']?.toString();
+      final component = name != null ? kNomineePrefillToAddressComponent[name] : null;
+      if (component == null) continue;
+      final val = f['value']?.toString().trim();
+      if (val != null && val.isNotEmpty) {
+        result[component] = val;
+      }
+    }
+  }
+  return result;
+}
+
+Map<String, String> resolveUserAddressFromFormData(Map<String, dynamic> formData) {
+  var result = _emptyUserAddressMap();
+  for (final component in _userAddressAliases.keys) {
+    for (final alias in _userAddressAliases[component]!) {
+      if (_isExcludedAddressSourceKey(alias)) continue;
+      final v = formData[alias];
+      if (v != null && v.toString().trim().isNotEmpty) {
+        result[component] = v.toString().trim();
+        break;
+      }
+    }
+  }
+  for (final e in formData.entries) {
+    _assignAddressComponent(result, e.key.toString(), e.value?.toString() ?? '');
+  }
+  return result;
+}
+
+Map<String, String> resolveAddressFromFieldDefinitions(List<dynamic> fields) {
+  final result = _emptyUserAddressMap();
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString() ?? '';
+    final val = f['value']?.toString().trim() ?? '';
+    if (val.isEmpty) continue;
+    final nomineeComponent = kNomineePrefillToAddressComponent[name];
+    if (nomineeComponent != null) {
+      result[nomineeComponent] = val;
+    } else {
+      _assignAddressComponent(result, name, val);
+    }
+  }
+  return result;
+}
+
+void _deepScanAddressInto(Map<String, String> result, dynamic node, [int depth = 0]) {
+  if (depth > 15 || node == null) return;
+  if (node is Map) {
+    for (final e in node.entries) {
+      final key = e.key.toString();
+      final val = e.value;
+      if (val is! Map && val is! List) {
+        final str = val?.toString() ?? '';
+        final nomineeComponent = kNomineePrefillToAddressComponent[key];
+        if (nomineeComponent != null && str.trim().isNotEmpty) {
+          if (result[nomineeComponent]!.isEmpty) {
+            result[nomineeComponent] = str.trim();
+          }
+        } else {
+          _assignAddressComponent(result, key, str);
+        }
+      } else {
+        _deepScanAddressInto(result, val, depth + 1);
+      }
+    }
+  } else if (node is List) {
+    for (final item in node) {
+      _deepScanAddressInto(result, item, depth + 1);
+    }
+  }
+}
+
+/// Cache applicant address from form + get-context for nominee copy.
+void refreshUserAddressCache({
+  required Map<String, dynamic> formData,
+  dynamic fieldsWithAuth,
+  List<dynamic>? stepFields,
+}) {
+  // Priority 1: nominee1 API prefill (same source as old on-load address display).
+  var merged = extractUserAddressFromNomineePrefill(
+    formData: formData,
+    stepFields: stepFields,
+  );
+  merged = _mergeAddressMaps(merged, resolveUserAddressFromFormData(formData));
+  if (stepFields != null) {
+    merged = _mergeAddressMaps(
+      merged,
+      resolveAddressFromFieldDefinitions(stepFields),
+    );
+  }
+  if (fieldsWithAuth != null) {
+    final scanned = _emptyUserAddressMap();
+    _deepScanAddressInto(scanned, fieldsWithAuth);
+    merged = _mergeAddressMaps(merged, scanned);
+  }
+  if (merged.values.any((v) => v.isNotEmpty)) {
+    _cachedUserAddress = merged;
+    debugPrint('[ConditionalForm] User address cache updated: $_cachedUserAddress');
+  }
+}
+
+void clearUserAddressCache() => _cachedUserAddress = _emptyUserAddressMap();
+
+Map<String, String> getUserAddressForNomineeCopy(Map<String, dynamic> formData) {
+  if (_cachedUserAddress.values.any((v) => v.isNotEmpty)) {
+    return Map<String, String>.from(_cachedUserAddress);
+  }
+  return resolveUserAddressFromFormData(formData);
+}
+
+String _stripFieldKeyPrefix(String key) =>
+    key.trim().replaceFirst(RegExp(r'^\$'), '');
+
+/// True when [s] looks like a field key (e.g. aadhar_address), not real address text.
+bool looksLikeAddressFieldKey(String s) {
+  final t = _stripFieldKeyPrefix(s);
+  if (t.isEmpty) return true;
+  if (t.contains(' ')) return false;
+  return RegExp(r'^[a-z][a-z0-9_]*$', caseSensitive: false).hasMatch(t);
+}
+
+/// Parses API `prepopulateValue` → source field name (e.g. aadhar_address).
+String? parsePrepopulateSourceFieldName(dynamic prepopulateValue) {
+  if (prepopulateValue == null) return null;
+  if (prepopulateValue is String) {
+    final s = prepopulateValue.trim();
+    if (s.isEmpty || s.toLowerCase() == 'select') return null;
+    return _stripFieldKeyPrefix(s);
+  }
+  if (prepopulateValue is List && prepopulateValue.isNotEmpty) {
+    final first = prepopulateValue.first;
+    if (first is Map) {
+      final v = first['value']?.toString() ?? first['label']?.toString();
+      if (v != null && v.trim().isNotEmpty) {
+        return _stripFieldKeyPrefix(v);
+      }
+    }
+  }
+  return null;
+}
+
+/// Index field name → value from formData, step fields, and full get-context payload.
+Map<String, String> buildFieldValueIndex({
+  required Map<String, dynamic> formData,
+  List<dynamic>? stepFields,
+  dynamic fieldsWithAuth,
+}) {
+  final index = <String, String>{};
+
+  void put(String? name, dynamic value) {
+    if (name == null) return;
+    final v = value?.toString().trim() ?? '';
+    if (v.isEmpty || looksLikeAddressFieldKey(v)) return;
+    index[name] = v;
+  }
+
+  for (final e in formData.entries) {
+    put(e.key.toString(), e.value);
+  }
+
+  if (stepFields != null) {
+    for (final f in stepFields) {
+      if (f is! Map) continue;
+      put(f['name']?.toString(), f['value']);
+    }
+  }
+
+  void walk(dynamic node, [int depth = 0]) {
+    if (depth > 20 || node == null) return;
+    if (node is Map) {
+      if (node.containsKey('name') && node.containsKey('value')) {
+        put(node['name']?.toString(), node['value']);
+      }
+      for (final v in node.values) {
+        walk(v, depth + 1);
+      }
+    } else if (node is List) {
+      for (final item in node) {
+        walk(item, depth + 1);
+      }
+    }
+  }
+
+  walk(fieldsWithAuth);
+  return index;
+}
+
+/// Resolves one nominee field using API `value` then `prepopulateValue` source lookup.
+String resolveNomineeTargetAddressValue({
+  required String targetFieldName,
+  required Map<String, dynamic> formData,
+  List<dynamic>? stepFields,
+  dynamic fieldsWithAuth,
+}) {
+  Map<dynamic, dynamic>? fieldDef;
+  if (stepFields != null) {
+    for (final f in stepFields) {
+      if (f is Map && f['name']?.toString() == targetFieldName) {
+        fieldDef = f;
+        break;
+      }
+    }
+  }
+
+  final index = buildFieldValueIndex(
+    formData: formData,
+    stepFields: stepFields,
+    fieldsWithAuth: fieldsWithAuth,
+  );
+
+  if (fieldDef != null) {
+    final ownValue = fieldDef['value']?.toString().trim() ?? '';
+    if (ownValue.isNotEmpty && !looksLikeAddressFieldKey(ownValue)) {
+      return ownValue;
+    }
+
+    final sourceKey = parsePrepopulateSourceFieldName(fieldDef['prepopulateValue']);
+    if (sourceKey != null) {
+      final resolved = index[sourceKey] ??
+          index['\$$sourceKey'] ??
+          formData[sourceKey]?.toString().trim();
+      if (resolved != null &&
+          resolved.isNotEmpty &&
+          !looksLikeAddressFieldKey(resolved)) {
+        return resolved;
+      }
+    }
+  }
+
+  return '';
+}
+
+/// Fill or clear nominee address using each field's API prepopulateValue mapping.
+void syncNomineeAddressFromSameAsCheckbox(
+  Map<String, dynamic> formData,
+  String checkboxName,
+  dynamic checkboxValue, {
+  List<dynamic>? stepFields,
+  dynamic fieldsWithAuth,
+}) {
+  final targets = kNomineeSameAsAddressGroups[checkboxName];
+  if (targets == null) return;
+
+  if (isCheckboxCheckedValue(checkboxValue)) {
+    for (final target in targets) {
+      final val = resolveNomineeTargetAddressValue(
+        targetFieldName: target,
+        formData: formData,
+        stepFields: stepFields,
+        fieldsWithAuth: fieldsWithAuth,
+      );
+      formData[target] = val;
+      debugPrint('[ConditionalForm] Same-as fill $target <- "$val"');
+    }
+  } else {
+    for (final target in targets) {
+      formData[target] = '';
+    }
+  }
+}
+
+/// On load: keep nominee address only when that nominee's checkbox is checked.
+void clearNomineeAddressesWhenUnchecked(Map<String, dynamic> formData) {
+  for (final entry in kNomineeSameAsAddressGroups.entries) {
+    if (!isCheckboxCheckedValue(formData[entry.key])) {
+      for (final field in entry.value) {
+        formData[field] = '';
+      }
+    }
+  }
+}
+
 /// Maps nominee address fields to user's address fields for prePopulate
 String? _getNomineeAddressSourceField(String nomineeField) {
   // Map nominee1_add1 -> add1, address_line1, current_add1, etc.
@@ -189,9 +687,11 @@ ConditionalFlowState evaluateConditionalFlowForField(
           state.formData[selected] = '';
           break;
         case 'prePopulate':
-          // Handle nominee address prePopulate (when value is empty, copy from user address)
           var prePopValue = action['value']?.toString() ?? '';
-          if (prePopValue.isEmpty) {
+          final triggerField = condition['field']?.toString() ?? '';
+          // Copy user address only for "same as my address" checkbox rules.
+          if (prePopValue.isEmpty &&
+              triggerField.contains('same_as_my_address')) {
             final sourceField = _getNomineeAddressSourceField(selected);
             if (sourceField != null) {
               prePopValue = _getAddressValue(formData, sourceField);
@@ -649,9 +1149,10 @@ ConditionalFlowState evaluateConditionalFlow(
           state.formData[selected] = '';
           break;
         case 'prePopulate':
-          // Handle nominee address prePopulate (when value is empty, copy from user address)
           var prePopValue = action['value']?.toString() ?? '';
-          if (prePopValue.isEmpty) {
+          final triggerField = condition['field']?.toString() ?? '';
+          if (prePopValue.isEmpty &&
+              triggerField.contains('same_as_my_address')) {
             final sourceField = _getNomineeAddressSourceField(selected);
             if (sourceField != null) {
               prePopValue = _getAddressValue(formData, sourceField);

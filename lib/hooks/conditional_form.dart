@@ -25,6 +25,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
 
   List<dynamic>? _fields;
   List<dynamic>? _conditionalFlow;
+  dynamic _fieldsWithAuthSnapshot;
   List<dynamic>? get fields => _fields;
   List<dynamic>? get conditionalFlow => _conditionalFlow;
 
@@ -32,10 +33,15 @@ class ConditionalFormNotifier extends ChangeNotifier {
       : _fields = fields,
         _conditionalFlow = conditionalFlow;
 
-  void updateFields(List<dynamic>? fields, List<dynamic>? conditionalFlow) {
+  void updateFields(
+    List<dynamic>? fields,
+    List<dynamic>? conditionalFlow, {
+    dynamic fieldsWithAuth,
+  }) {
     final fieldsChanged = !listEquals(_fields, fields) || !listEquals(_conditionalFlow, conditionalFlow);
     _fields = fields;
     _conditionalFlow = conditionalFlow;
+    if (fieldsWithAuth != null) _fieldsWithAuthSnapshot = fieldsWithAuth;
     
     if (fieldsChanged && fields != null) {
       // Set initial field values from API response
@@ -55,21 +61,46 @@ class ConditionalFormNotifier extends ChangeNotifier {
           final unset = current == null ||
               (current is String && current.trim().isEmpty);
           if (!formData.containsKey(name) || unset) {
-            formData[name] = f['type'] == 'checkbox' ? (val == true) : val;
+            final type = f['type']?.toString().toLowerCase();
+            formData[name] = type == 'checkbox'
+                ? isCheckboxCheckedValue(val)
+                : val;
           }
         }
       }
+
+      refreshUserAddressCache(
+        formData: formData,
+        fieldsWithAuth: _fieldsWithAuthSnapshot ?? fieldsWithAuth,
+        stepFields: fields,
+      );
+
+      // Nominee address: only keep values when "same as my address" is checked.
+      clearNomineeAddressesWhenUnchecked(formData);
       
       // Apply initial conditional flow for all fields with values
       // This ensures correct initial visibility based on pre-filled data
       debugPrint('[ConditionalForm] Applying initial conditional flow for ${watchedFields.length} watched fields');
       for (final watchedField in watchedFields) {
+        if (isNomineeSameAsMyAddressCheckbox(watchedField)) continue;
         final fieldValue = formData[watchedField];
         // Evaluate if field has a truthy value OR if it's explicitly false/empty (for checkbox "No" cases)
         if (formData.containsKey(watchedField) && 
             (fieldValue != null || fieldValue == false || fieldValue == '')) {
           debugPrint('[ConditionalForm] Evaluating initial state for: $watchedField = ${formData[watchedField]}');
           _applyConditionalLogic(watchedField);
+        }
+      }
+
+      for (final entry in kNomineeSameAsAddressGroups.entries) {
+        if (isCheckboxCheckedValue(formData[entry.key])) {
+          syncNomineeAddressFromSameAsCheckbox(
+            formData,
+            entry.key,
+            formData[entry.key],
+            stepFields: fields,
+            fieldsWithAuth: _fieldsWithAuthSnapshot ?? fieldsWithAuth,
+          );
         }
       }
       
@@ -87,6 +118,8 @@ class ConditionalFormNotifier extends ChangeNotifier {
     validationToastMessage = null;
     fieldVisibility = {};
     fieldEditable = {};
+    clearUserAddressCache();
+    _fieldsWithAuthSnapshot = null;
     notifyListeners();
   }
 
@@ -151,7 +184,17 @@ class ConditionalFormNotifier extends ChangeNotifier {
     if (type != 'checkbox' && type != 'file' && value != null) {
       processedValue = _processValue(name, value, type, validationType, validateWith);
     }
+    if (type == 'checkbox') {
+      processedValue = isCheckboxCheckedValue(processedValue);
+    }
     formData[name] = processedValue;
+
+    refreshUserAddressCache(
+      formData: formData,
+      fieldsWithAuth: _fieldsWithAuthSnapshot,
+      stepFields: _fields,
+    );
+
     if (validateWith != null && validateWith.isNotEmpty && value != formData[validateWith]) {
       // Get displayName from the validateWith field if available, otherwise format the key
       String label = validateWith.replaceAll('_', ' ');
@@ -173,6 +216,18 @@ class ConditionalFormNotifier extends ChangeNotifier {
       errors.remove(name);
     }
     _applyConditionalLogic(name);
+
+    // Run after conditional flow so empty/prePopulate rules cannot wipe the copy.
+    if (isNomineeSameAsMyAddressCheckbox(name)) {
+      syncNomineeAddressFromSameAsCheckbox(
+        formData,
+        name,
+        formData[name],
+        stepFields: _fields,
+        fieldsWithAuth: _fieldsWithAuthSnapshot,
+      );
+    }
+
     notifyListeners();
   }
 
@@ -201,11 +256,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
     
     // Update form data (empty, prePopulate, true, false actions)
     for (final e in state.formData.entries) {
-      // Only update if value has actually changed from actions
-      if (e.key != fieldName && formData[e.key] != e.value) {
-        debugPrint('[ConditionalForm] Action updated field: ${e.key} = ${e.value}');
-        formData[e.key] = e.value;
-      }
+      if (e.key == fieldName || formData[e.key] == e.value) continue;
+      // Nominee address copy/clear is handled only via same-as checkbox sync.
+      if (isNomineeAddressTargetField(e.key)) continue;
+      debugPrint('[ConditionalForm] Action updated field: ${e.key} = ${e.value}');
+      formData[e.key] = e.value;
     }
   }
 
