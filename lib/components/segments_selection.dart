@@ -66,19 +66,27 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     final wasEnabled = _getValue(name);
     final willEnable = _coerceBool(value);
 
-    widget.onChange(name, value);
-
-    // OFF -> ON transition on NSE FO / BSE FO: show financial documents reminder.
+    // NSE FO / BSE FO: show reminder first; tick only after user taps OK.
     if (_foKeys.contains(name) && !wasEnabled && willEnable) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _showFoFinancialDocsModal();
-      });
+      _promptFoEnable(name);
+      return;
     }
+
+    widget.onChange(name, value);
   }
 
-  Future<void> _showFoFinancialDocsModal() {
-    return showDialog<void>(
+  Future<void> _promptFoEnable(String name) async {
+    final confirmed = await _showFoFinancialDocsModal();
+    if (!mounted || confirmed != true) return;
+    // Apply after dialog closes so we don't notify during the pop frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.onChange(name, true);
+    });
+  }
+
+  Future<bool?> _showFoFinancialDocsModal() {
+    return showDialog<bool>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) {
@@ -116,7 +124,7 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: ElevatedButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
+                    onPressed: () => Navigator.of(ctx).pop(true),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: KycTheme.buttonEnabledPurple,
                       foregroundColor: Colors.white,

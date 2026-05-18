@@ -1,11 +1,22 @@
 import 'package:meon_kyc/utils/conditional_flow.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 
-String? _required(dynamic value, String fieldName) {
+String? _required(dynamic value, dynamic fieldLabel) {
   if (value == null || value.toString().trim().isEmpty) {
-    return '$fieldName is required';
+    final label = fieldLabel?.toString().trim();
+    if (label != null && label.isNotEmpty) {
+      return '$label is required';
+    }
+    return 'This field is required';
   }
   return null;
+}
+
+bool _isMandatoryField(Map<dynamic, dynamic> field) {
+  final m = field['mandatory'];
+  if (m == true || m == 1) return true;
+  final s = m?.toString().trim().toLowerCase();
+  return s == 'true' || s == 'yes' || s == '1';
 }
 
 // String? _mobile(dynamic value) {
@@ -156,15 +167,25 @@ List<String> validateFieldWithConditions(
   String? pageLabel,
 }) {
   final errors = <String>[];
+  final displayName =
+      field['displayName'] ?? field['name'] ?? 'This field';
   final reqOverride = fieldRequirements[field['name']];
   final isRequired = reqOverride ??
-      (field['mandatory'] == true || _panModuleRequiredField(field, position, pageLabel));
+      (_isMandatoryField(field) || _panModuleRequiredField(field, position, pageLabel));
 
   if (isRequired) {
-    final err = _required(value, field['displayName'] ?? field['name'] ?? 'Field');
-    if (err != null) {
-      errors.add(err);
-      return errors;
+    final fieldType = field['type']?.toString().toLowerCase();
+    if (fieldType == 'checkbox') {
+      if (!isCheckboxCheckedValue(value)) {
+        errors.add('$displayName is required');
+        return errors;
+      }
+    } else {
+      final err = _required(value, displayName);
+      if (err != null) {
+        errors.add(err);
+        return errors;
+      }
     }
   }
 

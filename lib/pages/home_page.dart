@@ -90,6 +90,7 @@ class _HomePageState extends State<HomePage> {
   /// Segments step only: user must open brokerage dialog and tap Done — never default-apply.
   String? _segmentsBrokerageStepKey;
   bool _segmentsBrokerageUserConfirmed = false;
+  String? _segmentsBpDefaultsStepKey;
 
   @override
   void initState() {
@@ -3654,30 +3655,39 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    // BP Wealth segments: NSE Cash, BSE Cash, MF are mandatory (cannot untick).
-    // Other segments default to on when unset only — do not re-tick everything on rebuild.
+    // BP Wealth segment defaults — never call handleChange during build (causes freeze).
     if (isSegmentsScreen && widget.company.toLowerCase() == 'bpwealth') {
-      const mandatorySegmentKeys = <String>['nse_cash', 'bse_cash', 'mf'];
-      const optionalDefaultKeys = <String>['nse_fo', 'nse_slbm', 'bse_fo'];
-      var didApplyDefaults = false;
-      for (final key in mandatorySegmentKeys) {
-        if (_formNotifier.formData[key] != true) {
-          _formNotifier.handleChange(key, true);
-          didApplyDefaults = true;
-        }
+      final pageId = ctx?['page']?['id']?.toString() ?? '';
+      final defaultsStepKey = '${position ?? ''}|$pageId';
+      if (defaultsStepKey != _segmentsBpDefaultsStepKey) {
+        _segmentsBpDefaultsStepKey = defaultsStepKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (_segmentsBpDefaultsStepKey != defaultsStepKey) return;
+          const mandatorySegmentKeys = <String>['nse_cash', 'bse_cash', 'mf'];
+          const optionalDefaultKeys = <String>['nse_fo', 'nse_slbm', 'bse_fo'];
+          var didApplyDefaults = false;
+          for (final key in mandatorySegmentKeys) {
+            if (_formNotifier.formData[key] != true) {
+              _formNotifier.handleChange(key, true);
+              didApplyDefaults = true;
+            }
+          }
+          for (final key in optionalDefaultKeys) {
+            if (_formNotifier.formData[key] == null) {
+              _formNotifier.handleChange(key, true);
+              didApplyDefaults = true;
+            }
+          }
+          if (didApplyDefaults) {
+            debugPrint('[HomePage] Applied segment defaults for bpwealth');
+          }
+        });
       }
-      for (final key in optionalDefaultKeys) {
-        if (_formNotifier.formData[key] == null) {
-          _formNotifier.handleChange(key, true);
-          didApplyDefaults = true;
-        }
-      }
-      if (didApplyDefaults) {
-        debugPrint('[HomePage] Applied segment defaults for bpwealth');
-      }
+    } else if (_segmentsBpDefaultsStepKey != null) {
+      _segmentsBpDefaultsStepKey = null;
     }
 
-    
     // Show segments selection UI for segments screen
     if (isSegmentsScreen) {
       return Container(

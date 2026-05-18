@@ -1085,8 +1085,9 @@ List<dynamic> getVisibleFields(
       if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) return false;
       return show;
     }
-    final visible = fieldVisibility[name] ?? true;
-    return show && visible;
+    // Match home_page: conditional flow override wins over fieldShow.
+    final dynamicVisibility = fieldVisibility[name];
+    return dynamicVisibility ?? show;
   }).toList();
 }
 

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
@@ -149,7 +150,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
       }
       if (_textController!.text != textValue) {
-        _textController!.text = textValue;
+        _setControllerTextAfterBuild(_textController!, textValue);
       }
     } else if (widget.type == 'number' && _numberController != null) {
       var textValue = newValue;
@@ -158,16 +159,34 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
       }
       if (_numberController!.text != textValue) {
-        _numberController!.text = textValue;
+        _setControllerTextAfterBuild(_numberController!, textValue);
       }
     } else if (widget.type == 'textarea' && _textareaController != null) {
       if (_textareaController!.text != newValue) {
-        _textareaController!.text = newValue;
+        _setControllerTextAfterBuild(_textareaController!, newValue);
       }
     } else if (widget.type == 'password' && _passwordController != null) {
       if (_passwordController!.text != newValue) {
-        _passwordController!.text = newValue;
+        _setControllerTextAfterBuild(_passwordController!, newValue);
       }
+    }
+  }
+
+  /// Avoid FormFieldState.didChange → setState during an active build.
+  void _setControllerTextAfterBuild(TextEditingController controller, String text) {
+    void apply() {
+      if (!mounted) return;
+      if (controller.text != text) {
+        controller.text = text;
+      }
+    }
+
+    final phase = WidgetsBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      apply();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => apply());
     }
   }
 
