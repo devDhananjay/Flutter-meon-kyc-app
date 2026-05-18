@@ -306,19 +306,20 @@ class ConditionalFormNotifier extends ChangeNotifier {
       runtimeFieldVisibility: fieldVisibility,
     );
 
-    final nomineePctError = validateNomineePercentageTotal(
-      fields: _fields,
-      formData: formData,
-      runtimeFieldVisibility: fieldVisibility,
-      company: company,
-      position: position,
-      pageLabel: pageLabel,
-    );
-    if (nomineePctError != null) {
-      validationToastMessage = nomineePctError;
-      notifyListeners();
-      return false;
-    }
+    // TODO(nominee-percentage): Re-enable when app should require total nominee share = 100%.
+    // final nomineePctError = validateNomineePercentageTotal(
+    //   fields: _fields,
+    //   formData: formData,
+    //   runtimeFieldVisibility: fieldVisibility,
+    //   company: company,
+    //   position: position,
+    //   pageLabel: pageLabel,
+    // );
+    // if (nomineePctError != null) {
+    //   validationToastMessage = nomineePctError;
+    //   notifyListeners();
+    //   return false;
+    // }
 
     notifyListeners();
     return errors.isEmpty;

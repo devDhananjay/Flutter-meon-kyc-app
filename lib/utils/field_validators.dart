@@ -245,87 +245,89 @@ List<String> validateFieldWithConditions(
   return errors;
 }
 
-bool isNomineeKycStep(String? position, String? pageLabel) {
-  final p = (position ?? '').toLowerCase();
-  final l = (pageLabel ?? '').toLowerCase();
-  return p == 'nominee' || l == 'nominee';
-}
-
-bool _addNomineeSelectedYes(Map<String, dynamic> formData) {
-  final v = formData['add_nominee']?.toString().trim().toLowerCase();
-  return v == 'yes' || v == 'y';
-}
-
-bool _kycFieldVisibleLikeHomePage(
-  Map<dynamic, dynamic> field,
-  Map<String, bool> runtimeFieldVisibility, {
-  String? company,
-  String? position,
-  String? pageLabel,
-}) {
-  final name = field['name']?.toString();
-  final initialShow = kycFieldVisibleForFormStep(
-    field,
-    company: company,
-    position: position,
-    pageLabel: pageLabel,
-  );
-  final dynamicVisibility = runtimeFieldVisibility[name];
-  return dynamicVisibility ?? initialShow;
-}
-
-const Set<String> _nomineePercentageFieldNames = {
-  'nominee_1_percentage',
-  'nominee_2_percentage',
-  'nominee_3_percentage',
-};
-
-/// Sum of visible nominee percentage fields must equal 100 when user adds nominees.
-String? validateNomineePercentageTotal({
-  required List<dynamic>? fields,
-  required Map<String, dynamic> formData,
-  required Map<String, bool> runtimeFieldVisibility,
-  String? company,
-  String? position,
-  String? pageLabel,
-}) {
-  if (!isNomineeKycStep(position, pageLabel)) return null;
-  if (!_addNomineeSelectedYes(formData)) return null;
-  if (fields == null) return null;
-
-  var total = 0.0;
-  var hasVisiblePercentageField = false;
-
-  for (final f in fields) {
-    if (f is! Map) continue;
-    final name = f['name']?.toString();
-    if (name == null || !_nomineePercentageFieldNames.contains(name)) continue;
-
-    if (!_kycFieldVisibleLikeHomePage(
-      f,
-      runtimeFieldVisibility,
-      company: company,
-      position: position,
-      pageLabel: pageLabel,
-    )) {
-      continue;
-    }
-
-    hasVisiblePercentageField = true;
-    final raw = formData[name];
-    if (raw == null || raw.toString().trim().isEmpty) continue;
-    final parsed = double.tryParse(
-      raw.toString().replaceAll(RegExp(r'[^0-9.]'), ''),
-    );
-    if (parsed != null) total += parsed;
-  }
-
-  if (!hasVisiblePercentageField) return null;
-  if ((total - 100).abs() > 0.001) {
-    return 'Total nominee share must equal 100%';
-  }
-  return null;
-}
+// --- Nominee percentage total = 100% (disabled for now; uncomment to re-enable) ---
+//
+// bool isNomineeKycStep(String? position, String? pageLabel) {
+//   final p = (position ?? '').toLowerCase();
+//   final l = (pageLabel ?? '').toLowerCase();
+//   return p == 'nominee' || l == 'nominee';
+// }
+//
+// bool _addNomineeSelectedYes(Map<String, dynamic> formData) {
+//   final v = formData['add_nominee']?.toString().trim().toLowerCase();
+//   return v == 'yes' || v == 'y';
+// }
+//
+// bool _kycFieldVisibleLikeHomePage(
+//   Map<dynamic, dynamic> field,
+//   Map<String, bool> runtimeFieldVisibility, {
+//   String? company,
+//   String? position,
+//   String? pageLabel,
+// }) {
+//   final name = field['name']?.toString();
+//   final initialShow = kycFieldVisibleForFormStep(
+//     field,
+//     company: company,
+//     position: position,
+//     pageLabel: pageLabel,
+//   );
+//   final dynamicVisibility = runtimeFieldVisibility[name];
+//   return dynamicVisibility ?? initialShow;
+// }
+//
+// const Set<String> _nomineePercentageFieldNames = {
+//   'nominee_1_percentage',
+//   'nominee_2_percentage',
+//   'nominee_3_percentage',
+// };
+//
+// /// Sum of visible nominee percentage fields must equal 100 when user adds nominees.
+// String? validateNomineePercentageTotal({
+//   required List<dynamic>? fields,
+//   required Map<String, dynamic> formData,
+//   required Map<String, bool> runtimeFieldVisibility,
+//   String? company,
+//   String? position,
+//   String? pageLabel,
+// }) {
+//   if (!isNomineeKycStep(position, pageLabel)) return null;
+//   if (!_addNomineeSelectedYes(formData)) return null;
+//   if (fields == null) return null;
+//
+//   var total = 0.0;
+//   var hasVisiblePercentageField = false;
+//
+//   for (final f in fields) {
+//     if (f is! Map) continue;
+//     final name = f['name']?.toString();
+//     if (name == null || !_nomineePercentageFieldNames.contains(name)) continue;
+//
+//     if (!_kycFieldVisibleLikeHomePage(
+//       f,
+//       runtimeFieldVisibility,
+//       company: company,
+//       position: position,
+//       pageLabel: pageLabel,
+//     )) {
+//       continue;
+//     }
+//
+//     hasVisiblePercentageField = true;
+//     final raw = formData[name];
+//     if (raw == null || raw.toString().trim().isEmpty) continue;
+//     final parsed = double.tryParse(
+//       raw.toString().replaceAll(RegExp(r'[^0-9.]'), ''),
+//     );
+//     if (parsed != null) total += parsed;
+//   }
+//
+//   if (!hasVisiblePercentageField) return null;
+//   if ((total - 100).abs() > 0.001) {
+//     return 'Total nominee share must equal 100%';
+//   }
+//   return null;
+// }
 
 Map<String, String> validateFormWithConditions(
   List<dynamic>? fields,

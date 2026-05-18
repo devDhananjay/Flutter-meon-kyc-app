@@ -197,6 +197,8 @@ const Map<String, List<String>> _userAddressAliases = {
   ],
   'city': [
     'city',
+    'aadhar_dist',
+    'aadhar_city',
     'user_city',
     'perm_city',
     'permanent_city',
@@ -215,6 +217,7 @@ const Map<String, List<String>> _userAddressAliases = {
   ],
   'country': [
     'country',
+    'aadhar_country',
     'user_country',
     'perm_country',
     'permanent_country',
@@ -436,11 +439,33 @@ String _stripFieldKeyPrefix(String key) =>
     key.trim().replaceFirst(RegExp(r'^\$'), '');
 
 /// True when [s] looks like a field key (e.g. aadhar_address), not real address text.
+/// Single-word values like "Pilibhit" or "India" are real city/country names, not keys.
 bool looksLikeAddressFieldKey(String s) {
   final t = _stripFieldKeyPrefix(s);
   if (t.isEmpty) return true;
   if (t.contains(' ')) return false;
-  return RegExp(r'^[a-z][a-z0-9_]*$', caseSensitive: false).hasMatch(t);
+  final lower = t.toLowerCase();
+  const bareComponentKeys = {
+    'add1',
+    'add2',
+    'city',
+    'state',
+    'country',
+    'pincode',
+    'address',
+    'dist',
+    'district',
+  };
+  if (bareComponentKeys.contains(lower)) return true;
+  if (t.contains('_')) return true;
+  if (lower.startsWith('aadhar') ||
+      lower.startsWith('nominee') ||
+      lower.startsWith('guardian') ||
+      lower.startsWith('perm_') ||
+      lower.startsWith('corr_')) {
+    return true;
+  }
+  return false;
 }
 
 /// Parses API `prepopulateValue` → source field name (e.g. aadhar_address).
