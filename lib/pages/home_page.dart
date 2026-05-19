@@ -72,6 +72,9 @@ class _HomePageState extends State<HomePage> {
   bool _backLoading = false;
   String _submitError = '';
   String _submitSuccess = '';
+  /// PAN step (`pan10`): last `kyc-post-v2` `msg` / `message` from API (shown on form).
+  String _panStepApiFeedback = '';
+  bool _panStepApiFeedbackIsError = false;
   bool _termsAccepted = false; // Terms & Conditions checkbox (mobile step)
   bool _showTermsError = false; // Show validation message under T&C checkbox
   bool _showMobileError = false; // Show error below mobile input when invalid on submit
@@ -1242,10 +1245,14 @@ class _HomePageState extends State<HomePage> {
       panPos = (workflow?['position']?.toString() ?? panPos).toLowerCase();
       panLbl = (workflow?['data']?['label']?.toString() ?? panLbl).toLowerCase();
     }
+    // PAN verify POST: API expects yyyy-MM-dd for pan_dob_for_match; UI remains dd/MM/yyyy.
+    // `name` must be UPPERCASE on this step (live web parity).
     if (_useDdMmYyyyPanDateStep(panPos, panLbl)) {
-      for (final key in ['pan_dob_for_match', 'dob']) {
-        final ddMm = tryFormatKycDateValueAsDdMmYyyy(data[key]);
-        if (ddMm != null) data[key] = ddMm;
+      final apiPanDob = tryFormatKycPanDobForMatchApi(data['pan_dob_for_match']);
+      if (apiPanDob != null) data['pan_dob_for_match'] = apiPanDob;
+      final rawName = data['name']?.toString();
+      if (rawName != null && rawName.trim().isNotEmpty) {
+        data['name'] = rawName.toUpperCase();
       }
     }
     final position = ctx?['position']?.toString()?.toLowerCase();
@@ -1578,6 +1585,36 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  bool _isPanKycStep(String? position, String? pageLabel) {
+    return _useDdMmYyyyPanDateStep(position, pageLabel);
+  }
+
+  /// `kyc-post-v2` body: prefer API `msg` / `message` as returned (e.g. PAN step).
+  static String? _kycPostV2UserMessage(Map<String, dynamic>? body) {
+    if (body == null) return null;
+    for (final key in ['msg', 'message', 'error']) {
+      final v = body[key];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+    }
+    return null;
+  }
+
+  void _showPanStepKycPostFeedback(String message, {required bool isError}) {
+    if (!mounted) return;
+    setState(() {
+      _panStepApiFeedback = message;
+      _panStepApiFeedbackIsError = isError;
+    });
+    Fluttertoast.showToast(
+      msg: message,
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor:
+          isError ? Colors.red.shade700 : Colors.green.shade700,
+      textColor: Colors.white,
+    );
+  }
+
   /// Extract user-facing error message from API response body.
   /// Supports common keys: msg, message, error, detail (string or list).
   static String _errorMessageFromResponse(int statusCode, String bodyStr) {
@@ -1761,6 +1798,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _handleCommonSubmit(bool skipValidation) async {
     debugPrint('[HomePage] _handleCommonSubmit CALLED - skipValidation=$skipValidation');
     final store = context.read<AppStore>();
+    _panStepApiFeedback = '';
+    _panStepApiFeedbackIsError = false;
 
     // Enforce Terms & Conditions on mobile step for authenticated flows
     if (!skipValidation) {
@@ -2001,8 +2040,18 @@ class _HomePageState extends State<HomePage> {
       } catch (_) {
         body = null;
       }
+      final currentPageLabel =
+          ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+      final isPanStep = _isPanKycStep(currentPosition, currentPageLabel) ||
+          lowerPath.startsWith('pan');
       final isSuccess = res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true;
       if (isSuccess) {
+        if (isPanStep) {
+          final apiMsg = _kycPostV2UserMessage(body);
+          if (apiMsg != null && apiMsg.isNotEmpty) {
+            _showPanStepKycPostFeedback(apiMsg, isError: false);
+          }
+        }
         await _afterKycPostV2Success(store, body, data);
       } else if (res.statusCode >= 200 &&
           res.statusCode < 300 &&
@@ -2045,8 +2094,13 @@ class _HomePageState extends State<HomePage> {
           if (mounted) setState(() => _submitLoading = false);
         }
       } else {
-        final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
-        Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
+        final errMsg = _kycPostV2UserMessage(body) ??
+            _errorMessageFromResponse(res.statusCode, res.body);
+        if (isPanStep) {
+          _showPanStepKycPostFeedback(errMsg, isError: true);
+        } else {
+          Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
+        }
         if (mounted) setState(() => _submitLoading = false);
       }
     } catch (e) {
@@ -3898,6 +3952,35 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_isPanKycStep(position, pageLabel) &&
+                _panStepApiFeedback.trim().isNotEmpty) ...[
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _panStepApiFeedbackIsError
+                      ? Colors.red.shade50
+                      : Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _panStepApiFeedbackIsError
+                        ? Colors.red.shade300
+                        : Colors.green.shade300,
+                  ),
+                ),
+                child: Text(
+                  _panStepApiFeedback,
+                  style: TextStyle(
+                    color: _panStepApiFeedbackIsError
+                        ? Colors.red.shade900
+                        : Colors.green.shade900,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
             if (hasAadharImage) ...[
               const SizedBox(height: 8),
               ClipRRect(

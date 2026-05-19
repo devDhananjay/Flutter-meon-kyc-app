@@ -27,6 +27,40 @@ String? tryFormatKycDateValueAsDdMmYyyy(dynamic value) {
   return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
 
+/// Parses slash dates as **day/month/year** (matches PAN step UI `dd/MM/yyyy`).
+DateTime? parseKycDateValueAsDdMmYyyy(dynamic value) {
+  if (value == null) return null;
+  final s = value.toString().trim();
+  if (s.isEmpty) return null;
+  final iso = DateTime.tryParse(s.replaceAll('/', '-'));
+  if (iso != null) return DateTime(iso.year, iso.month, iso.day);
+  final m = RegExp(r'^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$').firstMatch(s);
+  if (m == null) return null;
+  final day = int.tryParse(m.group(1)!);
+  final month = int.tryParse(m.group(2)!);
+  final year = int.tryParse(m.group(3)!);
+  if (day == null || month == null || year == null) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return DateTime(year, month, day);
+}
+
+/// PAN verify `kyc-post-v2` (`pan10`): API expects **`yyyy-MM-dd`** (e.g. `2005-11-05`).
+/// UI stays `dd/MM/yyyy`; only the POST body uses this ISO format.
+String? tryFormatKycPanDobForMatchApi(dynamic value) {
+  final s = value?.toString().trim() ?? '';
+  if (s.isEmpty) return null;
+  final DateTime? d;
+  if (RegExp(r'^\d{4}-\d{2}-\d{2}').hasMatch(s)) {
+    d = parseKycDateValue(value);
+  } else {
+    d = parseKycDateValueAsDdMmYyyy(value) ?? parseKycDateValue(value);
+  }
+  if (d == null) return null;
+  return '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+}
+
 DateTime _subtractYearsFromDate(DateTime from, int years) {
   if (years <= 0) return from;
   final targetYear = from.year - years;
