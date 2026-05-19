@@ -91,6 +91,8 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
       barrierDismissible: true,
       builder: (ctx) {
         return Dialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
@@ -316,49 +318,46 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     required void Function(bool) onChanged,
     bool locked = false,
   }) {
-    return Opacity(
-      opacity: locked ? 0.92 : 1,
-      child: InkWell(
-        onTap: locked ? null : () => onChanged(!value),
-        borderRadius: BorderRadius.circular(8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: 22,
-              height: 22,
-              decoration: BoxDecoration(
-                color: value ? KycTheme.buttonEnabledPurple : Colors.transparent,
-                border: Border.all(
-                  color: KycTheme.buttonEnabledPurple,
-                  width: 2,
-                ),
-                borderRadius: BorderRadius.circular(6),
+    // Locked (mandatory) segments: tick stays on, but visually match the
+    // enabled segments — same colors, same text weight (no greyed-out look).
+    return InkWell(
+      onTap: locked ? null : () => onChanged(!value),
+      borderRadius: BorderRadius.circular(8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              color: value ? KycTheme.buttonEnabledPurple : Colors.transparent,
+              border: Border.all(
+                color: KycTheme.buttonEnabledPurple,
+                width: 2,
               ),
-              child: value
-                  ? const Icon(
-                      Icons.check,
-                      size: 12,
-                      color: Colors.white,
-                    )
-                  : null,
+              borderRadius: BorderRadius.circular(6),
             ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: locked
-                      ? KycTheme.textSecondary
-                      : KycTheme.textPrimary,
-                ),
+            child: value
+                ? const Icon(
+                    Icons.check,
+                    size: 12,
+                    color: Colors.white,
+                  )
+                : null,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: KycTheme.textPrimary,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

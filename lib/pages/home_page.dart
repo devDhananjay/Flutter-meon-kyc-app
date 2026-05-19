@@ -889,6 +889,8 @@ class _HomePageState extends State<HomePage> {
           height: 1.45,
         );
         return Dialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),

@@ -361,7 +361,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     );
   }
 
-  /// Matches app [InputDecorationTheme] — disabled/read-only fields keep rounded corners.
+  /// Matches app [InputDecorationTheme] — disabled/read-only fields keep the same
+  /// visual styling as editable fields (same fill, border, label colors). Editability
+  /// is controlled at the form-control level (`readOnly` / `enabled`), not via colors.
   InputDecoration _fieldInputDecoration({
     String? hintText,
     Widget? prefixIcon,
@@ -370,7 +372,6 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     String? counterText,
     bool alignLabelWithHint = false,
   }) {
-    final readOnlyLook = widget.disable;
     return InputDecoration(
       hintText: hintText,
       prefixIcon: prefixIcon,
@@ -379,7 +380,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       counterText: counterText,
       alignLabelWithHint: alignLabelWithHint,
       filled: true,
-      fillColor: readOnlyLook ? const Color(0xFFF1F5F9) : KycTheme.surface,
+      fillColor: KycTheme.surface,
       border: _outlineFieldBorder(),
       enabledBorder: _outlineFieldBorder(),
       focusedBorder: _outlineFieldBorder(color: KycTheme.primary, width: 2),
@@ -388,6 +389,14 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       focusedErrorBorder: _outlineFieldBorder(color: Colors.red, width: 2),
     );
   }
+
+  /// Disabled `TextFormField`s lose their text color via the Material theme;
+  /// force the regular primary text color so read-only fields look identical
+  /// to editable ones (DigiLocker, KRA review, etc.).
+  static const TextStyle _kFieldTextStyle = TextStyle(
+    fontSize: 16,
+    color: KycTheme.textPrimary,
+  );
 
   Widget _buildText() {
     if (_textController == null) {
@@ -412,6 +421,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           enabled: !widget.disable,
           readOnly: widget.disable,
           showCursor: !widget.disable,
+          style: _kFieldTextStyle,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
           textCapitalization:
               _isPanField ? TextCapitalization.characters : TextCapitalization.none,
@@ -478,6 +488,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           enabled: !widget.disable,
           readOnly: widget.disable,
           showCursor: !widget.disable,
+          style: _kFieldTextStyle,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.number,
           maxLength: _isMobileField ? 10 : null,
           inputFormatters: _isMobileField
@@ -510,6 +521,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           enabled: !widget.disable,
           readOnly: widget.disable,
           showCursor: !widget.disable,
+          style: _kFieldTextStyle,
           maxLines: widget.rows ?? 3,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: _fieldInputDecoration(
@@ -532,6 +544,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         TextFormField(
           controller: _passwordController,
           obscureText: !_showPassword,
+          style: _kFieldTextStyle,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: _fieldInputDecoration(
             hintText: '${widget.displayName}',
@@ -610,6 +623,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           decoration: _fieldInputDecoration(hintText: widget.displayName),
           hint: Text(widget.displayName),
           isExpanded: true, // Prevents overflow by expanding to available width
+          style: _kFieldTextStyle,
+          iconEnabledColor: KycTheme.textSecondary,
+          iconDisabledColor: KycTheme.textSecondary,
           items: entries
               .map(
                 (e) => DropdownMenuItem<String>(
@@ -618,6 +634,21 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                     e.value,
                     overflow: TextOverflow.ellipsis, // Truncate long text with ...
                     maxLines: 1,
+                  ),
+                ),
+              )
+              .toList(),
+          // selectedItemBuilder forces the closed-state label to use full primary color
+          // even when [onChanged] is null (disabled), so read-only dropdowns don't appear greyed.
+          selectedItemBuilder: (ctx) => entries
+              .map(
+                (e) => Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    e.value,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    style: _kFieldTextStyle,
                   ),
                 ),
               )
@@ -668,8 +699,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               style: TextStyle(
                 color: widget.value != null &&
                         widget.value.toString().trim().isNotEmpty
-                    ? (widget.disable ? KycTheme.textSecondary : null)
+                    ? KycTheme.textPrimary
                     : Colors.grey,
+                fontSize: 16,
               ),
             ),
           ),
