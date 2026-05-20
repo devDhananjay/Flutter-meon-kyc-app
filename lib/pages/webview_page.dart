@@ -536,7 +536,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     return false;
   }
 
-  static const Duration _defaultLoadTimeout = Duration(seconds: 15);
+  static const Duration _defaultLoadTimeout = Duration(seconds: 25);
   static const Duration _esignLoadTimeout = Duration(seconds: 45);
 
   /// Starts hint timers and a timeout. Call on every `onLoadStart`; cancel on `onLoadStop`.

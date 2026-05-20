@@ -32,6 +32,7 @@ import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -1604,6 +1605,8 @@ class _HomePageState extends State<HomePage> {
 
   void _showPanStepKycPostFeedback(String message, {required bool isError}) {
     if (!mounted) return;
+    // API often returns message "working" on success — not user-facing copy.
+    if (message.trim().toLowerCase() == 'working') return;
     setState(() {
       _panStepApiFeedback = message;
       _panStepApiFeedbackIsError = isError;
@@ -3318,6 +3321,32 @@ class _HomePageState extends State<HomePage> {
   static const String _kBpWealthTariffPdfUrl =
       'https://ekyc.stoxbox.in/static/static_upload_files/bpwealth/organized%20(19).pdf';
 
+  /// Pre-downloaded tariff PDF for personal_details "View" (faster than Google viewer).
+  Future<File>? _bpWealthTariffPdfCacheFuture;
+
+  void _ensureBpWealthTariffPdfCached() {
+    _bpWealthTariffPdfCacheFuture ??= _downloadBpWealthTariffPdfToCache();
+  }
+
+  Future<File> _downloadBpWealthTariffPdfToCache() async {
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/bpwealth_tariff_plan.pdf');
+    try {
+      if (await file.exists()) {
+        final len = await file.length();
+        if (len > 0) return file;
+      }
+    } catch (_) {}
+    final res = await http
+        .get(Uri.parse(_kBpWealthTariffPdfUrl))
+        .timeout(const Duration(seconds: 60));
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw HttpException('Tariff PDF download failed (${res.statusCode})');
+    }
+    await file.writeAsBytes(res.bodyBytes, flush: true);
+    return file;
+  }
+
   /// Direct PDF URLs often render blank in Android [WebView]; Google viewer embed is reliable.
   static Uri _bpWealthTariffPdfEmbeddedViewerUri() {
     final raw = Uri.parse(_kBpWealthTariffPdfUrl);
@@ -3334,6 +3363,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showBpWealthTariffPdfModal() {
+    _ensureBpWealthTariffPdfCached();
     final viewerUri = _bpWealthTariffPdfEmbeddedViewerUri();
     final mq = MediaQuery.of(context);
     final h = mq.size.height * 0.85;
@@ -3343,6 +3373,7 @@ class _HomePageState extends State<HomePage> {
       barrierDismissible: true,
       builder: (ctx) => _BpWealthTariffPdfDialog(
         viewerUri: viewerUri,
+        localPdfFuture: _bpWealthTariffPdfCacheFuture!,
         width: w,
         height: h,
         onOpenExternal: _openBpWealthTariffPdfExternally,
@@ -3364,6 +3395,9 @@ class _HomePageState extends State<HomePage> {
     required String? pageLabel,
     required Map? ctx,
   }) {
+    // Start PDF download early so "View" opens faster when tapped.
+    _ensureBpWealthTariffPdfCached();
+
     final maps = visibleFieldsForDisplay
         .whereType<Map>()
         .map((e) => Map<dynamic, dynamic>.from(e))
@@ -4726,12 +4760,14 @@ class _HomePageState extends State<HomePage> {
 /// BP Wealth personal details — tariff PDF in a dialog with loader until WebView settles.
 class _BpWealthTariffPdfDialog extends StatefulWidget {
   final Uri viewerUri;
+  final Future<File> localPdfFuture;
   final double width;
   final double height;
   final Future<void> Function() onOpenExternal;
 
   const _BpWealthTariffPdfDialog({
     required this.viewerUri,
+    required this.localPdfFuture,
     required this.width,
     required this.height,
     required this.onOpenExternal,
@@ -4750,7 +4786,7 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
   @override
   void initState() {
     super.initState();
-    _maxWait = Timer(const Duration(seconds: 25), () {
+    _maxWait = Timer(const Duration(seconds: 30), () {
       if (mounted && _loading) setState(() => _loading = false);
     });
     _controller = WebViewController()
@@ -4761,8 +4797,25 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
           onPageFinished: (_) => _scheduleHideLoader(),
           onWebResourceError: (_) => _scheduleHideLoader(),
         ),
-      )
-      ..loadRequest(widget.viewerUri);
+      );
+    _loadPdfContent();
+  }
+
+  /// Prefer cached local file (pre-downloaded on personal_details). Fallback to
+  /// Google viewer only if download fails — avoids slow double-hop on every open.
+  Future<void> _loadPdfContent() async {
+    try {
+      final file = await widget.localPdfFuture;
+      if (!mounted) return;
+      if (await file.exists() && await file.length() > 0) {
+        await _controller.loadFile(file.path);
+        return;
+      }
+    } catch (e) {
+      debugPrint('[HomePage] Tariff PDF cache load failed: $e');
+    }
+    if (!mounted) return;
+    await _controller.loadRequest(widget.viewerUri);
   }
 
   /// Google embedded viewer can fire several finishes in a row; debounce so the loader
@@ -4838,7 +4891,7 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
                             ),
                             const SizedBox(height: 16),
                             Text(
-                              'Loading PDF…',
+                              'Loading document…',
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w500,
