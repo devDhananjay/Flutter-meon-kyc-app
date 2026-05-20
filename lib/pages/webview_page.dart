@@ -87,10 +87,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // Reset the sessionStorage flag only once per WebViewPage instance,
   // so a reload caused by the console message doesn't re-clear the guard.
   bool _rpdSigningSessionFlagReset = false;
-  // eSign / cloudesign PDF pages may render blank on first load — retry in-app only.
+  // eSign / cloudesign: retry only when server returns transient JSON (Invalid Token, etc.).
   int _cloudesignAutoReloadAttempts = 0;
-  static const int _maxCloudesignAutoReloadAttempts = 6;
+  static const int _maxCloudesignAutoReloadAttempts = 3;
   Timer? _cloudesignRecoveryTimer;
+  bool _cloudesignRecoveryPending = false;
+  String? _cloudesignRecoveryUrl;
 
   /// True while an eSign PDF save is in flight (ignore duplicate download events).
   bool _esignPdfDownloadInProgress = false;
@@ -147,6 +149,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   void _resetDocumentRetryState() {
     _cloudesignAutoReloadAttempts = 0;
+    _cloudesignRecoveryPending = false;
+    _cloudesignRecoveryUrl = null;
     _cancelCloudesignRecovery();
   }
 
@@ -468,6 +472,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (!_isProceedToEsignFlowContext()) return;
 
     final urlStr = url.toString();
+    // Direct cloudesign document URL must display in WebView — never auto-save on load.
+    if (_isCloudesignDocumentUrl(urlStr) &&
+        !await _hasEsignDownloadUserGesture(controller)) {
+      debugPrint(
+          '[WebView] Ignoring cloudesign auto-download (inline document view)');
+      return;
+    }
     // Blob save handled in shouldOverrideUrlLoading (navigation cancelled).
     if (_isBlobDownloadUrl(urlStr) && _esignPdfDownloadInProgress) {
       return;
@@ -1128,43 +1139,47 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  void _scheduleCloudesignRecovery(InAppWebViewController controller, String urlStr) {
+  /// One delayed reload for transient JSON bridge pages — not a periodic loop.
+  void _scheduleCloudesignRecovery(
+    InAppWebViewController controller,
+    String urlStr, {
+    required String reason,
+  }) {
     if (!_usesInAppDocumentAutoRetry(urlStr)) return;
-    _cancelCloudesignRecovery();
-    _cloudesignRecoveryTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
-      if (!mounted || _redirectHandled) {
-        t.cancel();
-        return;
-      }
-      if (_currentUrl != urlStr || !_usesInAppDocumentAutoRetry(_currentUrl)) {
-        t.cancel();
-        return;
-      }
-
-      if (_cloudesignAutoReloadAttempts < _maxCloudesignAutoReloadAttempts) {
-        _cloudesignAutoReloadAttempts++;
-        final attempt = _cloudesignAutoReloadAttempts;
-        debugPrint(
-            '[WebView] In-app document reload (attempt $attempt/$_maxCloudesignAutoReloadAttempts)');
-        if (mounted) {
-          setState(() {
-            _isLoading = true;
-            _hasError = false;
-            _loadingMessage =
-                'Loading document… (retry $attempt/$_maxCloudesignAutoReloadAttempts)';
-          });
-        }
-        try {
-          await controller.evaluateJavascript(
-            source: 'try { window.location.reload(true); } catch(e) {}',
-          );
-        } catch (_) {}
-        await _reloadWebViewInternal(showToast: false);
-        return;
-      }
-
-      t.cancel();
+    if (_cloudesignRecoveryPending && _cloudesignRecoveryUrl == urlStr) return;
+    if (_cloudesignAutoReloadAttempts >= _maxCloudesignAutoReloadAttempts) {
       _showInAppDocumentRetryAfterFailedRecovery();
+      return;
+    }
+
+    _cloudesignRecoveryPending = true;
+    _cloudesignRecoveryUrl = urlStr;
+    _cancelCloudesignRecovery();
+
+    final attempt = _cloudesignAutoReloadAttempts + 1;
+    final delay = Duration(seconds: 2 + attempt);
+    debugPrint(
+        '[WebView] Scheduling document reload in ${delay.inSeconds}s (attempt $attempt/$_maxCloudesignAutoReloadAttempts, $reason)');
+
+    _cloudesignRecoveryTimer = Timer(delay, () async {
+      _cloudesignRecoveryPending = false;
+      if (!mounted || _redirectHandled) return;
+      if (_currentUrl != urlStr || !_usesInAppDocumentAutoRetry(_currentUrl)) {
+        return;
+      }
+
+      _cloudesignAutoReloadAttempts = attempt;
+      debugPrint(
+          '[WebView] In-app document reload (attempt $attempt/$_maxCloudesignAutoReloadAttempts, $reason)');
+      if (mounted) {
+        setState(() {
+          _isLoading = true;
+          _hasError = false;
+          _loadingMessage =
+              'Preparing document… ($attempt/$_maxCloudesignAutoReloadAttempts)';
+        });
+      }
+      await _reloadWebViewInternal(showToast: false);
     });
   }
 
@@ -1877,9 +1892,6 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         if (_isProceedToEsignFlowContext(urlStr)) {
                           await _resetEsignDownloadUserGesture(controller);
                         }
-                        if (_usesInAppDocumentAutoRetry(urlStr)) {
-                          _resetDocumentRetryState();
-                        }
 
                         // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
                         // Close WebView immediately on success redirect (don't wait for page load)
@@ -2026,7 +2038,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             _startLoadTimers(url: urlStr, resetMessageOnCancel: false);
                             if (_usesInAppDocumentAutoRetry(urlStr) &&
                                 !_redirectHandled) {
-                              _scheduleCloudesignRecovery(controller, urlStr);
+                              _scheduleCloudesignRecovery(
+                                controller,
+                                urlStr,
+                                reason: 'transient JSON bridge',
+                              );
                             }
                             await _onPageFinished(urlStr);
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
@@ -2050,26 +2066,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         });
                         debugPrint('[WebView] Page finished: $url');
 
-                        // Successful load — cancel any pending document retry timer.
+                        // Successful load — stop retries; let the page stay visible.
                         _cancelCloudesignRecovery();
+                        _cloudesignRecoveryPending = false;
                         _resetDocumentRetryState();
 
                         if (_isProceedToEsignFlowContext(urlStr)) {
                           await _injectEsignDownloadUserGestureTracker(controller);
-                        }
-
-                        // Blank cloudesign PDF only — never retry eSign SPA after load.
-                        if (_usesInAppDocumentAutoRetry(urlStr) && !_redirectHandled) {
-                          final bodyAfterLoad =
-                              await _readMainFrameBodyText(controller);
-                          final likelyBlank = bodyAfterLoad.trim().length < 80 &&
-                              !_isTransientEsignBridgePayload(
-                                  urlStr, bodyAfterLoad);
-                          if (likelyBlank) {
-                            _scheduleCloudesignRecovery(controller, urlStr);
-                          } else {
-                            _resetDocumentRetryState();
-                          }
                         }
 
                         // For eSign pages, nudge initial scroll slightly so

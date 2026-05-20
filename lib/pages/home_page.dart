@@ -32,6 +32,7 @@ import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -65,7 +66,7 @@ class _HomePageState extends State<HomePage> {
   bool _loadWorkflowActive = false;
   // Message shown in the partial loader during WebView return flow.
   String _returnFlowMessage = 'Loading your next step...';
-  // One-shot timers: 5 s → slow-network message, 12 s → show retry UI.
+  // One-shot timers: 5 s → slow-network message, 20 s → show retry UI.
   Timer? _returnFlowWatchdogTimer;
   // 5 s periodic: auto-retries _loadWorkflow() if stuck with no active call.
   Timer? _returnFlowPollingTimer;
@@ -112,7 +113,7 @@ class _HomePageState extends State<HomePage> {
 
   // ---------- Return-flow timer helpers ----------
 
-  /// Starts a two-stage watchdog (5 s → slow-network msg, 12 s → retry UI)
+  /// Starts a two-stage watchdog (5 s → slow-network msg, 20 s → retry UI)
   /// and a background 5-second polling timer that auto-retries when not active.
   void _startReturnFlowTimers() {
     _returnFlowWatchdogTimer?.cancel();
@@ -125,18 +126,30 @@ class _HomePageState extends State<HomePage> {
           'This is taking longer than usual, please wait...');
       debugPrint('[HomePage] Return-flow: slow-network message shown');
 
-      // Stage 2 – 7 more seconds (12 s total): show retry UI
-      _returnFlowWatchdogTimer = Timer(const Duration(seconds: 7), () {
+      // Stage 2 – 15 more seconds (20 s total): show retry UI
+      _returnFlowWatchdogTimer = Timer(const Duration(seconds: 15), () {
         if (!mounted) return;
         final store = context.read<AppStore>();
-        if (store.isReturningFromWebView && _webViewReturnError == null) {
-          debugPrint('[HomePage] Return-flow watchdog fired — showing retry UI');
-          setState(() {
-            _webViewReturnError =
-                'Connection is taking too long. Please check your network and try again.';
-            _returnFlowMessage = 'Loading your next step...';
-          });
+        if (!store.isReturningFromWebView || _webViewReturnError != null) {
+          return;
         }
+        if (_loadWorkflowActive) {
+          debugPrint(
+              '[HomePage] Return-flow watchdog: still loading, waiting...');
+          return;
+        }
+        if (_shouldOpenRedirectImmediately(store.fieldsWithAuth)) {
+          debugPrint(
+              '[HomePage] Return-flow watchdog: redirect ready — opening WebView');
+          _loadWorkflow();
+          return;
+        }
+        debugPrint('[HomePage] Return-flow watchdog fired — showing retry UI');
+        setState(() {
+          _webViewReturnError =
+              'Connection is taking too long. Please check your network and try again.';
+          _returnFlowMessage = 'Loading your next step...';
+        });
       });
     });
 
@@ -345,10 +358,24 @@ class _HomePageState extends State<HomePage> {
           // If _checkAndHandleRedirect navigated to WebView, mounted will be false
           if (!mounted) navigatingAway = true;
         } else if (hasCompletionParams) {
-          debugPrint('[HomePage] Step completed (success/transaction_id/esign) - refreshing context to get updated state');
+          debugPrint(
+              '[HomePage] Step completed (success/transaction_id/esign) - handling redirect');
 
-          // Refresh context without completion params to get updated state and check for redirects
-          // This ensures user moves to next step after IPV/RPD/eSign completion
+          // API often returns the next external URL (CAMS, DigiLocker, etc.) on the
+          // completion-params call itself — open WebView immediately; do not wait for
+          // a second get-context (slow/502) while the return-flow loader spins.
+          if (mounted && _shouldOpenRedirectImmediately(store.fieldsWithAuth)) {
+            debugPrint(
+                '[HomePage] External redirect on completion response — opening WebView now');
+            _stopReturnFlowTimers();
+            await _checkAndHandleRedirect(store);
+            if (!mounted) {
+              navigatingAway = true;
+              return;
+            }
+          }
+
+          // Refresh context without completion params to update in-app state.
           await store.fetchWorkflowFieldsWithAuth(
             widget.company,
             widget.workflowName,
@@ -376,7 +403,16 @@ class _HomePageState extends State<HomePage> {
 
             if (mounted && refreshed is! Map) {
               debugPrint('[HomePage] Error refreshing context after step completion: ${store.errorWithAuth ?? "fieldsWithAuth not a Map"}');
-              if (store.isReturningFromWebView) {
+              if (_shouldOpenRedirectImmediately(store.fieldsWithAuth)) {
+                debugPrint(
+                    '[HomePage] Refresh failed but redirect still available — opening WebView');
+                _stopReturnFlowTimers();
+                await _checkAndHandleRedirect(store);
+                if (!mounted) {
+                  navigatingAway = true;
+                  return;
+                }
+              } else if (store.isReturningFromWebView) {
                 // Show retry UI — never fall back to the old step's form
                 setState(() => _webViewReturnError =
                     store.errorWithAuth ?? 'Something went wrong, please try again.');
@@ -443,6 +479,34 @@ class _HomePageState extends State<HomePage> {
         _stopReturnFlowTimers();
       }
     }
+  }
+
+  bool _isInternalWorkflowRedirectUrl(String redirectUrl) {
+    final lower = redirectUrl.toLowerCase();
+    final internalWorkflowPath =
+        '/${widget.company.toLowerCase()}/${widget.workflowName.toLowerCase()}';
+    if (lower == internalWorkflowPath ||
+        lower == '${internalWorkflowPath}/' ||
+        lower.startsWith('$internalWorkflowPath?')) {
+      return true;
+    }
+    final uri = Uri.tryParse(redirectUrl);
+    if (uri == null) return false;
+    final path = uri.path.toLowerCase();
+    return path == internalWorkflowPath ||
+        path == '${internalWorkflowPath}/' ||
+        path.startsWith('$internalWorkflowPath?');
+  }
+
+  /// True when get-context already has a non-internal redirect URL (open WebView now).
+  bool _shouldOpenRedirectImmediately(dynamic response) {
+    if (response is! Map || response['redirect'] != true) return false;
+    final redirectUrl = response['url']?.toString() ?? '';
+    if (redirectUrl.isEmpty) return false;
+    if (_isInternalWorkflowRedirectUrl(redirectUrl)) return false;
+    return redirectUrl.startsWith('http://') ||
+        redirectUrl.startsWith('https://') ||
+        redirectUrl.startsWith('/');
   }
 
   Future<void> _checkAndHandleRedirect(AppStore store) async {
@@ -556,13 +620,7 @@ class _HomePageState extends State<HomePage> {
         // For all OTHER redirects - open WebView (like DigiLocker)
         // But if backend returns internal workflow path first (e.g. /bpwealth/individual),
         // do not open that URL in WebView. Refresh context once and open only external URL.
-        final lowerRedirect = redirectUrl.toLowerCase();
-        final internalWorkflowPath = '/${widget.company.toLowerCase()}/${widget.workflowName.toLowerCase()}';
-        final looksInternalWorkflowRedirect =
-            lowerRedirect == internalWorkflowPath ||
-            lowerRedirect == '${internalWorkflowPath}/' ||
-            lowerRedirect.startsWith('$internalWorkflowPath?');
-        if (looksInternalWorkflowRedirect) {
+        if (_isInternalWorkflowRedirectUrl(redirectUrl)) {
           debugPrint(
               '[HomePage] Internal workflow redirect received - refreshing context once instead of opening WebView: $redirectUrl');
           await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
@@ -572,12 +630,7 @@ class _HomePageState extends State<HomePage> {
               (refreshed['url']?.toString().isNotEmpty ?? false)) {
             final nextRedirectUrl = refreshed['url']!.toString();
             final refreshedMsg = refreshed['msg']?.toString() ?? msg;
-            final nextLower = nextRedirectUrl.toLowerCase();
-            final stillInternal =
-                nextLower == internalWorkflowPath ||
-                nextLower == '${internalWorkflowPath}/' ||
-                nextLower.startsWith('$internalWorkflowPath?');
-            if (stillInternal) {
+            if (_isInternalWorkflowRedirectUrl(nextRedirectUrl)) {
               debugPrint(
                   '[HomePage] Refreshed redirect is still internal workflow URL - staying in app flow');
               return;
@@ -674,10 +727,16 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openWebViewWithTransitionLoader(String finalUrl, String friendlyTitle) async {
     if (!mounted) return;
 
+    _stopReturnFlowTimers();
+    context.read<AppStore>().setReturningFromWebView(false);
+
     // Show a fully opaque white overlay so no home-page UI is visible during
     // the route transition. This pairs with the FadeTransition on the webview
     // route so the user sees white → white → WebView content with no flash.
-    setState(() => _webViewTransitionActive = true);
+    setState(() {
+      _webViewTransitionActive = true;
+      _webViewReturnError = null;
+    });
     // Ensure the white overlay is painted before navigating.
     await WidgetsBinding.instance.endOfFrame;
 
@@ -3321,11 +3380,16 @@ class _HomePageState extends State<HomePage> {
   static const String _kBpWealthTariffPdfUrl =
       'https://ekyc.stoxbox.in/static/static_upload_files/bpwealth/organized%20(19).pdf';
 
-  /// Pre-downloaded tariff PDF for personal_details "View" (faster than Google viewer).
+  /// Download PDF while user is on personal_details so View opens instantly.
   Future<File>? _bpWealthTariffPdfCacheFuture;
+  bool _bpWealthTariffPdfModalOpen = false;
 
   void _ensureBpWealthTariffPdfCached() {
     _bpWealthTariffPdfCacheFuture ??= _downloadBpWealthTariffPdfToCache();
+  }
+
+  Future<void> _openBpWealthTariffPdf() async {
+    _showBpWealthTariffPdfModal();
   }
 
   Future<File> _downloadBpWealthTariffPdfToCache() async {
@@ -3347,14 +3411,6 @@ class _HomePageState extends State<HomePage> {
     return file;
   }
 
-  /// Direct PDF URLs often render blank in Android [WebView]; Google viewer embed is reliable.
-  static Uri _bpWealthTariffPdfEmbeddedViewerUri() {
-    final raw = Uri.parse(_kBpWealthTariffPdfUrl);
-    return Uri.parse(
-      'https://docs.google.com/viewer?url=${Uri.encodeComponent(raw.toString())}&embedded=true',
-    );
-  }
-
   Future<void> _openBpWealthTariffPdfExternally() async {
     final uri = Uri.parse(_kBpWealthTariffPdfUrl);
     if (await canLaunchUrl(uri)) {
@@ -3363,8 +3419,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showBpWealthTariffPdfModal() {
+    if (_bpWealthTariffPdfModalOpen) return;
+    _bpWealthTariffPdfModalOpen = true;
     _ensureBpWealthTariffPdfCached();
-    final viewerUri = _bpWealthTariffPdfEmbeddedViewerUri();
     final mq = MediaQuery.of(context);
     final h = mq.size.height * 0.85;
     final w = mq.size.width - 24;
@@ -3372,13 +3429,15 @@ class _HomePageState extends State<HomePage> {
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BpWealthTariffPdfDialog(
-        viewerUri: viewerUri,
+        pdfUrl: _kBpWealthTariffPdfUrl,
         localPdfFuture: _bpWealthTariffPdfCacheFuture!,
         width: w,
         height: h,
         onOpenExternal: _openBpWealthTariffPdfExternally,
       ),
-    );
+    ).whenComplete(() {
+      _bpWealthTariffPdfModalOpen = false;
+    });
   }
 
   /// BP Wealth personal_details: web-like header, single-column main (2nd screenshot fields only),
@@ -3395,7 +3454,6 @@ class _HomePageState extends State<HomePage> {
     required String? pageLabel,
     required Map? ctx,
   }) {
-    // Start PDF download early so "View" opens faster when tapped.
     _ensureBpWealthTariffPdfCached();
 
     final maps = visibleFieldsForDisplay
@@ -3563,7 +3621,7 @@ class _HomePageState extends State<HomePage> {
       Align(
         alignment: Alignment.centerLeft,
         child: FilledButton(
-          onPressed: _showBpWealthTariffPdfModal,
+          onPressed: _openBpWealthTariffPdf,
           style: FilledButton.styleFrom(
             backgroundColor: KycTheme.primary,
             foregroundColor: Colors.white,
@@ -4757,16 +4815,16 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// BP Wealth personal details — tariff PDF in a dialog with loader until WebView settles.
+/// BP Wealth personal details — tariff PDF inside modal (iOS: cached file, Android: Google embed).
 class _BpWealthTariffPdfDialog extends StatefulWidget {
-  final Uri viewerUri;
+  final String pdfUrl;
   final Future<File> localPdfFuture;
   final double width;
   final double height;
   final Future<void> Function() onOpenExternal;
 
   const _BpWealthTariffPdfDialog({
-    required this.viewerUri,
+    required this.pdfUrl,
     required this.localPdfFuture,
     required this.width,
     required this.height,
@@ -4778,18 +4836,29 @@ class _BpWealthTariffPdfDialog extends StatefulWidget {
 }
 
 class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
-  late final WebViewController _controller;
+  WebViewController? _iosWebController;
   bool _loading = true;
-  Timer? _hideDebounce;
   Timer? _maxWait;
+  Timer? _hideDebounce;
+  int _androidLoadSeq = 0;
+
+  static String _googleViewerEmbedUrl(String pdfUrl) {
+    return 'https://docs.google.com/viewer?url=${Uri.encodeComponent(pdfUrl)}&embedded=true';
+  }
 
   @override
   void initState() {
     super.initState();
-    _maxWait = Timer(const Duration(seconds: 30), () {
+    _maxWait = Timer(const Duration(seconds: 60), () {
       if (mounted && _loading) setState(() => _loading = false);
     });
-    _controller = WebViewController()
+    if (Platform.isIOS) {
+      _loadIosPdf();
+    }
+  }
+
+  Future<void> _loadIosPdf() async {
+    final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
       ..setNavigationDelegate(
@@ -4798,31 +4867,28 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
           onWebResourceError: (_) => _scheduleHideLoader(),
         ),
       );
-    _loadPdfContent();
-  }
-
-  /// Prefer cached local file (pre-downloaded on personal_details). Fallback to
-  /// Google viewer only if download fails — avoids slow double-hop on every open.
-  Future<void> _loadPdfContent() async {
     try {
       final file = await widget.localPdfFuture;
       if (!mounted) return;
       if (await file.exists() && await file.length() > 0) {
-        await _controller.loadFile(file.path);
-        return;
+        await controller.loadFile(file.path);
+      } else {
+        await controller.loadRequest(Uri.parse(widget.pdfUrl));
       }
     } catch (e) {
-      debugPrint('[HomePage] Tariff PDF cache load failed: $e');
+      debugPrint('[HomePage] iOS tariff PDF load failed: $e');
+      await controller.loadRequest(Uri.parse(widget.pdfUrl));
     }
     if (!mounted) return;
-    await _controller.loadRequest(widget.viewerUri);
+    setState(() => _iosWebController = controller);
   }
 
-  /// Google embedded viewer can fire several finishes in a row; debounce so the loader
-  /// stays until the last navigation of a burst settles.
   void _scheduleHideLoader() {
     _hideDebounce?.cancel();
-    _hideDebounce = Timer(const Duration(milliseconds: 450), () {
+    final delay = Platform.isAndroid
+        ? const Duration(milliseconds: 1200)
+        : const Duration(milliseconds: 300);
+    _hideDebounce = Timer(delay, () {
       if (!mounted) return;
       setState(() => _loading = false);
     });
@@ -4833,6 +4899,44 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
     _hideDebounce?.cancel();
     _maxWait?.cancel();
     super.dispose();
+  }
+
+  Widget _buildAndroidPdfInModal() {
+    final viewerUrl = _googleViewerEmbedUrl(widget.pdfUrl);
+    return InAppWebView(
+      key: const ValueKey('bpwealth_tariff_pdf_android'),
+      initialUrlRequest: URLRequest(url: WebUri(viewerUrl)),
+      initialSettings: InAppWebViewSettings(
+        javaScriptEnabled: true,
+        useOnDownloadStart: false,
+        supportZoom: true,
+        builtInZoomControls: true,
+        displayZoomControls: false,
+        useWideViewPort: true,
+        loadWithOverviewMode: true,
+        domStorageEnabled: true,
+        databaseEnabled: true,
+      ),
+      onLoadStop: (controller, url) {
+        final u = url?.toString() ?? '';
+        debugPrint('[HomePage] Android tariff PDF onLoadStop: $u');
+        if (!u.contains('docs.google.com/viewer')) return;
+        final seq = ++_androidLoadSeq;
+        Future<void>.delayed(const Duration(milliseconds: 600), () {
+          if (!mounted || seq != _androidLoadSeq) return;
+          _scheduleHideLoader();
+        });
+      },
+      onReceivedError: (controller, request, error) {
+        if (request.isForMainFrame != true) return;
+        debugPrint(
+            '[HomePage] Android tariff PDF main error: ${error.description} url=${request.url}');
+        _scheduleHideLoader();
+      },
+      onDownloadStartRequest: (controller, request) {
+        debugPrint('[HomePage] Android tariff PDF download blocked (stay in modal)');
+      },
+    );
   }
 
   @override
@@ -4873,7 +4977,10 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  WebViewWidget(controller: _controller),
+                  if (Platform.isIOS && _iosWebController != null)
+                    WebViewWidget(controller: _iosWebController!)
+                  else if (Platform.isAndroid)
+                    _buildAndroidPdfInModal(),
                   if (_loading)
                     ColoredBox(
                       color: Colors.white,
