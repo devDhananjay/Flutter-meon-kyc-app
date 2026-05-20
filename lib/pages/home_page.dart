@@ -305,12 +305,13 @@ class _HomePageState extends State<HomePage> {
           }
         }
         
-        // Fetch stepper workflow if we have workflowId
-        if (workflowId != null && workflowId.isNotEmpty) {
-          debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
-          // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
-          await store.fetchStepperWorkflow(widget.workflowName, workflowId);
-        }
+        // --- Stepper API (hidden temporarily) ---
+        // Uncomment to fetch step labels for KycStepperBar when re-enabling the stepper.
+        // if (workflowId != null && workflowId.isNotEmpty) {
+        //   debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
+        //   // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
+        //   await store.fetchStepperWorkflow(widget.workflowName, workflowId);
+        // }
         
         // Check if KYC is completed (is_admin: true)
         if (response is Map && response['is_admin'] == true) {
@@ -2396,23 +2397,27 @@ class _HomePageState extends State<HomePage> {
                 _runPersonalDetailsBpWealthPipeline(store, fieldList);
               });
 
-              // Get stepper data
+              // --- Stepper UI (hidden temporarily) ---
+              // Still used for "Documents to keep Handy" on early steps; re-enable
+              // showStepper + stepperWidget when bringing the stepper back.
               final stepperIndex = _getStepperIndex(store, isAuthenticated);
-              final stepperSteps = _getStepperSteps(store);
+              // final stepperSteps = _getStepperSteps(store);
               // Stepper visible only from 2nd step (mobile_otp) onwards; hidden on first step (mobile number entry)
-              final ctxForStepper = (store.fieldsWithAuth as Map?)?['context'] as Map?;
-              final currentPosition = (ctxForStepper?['position']?.toString() ?? '').toLowerCase();
-              final showStepper = currentPosition.isNotEmpty && currentPosition != 'mobile';
+              // final ctxForStepper = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+              // final currentPosition = (ctxForStepper?['position']?.toString() ?? '').toLowerCase();
+              // final showStepper = currentPosition.isNotEmpty && currentPosition != 'mobile';
+              const showStepper = false;
 
-              // Build stepper widget with fixed height container (visible only from step 2 onwards)
-              final stepperWidget = Container(
-                height: 100, // Fixed height for stepper (circle + label + padding)
-                color: Colors.white, // Ensure background color
-                child: KycStepperBar(
-                  steps: stepperSteps,
-                  currentIndex: stepperIndex,
-                ),
-              );
+              // final stepperWidget = Container(
+              //   height: 100, // Fixed height for stepper (circle + label + padding)
+              //   color: Colors.white, // Ensure background color
+              //   child: KycStepperBar(
+              //     steps: stepperSteps,
+              //     currentIndex: stepperIndex,
+              //   ),
+              // );
+              // Placeholder so existing showStepper branches compile while stepper is off.
+              final stepperWidget = const SizedBox.shrink();
 
               // Partial loader / retry while returning from WebView.
               // Checked before anything else so the old step's form UI is NEVER
@@ -2472,8 +2477,8 @@ class _HomePageState extends State<HomePage> {
                               ],
                             ),
                           ),
-                        // Stepper stays visible throughout
-                        if (showStepper) stepperWidget,
+                        // Stepper stays visible throughout (hidden — see showStepper above)
+                        // if (showStepper) stepperWidget,
                         // Content area: spinner or retry
                         Expanded(
                           child: _webViewReturnError != null

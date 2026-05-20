@@ -142,12 +142,13 @@ class KycLayout extends StatelessWidget {
       children: [
         // Top bar: minimal header (logout/back aligned right)
         _buildTopBar(null),
-        // Stepper (only show if stepperSteps is provided)
-        if (stepperSteps != null)
-          KycStepperBar(
-            steps: stepperSteps!,
-            currentIndex: stepperIndex ?? 0,
-          ),
+        // --- Stepper (hidden temporarily) ---
+        // Uncomment when re-enabling stepper via stepperSteps / stepperIndex props.
+        // if (stepperSteps != null)
+        //   KycStepperBar(
+        //     steps: stepperSteps!,
+        //     currentIndex: stepperIndex ?? 0,
+        //   ),
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(

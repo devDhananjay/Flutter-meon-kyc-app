@@ -113,6 +113,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         u.contains('cdnjs.cloudflare.com/ajax/libs/pdf.js');
   }
 
+  bool _isBlobDownloadUrl(String url) =>
+      url.toLowerCase().startsWith('blob:');
+
   bool _isCloudesignDocumentUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return false;
@@ -122,14 +125,23 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         path.contains('/cloudesign/document-');
   }
 
-  /// In-app auto-retry for cloudesign documents and Proceed to eSign PDF pages (never external browser).
+  /// eSign HTML app (`esign.meon.co.in/EsignServices/...`) — loads via JS after
+  /// `onLoadStop`. Never auto-reload; user interacts on the live page.
+  bool _isEsignServiceSpaUrl(String url) {
+    final u = url.toLowerCase();
+    return u.contains('esign.meon.co.in') &&
+        (u.contains('/esignservices/') || u.contains('/esign/'));
+  }
+
+  /// In-app auto-retry only for cloudesign **document** PDF pages (blank first paint).
+  /// eSign service SPAs and other heavy URLs must not reload after a successful load.
   bool _usesInAppDocumentAutoRetry(String url) {
-    if (_isCloudesignDocumentUrl(url)) return true;
-    return _isProceedToEsignFlowContext(url) && _isEsignPdfHeavyUrl(url);
+    if (_isEsignServiceSpaUrl(url)) return false;
+    return _isCloudesignDocumentUrl(url);
   }
 
   void _cancelCloudesignRecovery() {
-    _cancelCloudesignRecovery();
+    _cloudesignRecoveryTimer?.cancel();
     _cloudesignRecoveryTimer = null;
   }
 
@@ -189,7 +201,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           window.__meonEsignDownloadHookInstalled = true;
           window.__meonUserGestureForDownload = false;
           function arm() { window.__meonUserGestureForDownload = true; }
-          ['click', 'touchstart', 'pointerdown'].forEach(function(evt) {
+          ['click', 'touchstart', 'touchend', 'pointerdown', 'pointerup'].forEach(function(evt) {
             document.addEventListener(evt, arm, true);
           });
         } catch (e) {}
@@ -200,6 +212,21 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[WebView] Error injecting eSign download gesture tracker: $e');
     }
+  }
+
+  /// Blob navigations and WKWebKit "frame load interrupted" (102) are normal
+  /// when pdf.js triggers a download — not a real page failure.
+  bool _shouldIgnoreWebViewLoadError(
+    String url, {
+    int? code,
+    String? description,
+  }) {
+    final u = url.toLowerCase();
+    if (u.startsWith('blob:')) return true;
+    if (code == 102) return true;
+    final d = (description ?? '').toLowerCase();
+    if (d.contains('frame load interrupted')) return true;
+    return false;
   }
 
   Future<bool> _hasEsignDownloadUserGesture(
@@ -322,6 +349,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     String? suggestedFilename,
     String? userAgent,
     String? mimeType,
+    bool skipGestureCheck = false,
   }) async {
     if (!mounted) return;
     if (!_isProceedToEsignFlowContext()) {
@@ -330,11 +358,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
     if (_esignPdfDownloadInProgress) return;
 
-    final allowed = await _hasEsignDownloadUserGesture(controller);
-    if (!allowed) {
-      debugPrint(
-          '[WebView] Blocked PDF download without user tap (auto-download prevented)');
-      return;
+    if (!skipGestureCheck) {
+      final allowed = await _hasEsignDownloadUserGesture(controller);
+      if (!allowed) {
+        debugPrint(
+            '[WebView] Blocked PDF download without user tap (auto-download prevented)');
+        return;
+      }
     }
 
     final now = DateTime.now();
@@ -415,11 +445,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       );
     } finally {
       _esignPdfDownloadInProgress = false;
+      // Keep the eSign page visible — blob navigation must not leave a loader up.
+      if (mounted && _initialPageLoaded && !_redirectHandled) {
+        setState(() {
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
     }
   }
 
-  /// Android: WebView signals a download (often `blob:https://...` from pdf.js).
-  /// Without user tap we ignore it (no auto-save on load). With tap we read blob in-page.
+  /// WebView signals a download (often `blob:https://...` from pdf.js).
+  /// Without user tap we ignore it on Android (no auto-save on load).
+  /// iOS: explicit blob downloads after page load are handled in-page.
   Future<void> _onDownloadStartRequest(
     InAppWebViewController controller,
     DownloadStartRequest downloadStartRequest,
@@ -428,16 +466,28 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (url == null) return;
     debugPrint('[WebView] onDownloadStartRequest: $url');
     if (!_isProceedToEsignFlowContext()) return;
-    if (!await _hasEsignDownloadUserGesture(controller)) {
+
+    final urlStr = url.toString();
+    // Blob save handled in shouldOverrideUrlLoading (navigation cancelled).
+    if (_isBlobDownloadUrl(urlStr) && _esignPdfDownloadInProgress) {
+      return;
+    }
+    final isIosBlobDownload = Platform.isIOS &&
+        urlStr.toLowerCase().startsWith('blob:') &&
+        _initialPageLoaded;
+
+    if (!isIosBlobDownload && !await _hasEsignDownloadUserGesture(controller)) {
       debugPrint('[WebView] Ignoring download start (no user tap yet)');
       return;
     }
+
     await _handleEsignPdfDownload(
       controller,
       downloadUrl: url,
       suggestedFilename: downloadStartRequest.suggestedFilename,
       userAgent: downloadStartRequest.userAgent,
       mimeType: downloadStartRequest.mimeType,
+      skipGestureCheck: isIosBlobDownload,
     );
   }
 
@@ -466,7 +516,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Chromium-style "Pretty print" JSON view; auto-reload then loads the real document.
   /// Treat as transient: keep the loader overlay so users never see raw JSON.
   bool _isTransientEsignBridgePayload(String url, String bodyText) {
-    if (!_isCloudesignDocumentUrl(url) && !_isEsignPdfHeavyUrl(url)) return false;
+    if (!_isCloudesignDocumentUrl(url)) return false;
     final t = bodyText.trim().toLowerCase();
     if (t.isEmpty || t.length > 8000) return false;
 
@@ -624,6 +674,124 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Reverse Penny Drop: Digio's timer starts when the transaction is created
+  /// server-side, so by the time the WebView (or Digio popup) renders the
+  /// timer the displayed countdown is usually 4:40–4:55. We override the
+  /// visible timer text with our own 5:00 countdown for a consistent user
+  /// experience. Backend expiration is still owned by Digio — this is purely
+  /// cosmetic.
+  ///
+  /// Key behaviours:
+  /// • Countdown starts the moment a timer DOM node first becomes visible
+  ///   (not when the script loads), so it always begins at 5:00.
+  /// • If the timer DOM goes away and reappears (e.g. user submits UPI and
+  ///   transitions to a "waiting for payment" screen with its own timer),
+  ///   the countdown resets to 5:00 again.
+  Future<void> _injectRpdTimerOverride(InAppWebViewController controller) async {
+    const script = r'''
+      (function() {
+        try {
+          if (window.__meonRpdTimerOverrideInstalled) return;
+          window.__meonRpdTimerOverrideInstalled = true;
+
+          var TOTAL_SECONDS = 5 * 60;
+          var startedAt = null;     // null until a timer node is first seen
+          var hadTimerLastTick = false;
+
+          function fmt(s) {
+            if (s < 0) s = 0;
+            var m = Math.floor(s / 60);
+            var sec = s % 60;
+            return m + ':' + (sec < 10 ? '0' : '') + sec;
+          }
+
+          function looksLikeTimerNode(node) {
+            try {
+              if (!node || node.nodeType !== 1) return false;
+              if (node.children && node.children.length > 0) return false;
+              var t = (node.textContent || '').trim();
+              if (!t || t.length > 6) return false;
+              return /^\d{1,2}:\d{2}$/.test(t);
+            } catch (e) { return false; }
+          }
+
+          function findTimerNodes() {
+            var nodes = [];
+            try {
+              var explicit = document.querySelectorAll(
+                '.timer, #timer, [class*="timer" i], [class*="countdown" i], ' +
+                '[id*="timer" i], [id*="countdown" i]'
+              );
+              for (var i = 0; i < explicit.length; i++) {
+                if (looksLikeTimerNode(explicit[i])) nodes.push(explicit[i]);
+              }
+              if (nodes.length > 0) return nodes;
+
+              var all = document.body ? document.body.querySelectorAll('*') : [];
+              for (var j = 0; j < all.length; j++) {
+                if (looksLikeTimerNode(all[j])) nodes.push(all[j]);
+              }
+            } catch (e) {}
+            return nodes;
+          }
+
+          function paint() {
+            var nodes = findTimerNodes();
+            var hasTimer = nodes.length > 0;
+
+            // (Re)start countdown whenever timer DOM transitions from absent
+            // to present. This covers initial render, popup load, AND the
+            // "waiting for payment" screen which shows its own timer.
+            if (hasTimer && !hadTimerLastTick) {
+              startedAt = Date.now();
+            }
+            hadTimerLastTick = hasTimer;
+            if (!hasTimer || startedAt == null) return;
+
+            var elapsed = Math.floor((Date.now() - startedAt) / 1000);
+            var remaining = TOTAL_SECONDS - elapsed;
+            if (remaining < 0) return; // let Digio's own expired UI show through
+
+            var text = fmt(remaining);
+            for (var i = 0; i < nodes.length; i++) {
+              try {
+                if (nodes[i].textContent !== text) {
+                  nodes[i].textContent = text;
+                }
+              } catch (e) {}
+            }
+          }
+
+          // Initial paints (catch SPA renders).
+          setTimeout(paint, 50);
+          setTimeout(paint, 300);
+          setTimeout(paint, 800);
+          setTimeout(paint, 1500);
+          setTimeout(paint, 3000);
+
+          // Repaint frequently — overrides Digio's own updates quickly.
+          setInterval(paint, 250);
+
+          // React to dynamic DOM updates immediately.
+          try {
+            var mo = new MutationObserver(function() { paint(); });
+            mo.observe(document.documentElement || document.body, {
+              childList: true,
+              subtree: true,
+              characterData: true,
+            });
+          } catch (e) {}
+        } catch (e) {}
+      })();
+    ''';
+
+    try {
+      await controller.evaluateJavascript(source: script);
+    } catch (e) {
+      debugPrint('[WebView] Error injecting RPD timer override JS: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -724,6 +892,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final path = uri.path.toLowerCase();
     return (host.contains('meon.co.in') || host.contains('stoxbox.in')) &&
         path.contains('/reverse_pennydrop/');
+  }
+
+  /// True for any Digio gateway page that hosts the UPI/RPD UI inside a popup
+  /// (e.g. https://app.digio.in/#/gateway/login/...). This is where the visible
+  /// 5-minute countdown timer is rendered.
+  bool _isDigioGatewayUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    if (!host.contains('digio.in')) return false;
+    final fragment = uri.fragment.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return path.contains('/gateway/') || fragment.contains('/gateway/');
   }
 
   bool get _isReversePennyDropFlow =>
@@ -899,6 +1080,36 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   Future<void> _reloadWebView() async {
     return _reloadWebViewInternal(showToast: true);
+  }
+
+  /// Same reload as the AppBar refresh — used by the error overlay Try Again button.
+  Future<void> _retryFromErrorOverlay() async {
+    final controller = _webViewController;
+    if (controller == null) {
+      debugPrint('[WebView] Try Again: no WebView controller');
+      return;
+    }
+    _resetDocumentRetryState();
+    _cancelLoadTimers();
+    if (!mounted) return;
+    setState(() {
+      _hasError = false;
+      _isLoading = true;
+      _loadingMessage = 'Loading...';
+    });
+    _startLoadTimers(url: _currentUrl);
+    try {
+      final target = _currentUrl.trim();
+      if (target.isNotEmpty) {
+        debugPrint('[WebView] Try Again: loadUrl $target');
+        await controller.loadUrl(urlRequest: URLRequest(url: WebUri(target)));
+      } else {
+        await _reloadWebViewInternal(showToast: false);
+      }
+    } catch (e) {
+      debugPrint('[WebView] Try Again loadUrl failed: $e — falling back to reload');
+      await _reloadWebViewInternal(showToast: false);
+    }
   }
 
   Future<void> _reloadWebViewInternal({required bool showToast}) async {
@@ -1522,23 +1733,34 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       final url = uri.toString();
                       debugPrint('[WebView] Navigation request: $url');
 
-                      // iOS: allow WebView-native download after user tap (blob/https).
-                      if (Platform.isIOS) {
+                      // pdf.js blob: save PDF in-page — do NOT navigate (avoids reload/loader).
+                      if (_isProceedToEsignFlowContext() &&
+                          _isBlobDownloadUrl(url)) {
                         final shouldPerformDownload =
                             navigationAction.shouldPerformDownload ?? false;
-                        if (shouldPerformDownload &&
-                            _isProceedToEsignFlowContext()) {
-                          final allowed =
-                              await _hasEsignDownloadUserGesture(controller);
-                          if (!allowed) {
-                            debugPrint(
-                                '[WebView] Blocked iOS PDF download without user tap');
-                            return NavigationActionPolicy.CANCEL;
+                        final hasGesture =
+                            await _hasEsignDownloadUserGesture(controller);
+                        if (hasGesture ||
+                            (Platform.isIOS &&
+                                shouldPerformDownload &&
+                                _initialPageLoaded)) {
+                          if (!hasGesture) {
+                            try {
+                              await controller.evaluateJavascript(
+                                source:
+                                    'window.__meonUserGestureForDownload = true;',
+                              );
+                            } catch (_) {}
                           }
                           debugPrint(
-                              '[WebView] Allowing iOS WebView native download');
-                          return NavigationActionPolicy.ALLOW;
+                              '[WebView] Blob PDF download — in-page save, no navigation');
+                          _handleEsignPdfDownload(
+                            controller,
+                            downloadUrl: uri,
+                            skipGestureCheck: true,
+                          );
                         }
+                        return NavigationActionPolicy.CANCEL;
                       }
 
                       // Block direct PDF navigations on eSign until user taps download.
@@ -1638,6 +1860,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     onLoadStart: (controller, url) async {
                       if (url != null && !_redirectHandled) {
                         final urlStr = url.toString();
+                        // Blob URLs are PDF downloads — never treat as a page load.
+                        if (_isBlobDownloadUrl(urlStr)) {
+                          debugPrint(
+                              '[WebView] Ignoring blob onLoadStart (PDF download only)');
+                          return;
+                        }
                         setState(() {
                           _isLoading = true;
                           _hasError = false;
@@ -1708,6 +1936,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     onLoadError: (controller, url, code, message) {
                       debugPrint(
                           '[WebView] Load error ($code): $message, url=$url');
+                      final errorUrl = url?.toString() ?? '';
+                      if (_shouldIgnoreWebViewLoadError(
+                        errorUrl,
+                        code: code,
+                        description: message,
+                      )) {
+                        debugPrint(
+                            '[WebView] Ignoring benign load error: $errorUrl');
+                        return;
+                      }
                       // Ignore unknown URL scheme errors — these are UPI/intent
                       // deep-links handled externally and are not real page failures.
                       if (code == -10 &&
@@ -1716,7 +1954,6 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       }
                       // Only surface errors for the current main-frame URL to
                       // avoid triggering retry UI for sub-resource failures.
-                      final errorUrl = url?.toString() ?? '';
                       if (errorUrl.isNotEmpty &&
                           errorUrl != _currentUrl &&
                           !errorUrl.startsWith('http')) {
@@ -1747,6 +1984,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       }
                       debugPrint(
                           '[WebView] onReceivedError: ${error.description}, url=$errUrl');
+                      if (_shouldIgnoreWebViewLoadError(
+                        errUrl,
+                        code: error.type.toNativeValue(),
+                        description: error.description,
+                      )) {
+                        debugPrint(
+                            '[WebView] Ignoring benign received error: $errUrl');
+                        return;
+                      }
                       _cancelLoadTimers();
                       if (!mounted) return;
                       setState(() {
@@ -1764,8 +2010,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         _cancelLoadTimers(resetLoadingMessage: false);
                         final heavyDoc = _isEsignPdfHeavyUrl(urlStr);
 
-                        // Hide transient JSON / "Pretty print" bridge responses until auto-reload succeeds.
-                        if (heavyDoc || _isCloudesignDocumentUrl(urlStr)) {
+                        // Hide transient JSON on cloudesign document URLs only (not eSign SPA).
+                        if (_isCloudesignDocumentUrl(urlStr)) {
                           final bodyText = await _readMainFrameBodyText(controller);
                           if (_isTransientEsignBridgePayload(urlStr, bodyText)) {
                             debugPrint(
@@ -1804,11 +2050,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         });
                         debugPrint('[WebView] Page finished: $url');
 
+                        // Successful load — cancel any pending document retry timer.
+                        _cancelCloudesignRecovery();
+                        _resetDocumentRetryState();
+
                         if (_isProceedToEsignFlowContext(urlStr)) {
                           await _injectEsignDownloadUserGestureTracker(controller);
                         }
 
-                        // Blank/stuck document: in-app retries only (never external browser).
+                        // Blank cloudesign PDF only — never retry eSign SPA after load.
                         if (_usesInAppDocumentAutoRetry(urlStr) && !_redirectHandled) {
                           final bodyAfterLoad =
                               await _readMainFrameBodyText(controller);
@@ -1876,6 +2126,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             _rpdSigningSessionFlagReset = true;
                           }
                           await _injectRpdConsoleSigningReload(controller);
+                          await _injectRpdTimerOverride(controller);
                         }
 
                         // Reverse Penny Drop: check if completion params appeared in URL (params = completion indicator)
@@ -2082,11 +2333,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         },
                         onLoadStop: (controller, url) async {
                           if (url != null) {
-                            if (_shouldInjectNoAutoScrollJs(url.toString())) {
+                            final urlStr = url.toString();
+                            if (_shouldInjectNoAutoScrollJs(urlStr)) {
                               await _injectNoAutoScrollJs(controller);
                             }
 
-                            if (_isReversePennyDropUrl(url.toString())) {
+                            if (_isReversePennyDropUrl(urlStr)) {
                               if (!_rpdSigningSessionFlagReset) {
                                 try {
                                   await controller.evaluateJavascript(
@@ -2097,6 +2349,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                                 _rpdSigningSessionFlagReset = true;
                               }
                               await _injectRpdConsoleSigningReload(controller);
+                              await _injectRpdTimerOverride(controller);
+                            }
+
+                            // Digio gateway popup (app.digio.in/#/gateway/...)
+                            // hosts the visible 5-min countdown when the user
+                            // is entering UPI ID / picking an app, so we need
+                            // to inject the override here too.
+                            if (_isDigioGatewayUrl(urlStr)) {
+                              await _injectRpdTimerOverride(controller);
                             }
                           }
                         },
@@ -2198,16 +2459,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                                 ),
                                 elevation: 0,
                               ),
-                              onPressed: () {
-                                _resetDocumentRetryState();
-                                setState(() {
-                                  _hasError = false;
-                                  _isLoading = true;
-                                  _loadingMessage = 'Loading...';
-                                });
-                                _startLoadTimers(url: _currentUrl);
-                                _webViewController?.reload();
-                              },
+                              onPressed:
+                                  _isLoading ? null : _retryFromErrorOverlay,
                             ),
                           ],
                         ),
