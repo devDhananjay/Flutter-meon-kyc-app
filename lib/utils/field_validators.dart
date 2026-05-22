@@ -1052,7 +1052,7 @@ void applyNomineeStepSubmitPayload({
   );
 }
 
-/// Submit: sum of **active** nominee % fields (1 / 2 / 3 jo screen par hain) = 100%.
+/// Submit: active nominee % total = 100%, unless `extra_nominee` is Yes (below 100% OK).
 String? validateNomineePercentageTotal({
   required List<dynamic>? fields,
   required Map<String, dynamic> formData,
@@ -1095,6 +1095,10 @@ String? validateNomineePercentageTotal({
     return 'Total nominee share cannot exceed 100%';
   }
   if (!_nomineeShareEquals100(total)) {
+    // "Do you want to add more nominee" = Yes → submit allowed below 100%.
+    if (_isKycYesNoValue(formData[kExtraNomineeField])) {
+      return null;
+    }
     return 'Total nominee share must equal 100%';
   }
   return null;
