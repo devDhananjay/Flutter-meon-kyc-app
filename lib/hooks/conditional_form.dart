@@ -22,7 +22,6 @@ class ConditionalFormNotifier extends ChangeNotifier {
   String? validationToastMessage;
   Map<String, bool> fieldVisibility = {};
   Map<String, bool> fieldEditable = {};
-
   List<dynamic>? _fields;
   List<dynamic>? _conditionalFlow;
   dynamic _fieldsWithAuthSnapshot;
@@ -65,6 +64,13 @@ class ConditionalFormNotifier extends ChangeNotifier {
             formData[name] = type == 'checkbox'
                 ? isCheckboxCheckedValue(val)
                 : val;
+          } else if (isAadharImageFieldName(name?.toString())) {
+            // DigiLocker photo URL must track latest get-context / user-details.
+            final incoming = val?.toString().trim() ?? '';
+            if (incoming.startsWith('http')) {
+              final current = formData[name]?.toString().trim() ?? '';
+              if (incoming != current) formData[name] = val;
+            }
           }
         }
       }
@@ -103,7 +109,22 @@ class ConditionalFormNotifier extends ChangeNotifier {
           );
         }
       }
-      
+
+      final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+      final stepPos = ctx?['position']?.toString();
+      final stepLbl = ctx?['page']?['data']?['label']?.toString();
+      if (isNomineeKycStep(stepPos, stepLbl)) {
+        _runNomineeRealtimeUiSync(
+          position: stepPos,
+          pageLabel: stepLbl,
+        );
+      } else {
+        _syncNomineePercentageFromContext(
+          position: stepPos,
+          pageLabel: stepLbl,
+        );
+      }
+
       // Only notify listeners if fields actually changed
       notifyListeners();
     }
@@ -187,6 +208,23 @@ class ConditionalFormNotifier extends ChangeNotifier {
     if (type == 'checkbox') {
       processedValue = isCheckboxCheckedValue(processedValue);
     }
+
+    final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+    final stepPos = ctx?['position']?.toString();
+    final stepLbl = ctx?['page']?['data']?['label']?.toString();
+    if (isNomineeKycStep(stepPos, stepLbl)) {
+      final clamped = clampNomineePercentageValue(
+        fieldName: name,
+        rawValue: processedValue,
+        formData: formData,
+        fields: _fields,
+        runtimeFieldVisibility: fieldVisibility,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+      if (clamped != null) processedValue = clamped;
+    }
+
     formData[name] = processedValue;
 
     refreshUserAddressCache(
@@ -228,11 +266,81 @@ class ConditionalFormNotifier extends ChangeNotifier {
       );
     }
 
+    if (isNomineeKycStep(stepPos, stepLbl) &&
+        shouldRunNomineeRealtimeUiSync(name)) {
+      _runNomineeRealtimeUiSync(
+        position: stepPos,
+        pageLabel: stepLbl,
+        changedFieldName: name,
+      );
+    }
+
     notifyListeners();
+  }
+
+  void _runNomineeRealtimeUiSync({
+    String? position,
+    String? pageLabel,
+    String? changedFieldName,
+  }) {
+    _syncNomineePercentageFromContext(
+      position: position,
+      pageLabel: pageLabel,
+    );
+    _clearNomineeProtectedEditableOverrides();
+
+    // Percentage typing: sync only — re-running `add_nominee` was resetting add_2 / % input.
+    final reapplyConditional = changedFieldName == kAddSecondNomineeField ||
+        changedFieldName == kAddThirdNomineeField ||
+        changedFieldName == kExtraNomineeField;
+    if (reapplyConditional &&
+        changedFieldName != null &&
+        watchedFields.contains(changedFieldName)) {
+      _applyConditionalLogic(changedFieldName);
+      _syncNomineePercentageFromContext(
+        position: position,
+        pageLabel: pageLabel,
+      );
+      _clearNomineeProtectedEditableOverrides();
+    }
+  }
+
+  void _clearNomineeProtectedEditableOverrides() {
+    final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+    final stepPos = ctx?['position']?.toString();
+    final stepLbl = ctx?['page']?['data']?['label']?.toString();
+    if (!isNomineeKycStep(stepPos, stepLbl)) return;
+    clearNomineeSyncProtectedEditableOverrides(
+      fieldEditable: fieldEditable,
+      fields: _fields,
+    );
+  }
+
+  void _syncNomineePercentageFromContext({
+    String? company,
+    String? position,
+    String? pageLabel,
+  }) {
+    final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+    syncNomineePercentageSideEffects(
+      formData: formData,
+      fieldEditable: fieldEditable,
+      fields: _fields,
+      runtimeFieldVisibility: fieldVisibility,
+      company: company,
+      position: position ?? ctx?['position']?.toString(),
+      pageLabel: pageLabel ??
+          ctx?['page']?['data']?['label']?.toString(),
+    );
   }
 
   void _applyConditionalLogic(String fieldName) {
     if (!watchedFields.contains(fieldName)) return;
+
+    final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+    final stepPos = ctx?['position']?.toString();
+    final stepLbl = ctx?['page']?['data']?['label']?.toString();
+    final onNominee = isNomineeKycStep(stepPos, stepLbl);
     
     debugPrint('[ConditionalForm] Applying logic for: $fieldName = ${formData[fieldName]}');
     final state = evaluateConditionalFlowForField(_conditionalFlow, formData, fieldName);
@@ -251,7 +359,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
     // Update field editable state (enable/disable actions)
     if (state.fieldEditable.isNotEmpty) {
       debugPrint('[ConditionalForm] Editable changes: ${state.fieldEditable}');
-      fieldEditable.addAll(state.fieldEditable);
+      for (final e in state.fieldEditable.entries) {
+        if (onNominee && isNomineeSyncProtectedFormField(e.key)) continue;
+        fieldEditable[e.key] = e.value;
+      }
     }
     
     // Update form data (empty, prePopulate, true, false actions)
@@ -259,9 +370,12 @@ class ConditionalFormNotifier extends ChangeNotifier {
       if (e.key == fieldName || formData[e.key] == e.value) continue;
       // Nominee address copy/clear is handled only via same-as checkbox sync.
       if (isNomineeAddressTargetField(e.key)) continue;
+      if (onNominee && isNomineeSyncProtectedFormField(e.key)) continue;
       debugPrint('[ConditionalForm] Action updated field: ${e.key} = ${e.value}');
       formData[e.key] = e.value;
     }
+
+    if (onNominee) _clearNomineeProtectedEditableOverrides();
   }
 
   void handleBlur(
@@ -274,6 +388,16 @@ class ConditionalFormNotifier extends ChangeNotifier {
           orElse: () => null,
         );
     if (field == null) return;
+
+    if (isNomineePercentageFieldName(fieldName) &&
+        isNomineeKycStep(position, pageLabel)) {
+      _runNomineeRealtimeUiSync(
+        position: position,
+        pageLabel: pageLabel,
+        changedFieldName: fieldName,
+      );
+    }
+
     final fieldErrors = validateFieldWithConditions(
       field,
       formData[fieldName],
@@ -306,20 +430,25 @@ class ConditionalFormNotifier extends ChangeNotifier {
       runtimeFieldVisibility: fieldVisibility,
     );
 
-    // TODO(nominee-percentage): Re-enable when app should require total nominee share = 100%.
-    // final nomineePctError = validateNomineePercentageTotal(
-    //   fields: _fields,
-    //   formData: formData,
-    //   runtimeFieldVisibility: fieldVisibility,
-    //   company: company,
-    //   position: position,
-    //   pageLabel: pageLabel,
-    // );
-    // if (nomineePctError != null) {
-    //   validationToastMessage = nomineePctError;
-    //   notifyListeners();
-    //   return false;
-    // }
+    _syncNomineePercentageFromContext(
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+
+    final nomineePctError = validateNomineePercentageTotal(
+      fields: _fields,
+      formData: formData,
+      runtimeFieldVisibility: fieldVisibility,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    if (nomineePctError != null) {
+      validationToastMessage = nomineePctError;
+      notifyListeners();
+      return false;
+    }
 
     notifyListeners();
     return errors.isEmpty;

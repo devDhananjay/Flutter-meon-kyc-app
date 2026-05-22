@@ -41,6 +41,10 @@ class ApiClient {
         request.headers['Authorization'] = 'Bearer $token';
         final csrf = BaseAPI.csrfFromJwtAccessToken(token);
         if (csrf != null) request.headers['X-CSRF-TOKEN'] = csrf;
+        final sessionId = BaseAPI.sessionIdFromJwtAccessToken(token);
+        if (sessionId != null) {
+          request.headers['Cookie'] = 'session_id=$sessionId';
+        }
         debugPrint('[API MULTIPART] Authorization header set (token length: ${token.length})');
       } else {
         debugPrint('[API MULTIPART] WARNING: No access token in storage');

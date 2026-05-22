@@ -27,6 +27,7 @@ import 'package:meon_kyc/components/brokerage_plan_dialog.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/hooks/conditional_form.dart';
 import 'package:meon_kyc/utils/conditional_flow.dart';
+import 'package:meon_kyc/utils/field_validators.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/store/app_store.dart';
@@ -81,6 +82,8 @@ class _HomePageState extends State<HomePage> {
   bool _showTermsError = false; // Show validation message under T&C checkbox
   bool _showMobileError = false; // Show error below mobile input when invalid on submit
   bool _googleSignInLoading = false;
+  /// One fetch of `/api/user-details` per DigiLocker step visit (fresh Aadhaar photo URL).
+  bool _digilockerUserDetailsFetchStarted = false;
 
   // One-shot guard: if we already attempted SSO for this widget instance,
   // don't retry on rebuild.
@@ -249,7 +252,10 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     if (!mounted) return;
-    setState(() => _loadWorkflowActive = true);
+    setState(() {
+      _loadWorkflowActive = true;
+      _digilockerUserDetailsFetchStarted = false;
+    });
 
     debugPrint('[HomePage] _loadWorkflow START: ${widget.company} / ${widget.workflowName}');
     debugPrint('[HomePage] _loadWorkflow queryParams: ${widget.queryParams}');
@@ -1298,9 +1304,22 @@ class _HomePageState extends State<HomePage> {
     final data = Map<String, dynamic>.from(_formNotifier.formData);
     // Do not send `save` in kyc-post-v2 body (backend expectation).
 
-    // Add brokerage_plan for segments screen
     final store = context.read<AppStore>();
+    final activeFields = _getActiveFields(store);
+    final fieldList = activeFields?['fields'] as List?;
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
+    final nomineePos = ctx?['position']?.toString();
+    final nomineeLbl = ctx?['page']?['data']?['label']?.toString();
+    applyNomineeStepSubmitPayload(
+      data: data,
+      fields: fieldList,
+      runtimeFieldVisibility: _formNotifier.fieldVisibility,
+      company: widget.company,
+      position: nomineePos,
+      pageLabel: nomineeLbl,
+    );
+
+    // Add brokerage_plan for segments screen
     var panPos = ctx?['position']?.toString().toLowerCase() ?? '';
     var panLbl = ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
     if (panPos.isEmpty || panLbl.isEmpty) {
@@ -1308,14 +1327,23 @@ class _HomePageState extends State<HomePage> {
       panPos = (workflow?['position']?.toString() ?? panPos).toLowerCase();
       panLbl = (workflow?['data']?['label']?.toString() ?? panLbl).toLowerCase();
     }
-    // PAN verify POST: API expects yyyy-MM-dd for pan_dob_for_match; UI remains dd/MM/yyyy.
-    // `name` must be UPPERCASE on this step (live web parity).
-    if (_useDdMmYyyyPanDateStep(panPos, panLbl)) {
+    final pathSegment = _getKycPostPathSegment(ctx);
+    if (isPanVerifyKycPostStep(panPos, pathSegment)) {
+      final normalized = buildPanVerifyKycPostBody(data);
+      data
+        ..clear()
+        ..addAll(normalized);
+      _syncPanVerifyFieldsToForm(normalized);
+    } else if (_useDdMmYyyyPanDateStep(panPos, panLbl)) {
       final apiPanDob = tryFormatKycPanDobForMatchApi(data['pan_dob_for_match']);
       if (apiPanDob != null) data['pan_dob_for_match'] = apiPanDob;
       final rawName = data['name']?.toString();
       if (rawName != null && rawName.trim().isNotEmpty) {
-        data['name'] = rawName.toUpperCase();
+        data['name'] = rawName.trim().toUpperCase();
+      }
+      final rawPan = data['pan_number']?.toString();
+      if (rawPan != null && rawPan.trim().isNotEmpty) {
+        data['pan_number'] = rawPan.trim().toUpperCase();
       }
     }
     final position = ctx?['position']?.toString()?.toLowerCase();
@@ -1330,9 +1358,23 @@ class _HomePageState extends State<HomePage> {
       data['bse_cash'] = true;
       data['mf'] = true;
     }
-    final fields = _getActiveFields(context.read<AppStore>());
-    if (fields == null) return data;
-    final fieldList = fields['fields'] as List?;
+
+    // Only send fields for the active step — not entire accumulated formData.
+    if (fieldList != null && position != 'segments') {
+      final filtered = filterKycPostV2BodyForStep(
+        data: data,
+        fields: fieldList,
+        runtimeFieldVisibility: _formNotifier.fieldVisibility,
+        company: widget.company,
+        position: nomineePos,
+        pageLabel: nomineeLbl,
+      );
+      data
+        ..clear()
+        ..addAll(filtered);
+    }
+
+    if (activeFields == null) return data;
     if (fieldList == null) return data;
     final hasFile = fieldList.any((f) => f is Map && f['type'] == 'file');
     if (!hasFile) return data;
@@ -1662,6 +1704,28 @@ class _HomePageState extends State<HomePage> {
     return null;
   }
 
+  /// PAN already saved on this session — refresh workflow and continue (web parity).
+  Future<bool> _tryRecoverPanVerifyAlreadyExists(
+    AppStore store, {
+    required Map<String, dynamic> submissionData,
+  }) async {
+    await store.fetchUserDetails();
+    final ud = userDetailsDataMap(store.userDetails);
+    if (!panNumberMatchesUserDetails(submissionData, ud)) {
+      debugPrint(
+          '[HomePage] PAN already exists but user-details PAN mismatch — not recovering');
+      return false;
+    }
+    debugPrint(
+        '[HomePage] PAN already on this journey — refreshing get-context to advance');
+    await store.fetchWorkflowFieldsWithAuth(
+      widget.company,
+      widget.workflowName,
+      '',
+    );
+    return store.errorWithAuth == null;
+  }
+
   void _showPanStepKycPostFeedback(String message, {required bool isError}) {
     if (!mounted) return;
     // API often returns message "working" on success — not user-facing copy.
@@ -1945,15 +2009,25 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       
+      final currentPosition =
+          (ctx?['position']?.toString().toLowerCase() ?? '').trim();
+      final lowerPath = pathSegment.toLowerCase();
+
       final data = await _prepareFormData(skipValidation);
       data.remove('save');
+
+      // PAN verify (`pan10`): curl/web body only — trim name/PAN (trailing space breaks verify).
+      if (isPanVerifyKycPostStep(currentPosition, lowerPath)) {
+        final normalized = buildPanVerifyKycPostBody(data);
+        data
+          ..clear()
+          ..addAll(normalized);
+        debugPrint('[HomePage] PAN verify POST body: $data');
+      }
 
       // Initial email capture step: backend expects a trimmed body (email + a few fields).
       // Must NOT run on `email_otp` — pathSegment e.g. `email_otp4` still starts with `email`,
       // and clearing here would drop the OTP field and break verify_otp on the server.
-      final currentPosition =
-          (ctx?['position']?.toString().toLowerCase() ?? '').trim();
-      final lowerPath = pathSegment.toLowerCase();
       final isEmailOtpStep =
           currentPosition == 'email_otp' || lowerPath.startsWith('email_otp');
       final isEmailOnlySubmitStep = !isEmailOtpStep &&
@@ -2158,6 +2232,17 @@ class _HomePageState extends State<HomePage> {
           Fluttertoast.showToast(msg: err2, gravity: ToastGravity.TOP);
           if (mounted) setState(() => _submitLoading = false);
         }
+      } else if (isPanStep &&
+          isPanNumberAlreadyExistsResponse(body) &&
+          await _tryRecoverPanVerifyAlreadyExists(store, submissionData: data)) {
+        debugPrint(
+            '[HomePage] PAN verify: already exists — treated as success, advancing');
+        _showPanStepKycPostFeedback('PAN verified successfully', isError: false);
+        await _afterKycPostV2Success(
+          store,
+          <String, dynamic>{'success': true, 'message': 'working'},
+          data,
+        );
       } else {
         final errMsg = _kycPostV2UserMessage(body) ??
             _errorMessageFromResponse(res.statusCode, res.body);
@@ -2457,6 +2542,13 @@ class _HomePageState extends State<HomePage> {
                 );
                 // Must run in same callback *after* updateFields so API `value` is in formData first.
                 _runPersonalDetailsBpWealthPipeline(store, fieldList);
+                final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+                _syncDigilockerAadharImage(
+                  store,
+                  fieldList,
+                  position: ctx?['position']?.toString(),
+                  pageLabel: ctx?['page']?['data']?['label']?.toString(),
+                );
               });
 
               // --- Stepper UI (hidden temporarily) ---
@@ -2999,6 +3091,67 @@ class _HomePageState extends State<HomePage> {
       if (m != null) return m;
     }
     return raw.toString();
+  }
+
+  Map<dynamic, dynamic>? _findAadharImageFieldDef(List<dynamic> fieldList) {
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      if (isAadharImageFieldName(f['name']?.toString())) return f;
+    }
+    return null;
+  }
+
+  void _applyDigilockerAadharImageToForm(AppStore store, List<dynamic> fieldList) {
+    final aadharField = _findAadharImageFieldDef(fieldList);
+    if (aadharField == null) return;
+    final name = aadharField['name']?.toString();
+    if (name == null || name.isEmpty) return;
+
+    final resolved = resolveDigilockerAadharImageRaw(
+      userDetails: store.userDetails,
+      fieldValue: aadharField['value'],
+      formValue: _formNotifier.formData[name],
+    );
+    if (resolved == null) return;
+    final current = _formNotifier.formData[name]?.toString().trim() ?? '';
+    if (resolved.trim() == current) return;
+
+    debugPrint(
+        '[HomePage] DigiLocker aadhar_image sync: $current → ${resolved.trim()}');
+    _formNotifier.handleChange(
+      name,
+      resolved,
+      type: aadharField['type']?.toString() ?? 'text',
+      validationType: aadharField['validation']?.toString(),
+    );
+  }
+
+  void _syncDigilockerAadharImage(
+    AppStore store,
+    List<dynamic> fieldList, {
+    String? position,
+    String? pageLabel,
+  }) {
+    if (!isDigilockerStep(position, pageLabel)) return;
+
+    _applyDigilockerAadharImageToForm(store, fieldList);
+
+    if (_digilockerUserDetailsFetchStarted) return;
+    _digilockerUserDetailsFetchStarted = true;
+    store.fetchUserDetails().then((_) {
+      if (!mounted) return;
+      _applyDigilockerAadharImageToForm(store, fieldList);
+      setState(() {});
+    });
+  }
+
+  void _syncPanVerifyFieldsToForm(Map<String, dynamic> normalized) {
+    for (final entry in normalized.entries) {
+      final current = _formNotifier.formData[entry.key]?.toString() ?? '';
+      final next = entry.value?.toString() ?? '';
+      if (current == next) continue;
+      _formNotifier.handleChange(entry.key, entry.value, type: 'text');
+    }
   }
 
   /// Prefer in-memory value; if unset (`null` / missing), use workflow `field['value']` (dropoff).
@@ -3976,6 +4129,15 @@ class _HomePageState extends State<HomePage> {
         return false;
       }
 
+      // Nominee: hide ghost PAN/Aadhaar boxes (nominee 2 / 3) with no label.
+      if (isNomineeKycStep(position, pageLabel) &&
+          shouldHideNomineeGhostInputField(
+            field: f,
+            formData: _formNotifier.formData,
+          )) {
+        return false;
+      }
+
       // Baaki sab fields (including reenter_account_number) dikhao
       return true;
     }).toList();
@@ -4009,11 +4171,18 @@ class _HomePageState extends State<HomePage> {
 
       if (aadharField != null) {
         final aName = aadharField['name']?.toString() ?? '';
-        final rawValue = _formNotifier.formData[aName] ?? aadharField['value'];
+        final rawValue = resolveDigilockerAadharImageRaw(
+          userDetails: store.userDetails,
+          fieldValue: aadharField['value'],
+          formValue: _formNotifier.formData[aName],
+        );
         final valueStr = rawValue?.toString() ?? '';
         if (valueStr.isNotEmpty) {
           if (valueStr.startsWith('http')) {
-            aadharImageUrl = valueStr;
+            aadharImageUrl = cacheBustDocumentUrl(
+              valueStr,
+              version: digilockerAadharImageCacheBustVersion(store.userDetails),
+            );
           } else {
             String base64Data = valueStr.trim();
             final match = RegExp(r'data:image/[^;]+;base64,', caseSensitive: false).firstMatch(base64Data);
@@ -4093,6 +4262,7 @@ class _HomePageState extends State<HomePage> {
                         )
                       : Image.network(
                           aadharImageUrl!,
+                          key: ValueKey<String>(aadharImageUrl!),
                           fit: BoxFit.cover,
                           loadingBuilder: (context, child, loadingProgress) {
                             if (loadingProgress == null) return child;

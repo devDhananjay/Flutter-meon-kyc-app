@@ -929,6 +929,64 @@ bool digilockerFormFieldReadOnly(Map<dynamic, dynamic> field) {
   return type != 'button' && type != 'hidden';
 }
 
+bool isAadharImageFieldName(String? name) {
+  final n = (name ?? '').toLowerCase();
+  return n == 'aadhar_image' || n == 'aadhaar_image';
+}
+
+/// Reads `user-details` payload (`{ data: { ... } }` or flat map).
+Map<String, dynamic>? userDetailsDataMap(dynamic userDetails) {
+  if (userDetails is! Map) return null;
+  final data = userDetails['data'];
+  if (data is Map<String, dynamic>) return data;
+  if (data is Map) return Map<String, dynamic>.from(data);
+  return Map<String, dynamic>.from(userDetails);
+}
+
+/// Best Aadhaar photo for DigiLocker card: user-details → get-context `value` → formData.
+/// `adharimg` is legacy fallback when `aadhar_image` is empty.
+String? resolveDigilockerAadharImageRaw({
+  dynamic userDetails,
+  dynamic fieldValue,
+  dynamic formValue,
+}) {
+  String? pick(dynamic v) {
+    final s = v?.toString().trim() ?? '';
+    return s.isEmpty ? null : s;
+  }
+
+  final ud = userDetailsDataMap(userDetails);
+  final fromUser =
+      pick(ud?['aadhar_image']) ?? pick(ud?['adharimg']) ?? pick(ud?['aadhaar_image']);
+
+  return fromUser ?? pick(fieldValue) ?? pick(formValue);
+}
+
+/// Cache-bust version for remote bucket URLs (e.g. after new DigiLocker fetch).
+String? digilockerAadharImageCacheBustVersion(dynamic userDetails) {
+  final ud = userDetailsDataMap(userDetails);
+  if (ud == null) return null;
+  for (final key in [
+    'digilocker_timestamp',
+    'detailspan_timestamp',
+    'digitrans',
+  ]) {
+    final v = ud[key]?.toString().trim();
+    if (v != null && v.isNotEmpty) return v;
+  }
+  return null;
+}
+
+/// Appends `v=` query param so [Image.network] reloads after DigiLocker refresh.
+String cacheBustDocumentUrl(String url, {String? version}) {
+  if (version == null || version.trim().isEmpty) return url;
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme) return url;
+  final q = Map<String, String>.from(uri.queryParameters);
+  q['v'] = version.trim();
+  return uri.replace(queryParameters: q).toString();
+}
+
 /// Fetched-data review steps where most fields must not be edited (KRA, DigiLocker).
 bool fetchedDataReviewFieldReadOnly(
   String? position,
@@ -1088,6 +1146,50 @@ bool kycFieldVisibleForFormStep(
   }
   // Non–personal_details: never honour adminFieldShow for UI (avoids extra fields on nominee etc.).
   return kycApiFieldVisibleStrictFieldShow(f);
+}
+
+/// `kyc-post-v2` body: only fields visible on the current step (web parity).
+/// Drops stale keys from other steps (e.g. empty nominee_* on `pan10`).
+Map<String, dynamic> filterKycPostV2BodyForStep({
+  required Map<String, dynamic> data,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+  bool omitEmptyStrings = true,
+}) {
+  if (fields == null || fields.isEmpty) return data;
+
+  final visible = getVisibleFields(
+    fields,
+    runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+
+  final allowed = <String>{};
+  for (final f in visible) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null || name.isEmpty) continue;
+    final type = (f['type']?.toString() ?? '').toLowerCase();
+    if (type == 'button' || type == 'hidden') continue;
+    allowed.add(name);
+  }
+
+  if (allowed.isEmpty) return data;
+
+  final out = <String, dynamic>{};
+  for (final name in allowed) {
+    if (!data.containsKey(name)) continue;
+    final v = data[name];
+    if (v == null) continue;
+    if (omitEmptyStrings && v is String && v.trim().isEmpty) continue;
+    out[name] = v;
+  }
+  return out;
 }
 
 List<dynamic> getVisibleFields(

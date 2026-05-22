@@ -44,6 +44,52 @@ DateTime? parseKycDateValueAsDdMmYyyy(dynamic value) {
   return DateTime(year, month, day);
 }
 
+/// PAN verify step (`pan10`) — exact web/curl body: trim, uppercase name/PAN, ISO DOB.
+bool isPanVerifyKycPostStep(String? position, String pathSegment) {
+  final p = (position ?? '').toLowerCase();
+  final path = pathSegment.toLowerCase();
+  if (p == 'detailspan' || path.startsWith('detailspan')) return false;
+  return p == 'pan' || path.startsWith('pan');
+}
+
+/// HTTP 200 + `success: false` when PAN was already saved on this journey.
+bool isPanNumberAlreadyExistsResponse(Map<String, dynamic>? body) {
+  if (body == null) return false;
+  final msg = (body['msg'] ?? body['message'] ?? '').toString().toLowerCase();
+  return msg.contains('pan number already exists') ||
+      msg.contains('pan already exists');
+}
+
+/// Same PAN already on file for this user (user-details) — safe to advance like web.
+bool panNumberMatchesUserDetails(
+  Map<String, dynamic> submissionData,
+  Map<String, dynamic>? userDetailsData,
+) {
+  if (userDetailsData == null) return false;
+  final submitted =
+      (submissionData['pan_number'] ?? '').toString().trim().toUpperCase();
+  if (submitted.isEmpty) return false;
+  for (final key in ['pan_number', 'temp_pan_no']) {
+    final stored = userDetailsData[key]?.toString().trim().toUpperCase() ?? '';
+    if (stored.isNotEmpty && stored == submitted) return true;
+  }
+  return false;
+}
+
+/// Builds `kyc-post-v2` body for PAN verify (`pan10`) only.
+Map<String, dynamic> buildPanVerifyKycPostBody(Map<String, dynamic> data) {
+  final name = (data['name'] ?? '').toString().trim().toUpperCase();
+  final pan = (data['pan_number'] ?? '').toString().trim().toUpperCase();
+  final dob = tryFormatKycPanDobForMatchApi(data['pan_dob_for_match']) ??
+      (data['pan_dob_for_match']?.toString().trim() ?? '');
+
+  final out = <String, dynamic>{};
+  if (name.isNotEmpty) out['name'] = name;
+  if (dob.isNotEmpty) out['pan_dob_for_match'] = dob;
+  if (pan.isNotEmpty) out['pan_number'] = pan;
+  return out;
+}
+
 /// PAN verify `kyc-post-v2` (`pan10`): API expects **`yyyy-MM-dd`** (e.g. `2005-11-05`).
 /// UI stays `dd/MM/yyyy`; only the POST body uses this ISO format.
 String? tryFormatKycPanDobForMatchApi(dynamic value) {

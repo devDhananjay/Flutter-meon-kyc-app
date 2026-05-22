@@ -16,7 +16,7 @@ class BaseAPI {
   /// Used by [ApiClient] multipart requests; same header as JSON calls.
   static String? csrfFromJwtAccessToken(String token) => _csrfFromAccessToken(token);
 
-  static String? _csrfFromAccessToken(String token) {
+  static Map<String, dynamic>? _jwtPayloadMap(String token) {
     final firstDot = token.indexOf('.');
     final secondDot = token.indexOf('.', firstDot + 1);
     if (firstDot <= 0 || secondDot <= firstDot) return null;
@@ -26,14 +26,27 @@ class BaseAPI {
     try {
       final jsonStr = utf8.decode(base64Url.decode(padded));
       final decoded = jsonDecode(jsonStr);
-      if (decoded is! Map) return null;
-      final csrf = decoded['csrf'];
-      if (csrf == null) return null;
-      final s = csrf.toString();
-      return s.isEmpty ? null : s;
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      return null;
     } catch (_) {
       return null;
     }
+  }
+
+  static String? _csrfFromAccessToken(String token) {
+    final csrf = _jwtPayloadMap(token)?['csrf'];
+    if (csrf == null) return null;
+    final s = csrf.toString();
+    return s.isEmpty ? null : s;
+  }
+
+  /// Flask session cookie — web/curl send `session_id=...`; match on mobile JSON calls.
+  static String? sessionIdFromJwtAccessToken(String token) {
+    final sid = _jwtPayloadMap(token)?['session_id'];
+    if (sid == null) return null;
+    final s = sid.toString().trim();
+    return s.isEmpty ? null : s;
   }
 
   static void _applyBearerAndCsrf(Map<String, String> headers, String? token) {
@@ -41,6 +54,13 @@ class BaseAPI {
     headers['Authorization'] = 'Bearer $token';
     final csrf = _csrfFromAccessToken(token);
     if (csrf != null) headers['X-CSRF-TOKEN'] = csrf;
+    final sessionId = sessionIdFromJwtAccessToken(token);
+    if (sessionId != null) {
+      final existing = headers['Cookie']?.trim();
+      final sessionCookie = 'session_id=$sessionId';
+      headers['Cookie'] =
+          existing == null || existing.isEmpty ? sessionCookie : '$existing; $sessionCookie';
+    }
   }
 
   static void _log(String tag, String message, [String? extra]) {
