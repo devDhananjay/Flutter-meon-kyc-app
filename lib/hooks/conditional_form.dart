@@ -371,11 +371,32 @@ class ConditionalFormNotifier extends ChangeNotifier {
       // Nominee address copy/clear is handled only via same-as checkbox sync.
       if (isNomineeAddressTargetField(e.key)) continue;
       if (onNominee && isNomineeSyncProtectedFormField(e.key)) continue;
+      if (onNominee &&
+          e.key == kExtraNomineeField &&
+          !isExtraNomineeDropdownVisible(
+            formData: formData,
+            fields: _fields,
+            runtimeFieldVisibility: fieldVisibility,
+            position: stepPos,
+            pageLabel: stepLbl,
+          )) {
+        continue;
+      }
       debugPrint('[ConditionalForm] Action updated field: ${e.key} = ${e.value}');
       formData[e.key] = e.value;
     }
 
-    if (onNominee) _clearNomineeProtectedEditableOverrides();
+    if (onNominee) {
+      applyExtraNomineeFieldState(
+        formData: formData,
+        fields: _fields,
+        runtimeFieldVisibility: fieldVisibility,
+        fieldEditable: fieldEditable,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+      _clearNomineeProtectedEditableOverrides();
+    }
   }
 
   void handleBlur(

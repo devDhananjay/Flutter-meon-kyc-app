@@ -1374,6 +1374,14 @@ class _HomePageState extends State<HomePage> {
       data
         ..clear()
         ..addAll(filtered);
+      syncExtraNomineeSubmitPayload(
+        data: data,
+        fields: fieldList,
+        runtimeFieldVisibility: _formNotifier.fieldVisibility,
+        company: widget.company,
+        position: nomineePos,
+        pageLabel: nomineeLbl,
+      );
     }
 
     if (activeFields == null) return data;

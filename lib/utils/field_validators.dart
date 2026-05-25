@@ -533,23 +533,6 @@ Map<dynamic, dynamic>? _findFieldDefByName(
   return null;
 }
 
-/// Select value for `extra_nominee` when share is full — uses API `values` (e.g. "No").
-String _extraNomineeNoValue(List<dynamic>? fields) {
-  final def = _findFieldDefByName(fields, kExtraNomineeField) ??
-      _findFieldDefByName(
-        fields,
-        resolveAddMoreNomineeDropdownFieldName(fields) ?? '',
-      );
-  final values = def?['values'];
-  if (values is List) {
-    for (final v in values) {
-      final s = v?.toString() ?? '';
-      if (s.toLowerCase() == 'no') return s;
-    }
-  }
-  return 'No';
-}
-
 double? _parseNomineePercentageValue(dynamic raw) {
   if (raw == null || raw.toString().trim().isEmpty) return null;
   return double.tryParse(raw.toString().replaceAll(RegExp(r'[^0-9.]'), ''));
@@ -978,6 +961,111 @@ void _applyNomineeAddButtonsVisibility({
   }
 }
 
+/// "Do you want to add more nominee" visible only after nominee 3 % and total &lt; 100%.
+bool isExtraNomineeDropdownVisible({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (_findFieldDefByName(fields, kExtraNomineeField) == null) return false;
+
+  final total = sumActiveNomineePercentages(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+  if (_nomineeShareSumAtLeast100(total)) return false;
+
+  final add3Checked = isCheckboxCheckedValue(formData[kAddThirdNomineeField]);
+  final n3Entered = _nomineeSlotPercentageEntered(formData, fields, 3);
+  return add3Checked && n3Entered;
+}
+
+void applyExtraNomineeFieldState({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  required Map<String, bool> fieldEditable,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (_findFieldDefByName(fields, kExtraNomineeField) == null) return;
+
+  final show = isExtraNomineeDropdownVisible(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+
+  if (!show) {
+    runtimeFieldVisibility[kExtraNomineeField] = false;
+    formData[kExtraNomineeField] = '';
+    fieldEditable[kExtraNomineeField] = true;
+  } else {
+    runtimeFieldVisibility[kExtraNomineeField] = true;
+    fieldEditable.remove(kExtraNomineeField);
+  }
+}
+
+/// Active nominee slots sum to 100% (e.g. single nominee at 100%).
+bool isNomineeActiveShareFull({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeKycStep(position, pageLabel) || !_addNomineeSelectedYes(formData)) {
+    return false;
+  }
+  final total = sumActiveNomineePercentages(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+  return _nomineeShareSumAtLeast100(total);
+}
+
+/// Submit: `extra_nominee` blank until the dropdown is shown; then keep user Yes/No.
+void syncExtraNomineeSubmitPayload({
+  required Map<String, dynamic> data,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeKycStep(position, pageLabel) || !_addNomineeSelectedYes(data)) {
+    return;
+  }
+  if (_findFieldDefByName(fields, kExtraNomineeField) == null) return;
+  if (isExtraNomineeDropdownVisible(
+    formData: data,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  )) {
+    return;
+  }
+  data[kExtraNomineeField] = '';
+}
+
 /// Runs on every nominee % change — updates visibility from live form values (call last).
 void syncNomineePercentageSideEffects({
   required Map<String, dynamic> formData,
@@ -1000,31 +1088,15 @@ void syncNomineePercentageSideEffects({
     runtimeFieldVisibility: runtimeFieldVisibility,
   );
 
-  if (_findFieldDefByName(fields, kExtraNomineeField) != null) {
-    final total = sumActiveNomineePercentages(
-      formData: formData,
-      fields: fields,
-      runtimeFieldVisibility: runtimeFieldVisibility,
-      company: company,
-      position: position,
-      pageLabel: pageLabel,
-    );
-
-    // "Add more nominee" only after 3rd nominee tier is on and slot-3 % is filled.
-    final add3Checked = isCheckboxCheckedValue(formData[kAddThirdNomineeField]);
-    final n3Entered = _nomineeSlotPercentageEntered(formData, fields, 3);
-    final showExtraNominee =
-        add3Checked && n3Entered && !_nomineeShareSumAtLeast100(total);
-
-    if (!showExtraNominee) {
-      runtimeFieldVisibility[kExtraNomineeField] = false;
-      formData[kExtraNomineeField] = _extraNomineeNoValue(fields);
-      fieldEditable[kExtraNomineeField] = true;
-    } else {
-      runtimeFieldVisibility[kExtraNomineeField] = true;
-      fieldEditable.remove(kExtraNomineeField);
-    }
-  }
+  applyExtraNomineeFieldState(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    fieldEditable: fieldEditable,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
 
   _applyNomineeSupplementaryFieldsVisibility(
     formData: formData,
@@ -1044,6 +1116,14 @@ void applyNomineeStepSubmitPayload({
   syncNomineePercentageSideEffects(
     formData: data,
     fieldEditable: {},
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+  syncExtraNomineeSubmitPayload(
+    data: data,
     fields: fields,
     runtimeFieldVisibility: runtimeFieldVisibility,
     company: company,
@@ -1095,8 +1175,16 @@ String? validateNomineePercentageTotal({
     return 'Total nominee share cannot exceed 100%';
   }
   if (!_nomineeShareEquals100(total)) {
-    // "Do you want to add more nominee" = Yes → submit allowed below 100%.
-    if (_isKycYesNoValue(formData[kExtraNomineeField])) {
+    // "Do you want to add more nominee" = Yes (only when dropdown is visible).
+    if (isExtraNomineeDropdownVisible(
+          formData: formData,
+          fields: fields,
+          runtimeFieldVisibility: runtimeFieldVisibility,
+          company: company,
+          position: position,
+          pageLabel: pageLabel,
+        ) &&
+        _isKycYesNoValue(formData[kExtraNomineeField])) {
       return null;
     }
     return 'Total nominee share must equal 100%';
