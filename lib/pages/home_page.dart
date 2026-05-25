@@ -101,6 +101,17 @@ class _HomePageState extends State<HomePage> {
   bool _segmentsBrokerageUserConfirmed = false;
   String? _segmentsBpDefaultsStepKey;
 
+  /// Last good authenticated step — avoids flashing unauth "Start your KYC" during get-context.
+  dynamic _cachedAuthenticatedPageFields;
+  String? _cachedPageTitle;
+  String? _cachedPosition;
+
+  /// Sticky header step name — stays visible during submit until the next step is synced.
+  String? _headerDisplayPosition;
+
+  /// Set when user picks Yes on tax residency; cleared only after they select No.
+  bool _fatcaTaxResidencyMustPickNo = false;
+
   @override
   void initState() {
     super.initState();
@@ -199,7 +210,11 @@ class _HomePageState extends State<HomePage> {
   ) async {
     if (_ssoAttempted || _ssoInProgress) return _ssoAttempted;
 
-    _ssoInProgress = true;
+    if (mounted) {
+      setState(() => _ssoInProgress = true);
+    } else {
+      _ssoInProgress = true;
+    }
     try {
       if (!context.mounted) return false;
       final creds = await resolveSsoCredentialsForSsoApi(context);
@@ -241,8 +256,15 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] SSO login exception: $e\n$st');
       return false;
     } finally {
-      _ssoInProgress = false;
-      _ssoAttempted = true;
+      if (mounted) {
+        setState(() {
+          _ssoInProgress = false;
+          _ssoAttempted = true;
+        });
+      } else {
+        _ssoInProgress = false;
+        _ssoAttempted = true;
+      }
     }
   }
 
@@ -281,11 +303,10 @@ class _HomePageState extends State<HomePage> {
           !store.isReturningFromWebView;
       if (shouldTrySso) {
         debugPrint('[HomePage] First-load: forcing SSO attempt (hasToken=$hasToken)');
-        if (mounted) setState(() => _submitLoading = true);
+        // Do not set _submitLoading — SSO dialog is separate; avoids Processing under modal.
         final ssoOk = context.mounted
             ? await _trySsoLoginIfNeeded(context, store)
             : false;
-        if (mounted) setState(() => _submitLoading = false);
         hasToken = hasToken || ssoOk;
       } else if (!_ssoAttempted) {
         debugPrint(
@@ -875,15 +896,113 @@ class _HomePageState extends State<HomePage> {
     return KycStepperBar.defaultSteps;
   }
 
+  /// True when the user is mid authenticated KYC (never fall back to unauth workflow UI).
+  bool _isMidAuthenticatedJourney(AppStore store) {
+    return store.fieldsWithAuth != null || _cachedAuthenticatedPageFields != null;
+  }
+
+  void _cacheAuthenticatedStepUi({
+    required AppStore store,
+    required Map? ctx,
+    String? pageTitle,
+    dynamic activePage,
+  }) {
+    if (!_isMidAuthenticatedJourney(store) && ctx == null) {
+      return;
+    }
+    final position = ctx?['position']?.toString();
+    if (position != null && position.isNotEmpty) {
+      _cachedPosition = position;
+      if (!store.loadingWithAuth && !_submitLoading) {
+        _headerDisplayPosition = position;
+      }
+    }
+    if (pageTitle != null &&
+        !pageTitle.toLowerCase().contains('start your kyc')) {
+      _cachedPageTitle = pageTitle;
+    }
+    if (activePage is Map) {
+      _cachedAuthenticatedPageFields = activePage;
+    }
+  }
+
+  void _clearAuthenticatedStepCache() {
+    _cachedAuthenticatedPageFields = null;
+    _cachedPageTitle = null;
+    _cachedPosition = null;
+    _headerDisplayPosition = null;
+    _fatcaTaxResidencyMustPickNo = false;
+  }
+
+  /// Position from get-context only when AppStore and context agree (fully settled).
+  String? _resolveSyncedPositionFromStore(AppStore store) {
+    final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+    final fromCtx = ctx?['position']?.toString().trim();
+    if (fromCtx == null || fromCtx.isEmpty) {
+      return null;
+    }
+    final fromStore = store.currentPosition?.trim();
+    if (fromStore != null &&
+        fromStore.isNotEmpty &&
+        fromStore.toLowerCase() != fromCtx.toLowerCase()) {
+      return null;
+    }
+    return fromCtx;
+  }
+
+  /// Pin current step in header before submit so the label does not vanish mid-save.
+  void _captureHeaderPositionForSubmit(AppStore store) {
+    final p = _resolveSyncedPositionFromStore(store) ??
+        _cachedPosition?.trim() ??
+        store.currentPosition?.trim();
+    if (p != null && p.isNotEmpty) {
+      _headerDisplayPosition = p;
+    }
+  }
+
   dynamic _getActiveFields(AppStore store) {
     final withAuth = store.fieldsWithAuth;
-    if (withAuth != null &&
-        withAuth is Map &&
-        withAuth['context'] != null &&
-        (withAuth['context']['page']?['fields'] as List?)?.isNotEmpty == true) {
-      return withAuth['context']['page'];
+    if (withAuth != null && withAuth is Map && withAuth['context'] != null) {
+      final page = withAuth['context']['page'];
+      if (page is Map) {
+        final fields = page['fields'] as List?;
+        if (fields != null && fields.isNotEmpty) {
+          _cachedAuthenticatedPageFields = page;
+          return page;
+        }
+        // Authenticated journey: keep auth page even if fields are momentarily empty.
+        if (_isMidAuthenticatedJourney(store)) {
+          return page;
+        }
+      }
+    }
+    if (_isMidAuthenticatedJourney(store) &&
+        _cachedAuthenticatedPageFields != null) {
+      return _cachedAuthenticatedPageFields;
     }
     return store.fields;
+  }
+
+  Widget _buildStepTransitionScaffold({
+    required bool showStepper,
+    required Widget stepperWidget,
+    required String message,
+  }) {
+    return Scaffold(
+      backgroundColor: KycTheme.background,
+      body: SafeArea(
+        child: showStepper
+            ? Column(
+                children: [
+                  stepperWidget,
+                  Expanded(
+                    child: Loader(message: message, minimal: true),
+                  ),
+                ],
+              )
+            : Loader(message: message),
+      ),
+    );
   }
 
   /// Position + page label for form validation (same resolution as [_buildForm]).
@@ -945,6 +1064,126 @@ class _HomePageState extends State<HomePage> {
   bool _isPersonalDetailsStep(String? position, String? pageLabel) {
     return (position ?? '') == 'personal_details' ||
         (pageLabel ?? '') == 'personal_details';
+  }
+
+  /// Personal details fields currently set to Yes for tax residency outside India.
+  List<Map<dynamic, dynamic>> _fatcaTaxResidencyYesFields(List<dynamic> fieldList) {
+    final out = <Map<dynamic, dynamic>>[];
+    for (final raw in fieldList) {
+      if (raw is! Map) continue;
+      final f = Map<dynamic, dynamic>.from(raw);
+      if (!isTaxResidencyOutsideIndiaField(f)) continue;
+      final name = f['name']?.toString() ?? '';
+      if (name.isEmpty) continue;
+      if (isAffirmativeYesValue(_formNotifier.formData[name])) {
+        out.add(f);
+      }
+    }
+    return out;
+  }
+
+  void _resetFatcaTaxResidencyFieldsToNo(List<Map<dynamic, dynamic>> fields) {
+    for (final f in fields) {
+      final name = f['name']?.toString() ?? '';
+      if (name.isEmpty) continue;
+      final values = f['values'] as List?;
+      final vNo = _matchRadioOption(values, 'No');
+      _formNotifier.handleChange(
+        name,
+        vNo ?? 'No',
+        type: f['type']?.toString() ?? 'select',
+        validationType: f['validation']?.toString(),
+        validateWith: f['validateWith']?.toString(),
+      );
+    }
+  }
+
+  /// Resets tax residency to No, shows modal + toast. Returns true if submit must stop.
+  bool _enforceFatcaTaxResidencyNoOnSubmit({
+    required String? position,
+    required String? pageLabel,
+    required List<dynamic> fieldList,
+  }) {
+    if (!_isPersonalDetailsStep(position, pageLabel)) return false;
+    final yesFields = _fatcaTaxResidencyYesFields(fieldList);
+    if (!_fatcaTaxResidencyMustPickNo && yesFields.isEmpty) return false;
+
+    if (yesFields.isNotEmpty) {
+      _resetFatcaTaxResidencyFieldsToNo(yesFields);
+    }
+    if (mounted) {
+      setState(() => _fatcaTaxResidencyMustPickNo = true);
+    } else {
+      _fatcaTaxResidencyMustPickNo = true;
+    }
+    if (mounted) setState(() {});
+
+    Fluttertoast.showToast(
+      msg: 'Tax Residency outside India must be marked as No to continue.',
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.red.shade700,
+      textColor: Colors.white,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showFatcaTaxResidencyBlockedModal();
+    });
+    return true;
+  }
+
+  /// FATCA: eKYC cannot proceed when tax residency outside India is Yes.
+  Future<void> _showFatcaTaxResidencyBlockedModal() {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Since you have opted "Yes" for FATCA, you are not allowed to continue the process',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: KycTheme.textPrimary,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Material(
+                  color: KycTheme.buttonEnabledPurple,
+                  borderRadius: BorderRadius.circular(6),
+                  child: InkWell(
+                    onTap: () => Navigator.of(ctx).pop(),
+                    borderRadius: BorderRadius.circular(6),
+                    child: const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _showDdpiSebiCircularModal() {
@@ -1187,6 +1426,40 @@ class _HomePageState extends State<HomePage> {
                   );
               final previousValue = _formNotifier.formData[n];
               final changedField = f ?? field;
+              final isTaxResidencyYesOnPersonalDetails =
+                  _isPersonalDetailsStep(position, pageLabel) &&
+                      isTaxResidencyOutsideIndiaField(changedField) &&
+                      isAffirmativeYesValue(v);
+              if (_isPersonalDetailsStep(position, pageLabel) &&
+                  isTaxResidencyOutsideIndiaField(changedField) &&
+                  !isAffirmativeYesValue(v)) {
+                if (_fatcaTaxResidencyMustPickNo && mounted) {
+                  setState(() => _fatcaTaxResidencyMustPickNo = false);
+                }
+              }
+              if (isTaxResidencyYesOnPersonalDetails) {
+                final values = changedField['values'] as List?;
+                final vNo = _matchRadioOption(values, 'No');
+                if (mounted) {
+                  setState(() => _fatcaTaxResidencyMustPickNo = true);
+                } else {
+                  _fatcaTaxResidencyMustPickNo = true;
+                }
+                _formNotifier.handleChange(
+                  n,
+                  vNo ?? 'No',
+                  type: f?['type'] ?? changedField['type']?.toString() ?? 'select',
+                  validationType: f?['validation']?.toString(),
+                  validateWith: f?['validateWith']?.toString(),
+                );
+                if (mounted) setState(() {});
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  _showFatcaTaxResidencyBlockedModal();
+                });
+                return;
+              }
+
               final isDdpiYesOnPersonalDetails = _isPersonalDetailsStep(
                     position,
                     pageLabel,
@@ -1478,7 +1751,10 @@ class _HomePageState extends State<HomePage> {
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] Send OTP / Submit START');
-    setState(() => _submitLoading = true);
+    setState(() {
+      _captureHeaderPositionForSubmit(store);
+      _submitLoading = true;
+    });
 
     try {
       final data = await _prepareFormData(skipValidation);
@@ -1682,14 +1958,10 @@ class _HomePageState extends State<HomePage> {
         // Small delay for smooth UI transition
         if (mounted) {
           await Future.delayed(const Duration(milliseconds: 300));
+          setState(() => _submitLoading = false);
           // Check for redirect before navigating
           await _checkAndHandleRedirect(store);
-          if (!mounted) return;
-          // Only navigate if not redirected
-          final response = store.fieldsWithAuth;
-          if (response is! Map || response['redirect'] != true) {
-            context.go('/${widget.company}/${widget.workflowName}');
-          }
+          // Context already refreshed via get-context — avoid context.go (prevents Start-screen flash).
         }
       } else {
         final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
@@ -1934,12 +2206,7 @@ class _HomePageState extends State<HomePage> {
       setState(() => _submitLoading = false);
       // Check for redirect before navigating
       await _checkAndHandleRedirect(store);
-      if (!mounted) return;
-      // Only navigate if not redirected
-      final response = store.fieldsWithAuth;
-      if (response is! Map || response['redirect'] != true) {
-        context.go('/${widget.company}/${widget.workflowName}');
-      }
+      // Context already refreshed via get-context — avoid context.go (prevents Start-screen flash).
     }
   }
 
@@ -1948,6 +2215,18 @@ class _HomePageState extends State<HomePage> {
     final store = context.read<AppStore>();
     _panStepApiFeedback = '';
     _panStepApiFeedbackIsError = false;
+
+    final submitStep = _submitValidationStep(store);
+    final submitActiveFields = _getActiveFields(store);
+    final submitFieldList =
+        (submitActiveFields?['fields'] as List?) ?? <dynamic>[];
+    if (_enforceFatcaTaxResidencyNoOnSubmit(
+      position: submitStep.position,
+      pageLabel: submitStep.pageLabel,
+      fieldList: submitFieldList,
+    )) {
+      return;
+    }
 
     // Enforce Terms & Conditions on mobile step for authenticated flows
     if (!skipValidation) {
@@ -2017,7 +2296,10 @@ class _HomePageState extends State<HomePage> {
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] _handleCommonSubmit START');
-    setState(() => _submitLoading = true);
+    setState(() {
+      _captureHeaderPositionForSubmit(store);
+      _submitLoading = true;
+    });
     try {
       final withAuth = store.fieldsWithAuth as Map?;
       final ctx = withAuth?['context'] as Map?;
@@ -2432,29 +2714,65 @@ class _HomePageState extends State<HomePage> {
           debugPrint('[HomePage] Logout API error (continuing anyway): $e');
         }
       }
-      
+
       // Step 2: Clear all auth tokens and data
       await StorageService.clearAll();
       debugPrint('[HomePage] Tokens cleared');
-      // Keep post-logout flow on get-user token until app restart.
-      StorageService.setSsoAutoLoginEnabled(false);
-      _ssoAttempted = true;
-      
+      _clearAuthenticatedStepCache();
+
+      // Post-logout: SSO-only login (user must sign in again via SSO).
+      // StorageService.setSsoAutoLoginEnabled(false);
+      StorageService.setSsoAutoLoginEnabled(true);
+      _ssoAttempted = false;
+      _ssoInProgress = false;
+
       // Step 3: Reset form state
       _formNotifier.resetForm();
-      
+
       // Step 4: Reset AppStore state
       final store = context.read<AppStore>();
       store.resetState();
-      
-      // Step 5: Fetch workflow again (without auth) to get first step
-      await store.fetchWorkflowFields(widget.company, widget.workflowName);
-      debugPrint('[HomePage] Workflow refreshed after logout');
-      
-      // Step 6: Refresh UI - navigate to same route to trigger rebuild
-      if (mounted) {
-        context.go('/${widget.company}/${widget.workflowName}');
-        Fluttertoast.showToast(msg: 'Logged out successfully', gravity: ToastGravity.TOP);
+
+      // Step 5 (legacy): unauth get-workflow + Start your KYC screen — disabled for SSO-only.
+      // await store.fetchWorkflowFields(widget.company, widget.workflowName);
+      // debugPrint('[HomePage] Workflow refreshed after logout');
+      // if (mounted) {
+      //   context.go('/${widget.company}/${widget.workflowName}');
+      //   Fluttertoast.showToast(msg: 'Logged out successfully', gravity: ToastGravity.TOP);
+      // }
+
+      if (!mounted) return;
+      // Stop logout spinner before SSO modal — user has not submitted KYC yet.
+      setState(() => _logoutLoading = false);
+      final ssoOk = await _trySsoLoginIfNeeded(context, store);
+      if (!mounted) return;
+      if (ssoOk) {
+        await store.fetchWorkflowFieldsWithAuth(
+          widget.company,
+          widget.workflowName,
+          '',
+        );
+        if (mounted) {
+          final activeAfter = _getActiveFields(store);
+          final listAfter = (activeAfter?['fields'] as List?) ?? [];
+          final flowAfter = activeAfter?['conditionalFlow'] as List?;
+          _formNotifier.updateFields(
+            listAfter,
+            flowAfter,
+            fieldsWithAuth: store.fieldsWithAuth,
+          );
+          setState(() {});
+          Fluttertoast.showToast(
+            msg: 'Signed in via SSO',
+            gravity: ToastGravity.TOP,
+          );
+        }
+      } else {
+        Fluttertoast.showToast(
+          msg: 'SSO sign-in required. Enter credentials to continue.',
+          gravity: ToastGravity.TOP,
+        );
+        await _loadWorkflow();
       }
     } catch (e) {
       debugPrint('[HomePage] Logout error: $e');
@@ -2487,17 +2805,115 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildAuthenticatedHeaderActions(AppStore store) {
-    return Align(
-      alignment: Alignment.centerRight,
+  /// Header step label: sticky during submit, updates only when the next step is synced.
+  String? _headerPositionLabel(AppStore store) {
+    if (_ssoInProgress) {
+      return null;
+    }
+
+    final settled = _resolveSyncedPositionFromStore(store);
+    final inTransition = _submitLoading || store.loadingWithAuth;
+
+    if (!inTransition && settled != null) {
+      _headerDisplayPosition = settled;
+      return settled;
+    }
+
+    if (inTransition && (_headerDisplayPosition ?? '').isNotEmpty) {
+      return _headerDisplayPosition;
+    }
+
+    if (settled != null) {
+      _headerDisplayPosition = settled;
+      return settled;
+    }
+
+    return _headerDisplayPosition;
+  }
+
+  bool _headerPositionTransitioning(AppStore store) {
+    return _submitLoading || store.loadingWithAuth;
+  }
+
+  /// `personal_details` → `Personal Details`
+  String _formatPositionDisplayText(String position) {
+    return position
+        .trim()
+        .replaceAll('_', ' ')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .map((w) {
+          final lower = w.toLowerCase();
+          return '${lower[0].toUpperCase()}${lower.substring(1)}';
+        })
+        .join(' ');
+  }
+
+  Widget _buildHeaderPositionText(
+    String position, {
+    bool transitioning = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          Text(
+            _formatPositionDisplayText(position),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+              color: transitioning
+                  ? KycTheme.textSecondary
+                  : KycTheme.textPrimary,
+            ),
+          ),
+          if (transitioning) ...[
+            const SizedBox(width: 8),
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: KycTheme.primary,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAuthenticatedHeaderActions(
+    AppStore store, {
+    VoidCallback? onRefreshOverride,
+    bool refreshBusyOverride = false,
+  }) {
+    final position = _headerPositionLabel(store);
+    final headerTransitioning = _headerPositionTransitioning(store);
+    final refreshBusy = refreshBusyOverride ||
+        _refreshLoading ||
+        (_loadWorkflowActive && !_ssoInProgress);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 4, 0),
+      child: Row(
+        children: [
+          if (position != null)
+            _buildHeaderPositionText(
+              position,
+              transitioning: headerTransitioning,
+            ),
+          const Spacer(),
           IconButton(
             tooltip: 'Refresh',
-            onPressed: (_refreshLoading || _loadWorkflowActive || _logoutLoading)
+            onPressed: (refreshBusy || _logoutLoading)
                 ? null
                 : () async {
+                    if (onRefreshOverride != null) {
+                      onRefreshOverride();
+                      return;
+                    }
                     store.clearAuthError();
                     setState(() {
                       _webViewReturnError = null;
@@ -2509,7 +2925,7 @@ class _HomePageState extends State<HomePage> {
                       if (mounted) setState(() => _refreshLoading = false);
                     }
                   },
-            icon: (_refreshLoading || _loadWorkflowActive)
+            icon: refreshBusy
                 ? const SizedBox(
                     width: 24,
                     height: 24,
@@ -2708,51 +3124,21 @@ class _HomePageState extends State<HomePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Refresh + Logout row — always accessible
                         if (isAuthenticated)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  onPressed: (_loadWorkflowActive || _logoutLoading)
-                                      ? null
-                                      : () {
-                                          store.clearAuthError();
-                                          setState(() {
-                                            _webViewReturnError = null;
-                                            _returnFlowMessage =
-                                                'Loading your next step...';
-                                          });
-                                          _loadWorkflow();
-                                        },
-                                  icon: _loadWorkflowActive
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.refresh,
-                                          color: KycTheme.textPrimary),
-                                ),
-                                IconButton(
-                                  onPressed: _logoutLoading ? null : _handleLogout,
-                                  icon: _logoutLoading
-                                      ? const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: KycTheme.primary),
-                                        )
-                                      : const Icon(Icons.logout,
-                                          color: KycTheme.textPrimary),
-                                ),
-                              ],
-                            ),
+                          _buildAuthenticatedHeaderActions(
+                            store,
+                            refreshBusyOverride: _loadWorkflowActive,
+                            onRefreshOverride: (_loadWorkflowActive || _logoutLoading)
+                                ? null
+                                : () {
+                                    store.clearAuthError();
+                                    setState(() {
+                                      _webViewReturnError = null;
+                                      _returnFlowMessage =
+                                          'Loading your next step...';
+                                    });
+                                    _loadWorkflow();
+                                  },
                           ),
                         // Stepper stays visible throughout (hidden — see showStepper above)
                         // if (showStepper) stepperWidget,
@@ -2802,10 +3188,7 @@ class _HomePageState extends State<HomePage> {
               }
 
               // Handle loading states - full screen when no stepper, else loader below stepper
-              // Note: _submitLoading no longer blocks the full screen - it only shows inline button loading
-              // for better UX (users can still see form data and context while API is processing)
-
-              if (store.loading) {
+              if (store.loading && !_ssoInProgress) {
                 return Scaffold(
                   backgroundColor: KycTheme.background,
                   body: SafeArea(
@@ -2834,27 +3217,12 @@ class _HomePageState extends State<HomePage> {
                 );
               }
               
-              // Show loader BELOW stepper when fetching get-context (full screen when first step)
-              // BUT: don't show if we're already in a submit flow (button is showing loader)
-              // This prevents the jarring transition from button loader → full screen loader
-              if (store.loadingWithAuth && !_submitLoading) {
-                return Scaffold(
-                  backgroundColor: KycTheme.background,
-                  body: SafeArea(
-                    child: showStepper
-                        ? Column(
-                            children: [
-                              stepperWidget,
-                              const Expanded(child: Loader(
-                                message: 'Loading your details...',
-                                minimal: true,
-                              )),
-                            ],
-                          )
-                        : const Loader(
-                            message: 'Loading your details...',
-                          ),
-                  ),
+              // get-context refresh (not submit): full-screen loader. Submit keeps button spinner.
+              if (store.loadingWithAuth && !_submitLoading && !_ssoInProgress) {
+                return _buildStepTransitionScaffold(
+                  showStepper: showStepper,
+                  stepperWidget: stepperWidget,
+                  message: 'Loading your next step...',
                 );
               }
 
@@ -2878,8 +3246,12 @@ class _HomePageState extends State<HomePage> {
               String? pageTitle;
 
               if (ctx == null) {
-                // No context yet (first unauthenticated screen) – show hero title.
-                pageTitle = 'Start your KYC or pickup where you left off';
+                // Hero title only on true first screen (no token). Mid-journey never show it.
+                if (isAuthenticated || _isMidAuthenticatedJourney(store)) {
+                  pageTitle = _cachedPageTitle;
+                } else {
+                  pageTitle = 'Start your KYC or pickup where you left off';
+                }
               } else {
                 // Prefer human-friendly titles from context / activeFields.
                 String? pageLabel = rawPageLabel;
@@ -2907,6 +3279,12 @@ class _HomePageState extends State<HomePage> {
                     pageTitle = null;
                   }
                 }
+                _cacheAuthenticatedStepUi(
+                  store: store,
+                  ctx: ctx,
+                  pageTitle: pageTitle,
+                  activePage: activeFields,
+                );
               }
 
               // Show \"Documents to keep Handy\" only on first 4 steps of the stepper
@@ -2919,49 +3297,8 @@ class _HomePageState extends State<HomePage> {
                   child: showStepper
                       ? Column(
                           children: [
-                            // Refresh + Logout row above stepper (when authenticated)
                             if (isAuthenticated)
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      onPressed: _refreshLoading
-                                          ? null
-                                          : () async {
-                                              setState(() => _refreshLoading = true);
-                                              try {
-                                                await _loadWorkflow();
-                                              } finally {
-                                                if (mounted) {
-                                                  setState(() => _refreshLoading = false);
-                                                }
-                                              }
-                                            },
-                                      icon: _refreshLoading
-                                          ? const SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2, color: KycTheme.primary),
-                                            )
-                                          : const Icon(Icons.refresh, color: KycTheme.textPrimary),
-                                    ),
-                                    IconButton(
-                                      onPressed: _logoutLoading ? null : _handleLogout,
-                                      icon: _logoutLoading
-                                          ? const SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2, color: KycTheme.primary),
-                                            )
-                                          : const Icon(Icons.logout, color: KycTheme.textPrimary),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                              _buildAuthenticatedHeaderActions(store),
                             stepperWidget,
                             Expanded(
                               child: KycLayout(
@@ -3000,47 +3337,7 @@ class _HomePageState extends State<HomePage> {
                       : Column(
                           children: [
                             if (isAuthenticated)
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      onPressed: _refreshLoading
-                                          ? null
-                                          : () async {
-                                              setState(() => _refreshLoading = true);
-                                              try {
-                                                await _loadWorkflow();
-                                              } finally {
-                                                if (mounted) {
-                                                  setState(() => _refreshLoading = false);
-                                                }
-                                              }
-                                            },
-                                      icon: _refreshLoading
-                                          ? const SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2, color: KycTheme.primary),
-                                            )
-                                          : const Icon(Icons.refresh, color: KycTheme.textPrimary),
-                                    ),
-                                    IconButton(
-                                      onPressed: _logoutLoading ? null : _handleLogout,
-                                      icon: _logoutLoading
-                                          ? const SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2, color: KycTheme.primary),
-                                            )
-                                          : const Icon(Icons.logout, color: KycTheme.textPrimary),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                              _buildAuthenticatedHeaderActions(store),
                             Expanded(
                               child: KycLayout(
                                 title: pageTitle,
@@ -3974,9 +4271,16 @@ class _HomePageState extends State<HomePage> {
     // Fallback for unauthenticated flow where context may be null:
     // use workflow root from store.fields (get-workflow-details response)
     if (position == null || position.isEmpty || pageLabel == null || pageLabel.isEmpty) {
-      final workflow = store.fields as Map?;
-      position = (workflow?['position']?.toString() ?? position ?? '').toLowerCase();
-      pageLabel = (workflow?['data']?['label']?.toString() ?? pageLabel ?? '').toLowerCase();
+      if (_isMidAuthenticatedJourney(store) &&
+          (_cachedPosition ?? '').isNotEmpty) {
+        position = _cachedPosition!.toLowerCase();
+      } else {
+        final workflow = store.fields as Map?;
+        position =
+            (workflow?['position']?.toString() ?? position ?? '').toLowerCase();
+        pageLabel = (workflow?['data']?['label']?.toString() ?? pageLabel ?? '')
+            .toLowerCase();
+      }
     }
 
     debugPrint('[HomePage] _buildForm position=$position pageLabel=$pageLabel');
@@ -4254,6 +4558,9 @@ class _HomePageState extends State<HomePage> {
     // Agar OTP field hai (chahe kitni bhi aur fields ho), sirf OtpVerifySection ka "Verify OTP" button use hoga
     final showGenericSubmit = otpField == null;
     final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
+    final fatcaBlocksSubmit = _isPersonalDetailsStep(position, pageLabel) &&
+        (_fatcaTaxResidencyMustPickNo ||
+            _fatcaTaxResidencyYesFields(fieldList).isNotEmpty);
 
     return Container(
       // No outer margin so width matches "Documents to keep Handy" card
@@ -4446,11 +4753,21 @@ class _HomePageState extends State<HomePage> {
             if (showGenericSubmit) const SizedBox(height: 24),
             if (showGenericSubmit)
             ElevatedButton(
-              onPressed: _submitLoading || _isSendOtpDisabled(position)
+              onPressed: _submitLoading ||
+                  _ssoInProgress ||
+                  fatcaBlocksSubmit ||
+                  _isSendOtpDisabled(position)
                   ? null
                   : () {
                       debugPrint('[HomePage] Submit button clicked! isAuth=$isAuth, position=$position');
                       if (isAuth) {
+                        if (_enforceFatcaTaxResidencyNoOnSubmit(
+                          position: position,
+                          pageLabel: pageLabel,
+                          fieldList: fieldList,
+                        )) {
+                          return;
+                        }
                         _handleCommonSubmit(false);
                       } else {
                         _handleSubmit(false);
@@ -4467,7 +4784,7 @@ class _HomePageState extends State<HomePage> {
                   borderRadius: BorderRadius.circular(isMobileStep ? 14 : KycTheme.radiusMd),
                 ),
               ),
-              child: _submitLoading
+              child: (_submitLoading && !_ssoInProgress)
                   ? const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -4510,10 +4827,17 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 12),
                     ElevatedButton(
-                      onPressed: _submitLoading
+                      onPressed: _submitLoading || fatcaBlocksSubmit
                           ? null
                           : () {
                               if (isAuth) {
+                                if (_enforceFatcaTaxResidencyNoOnSubmit(
+                                  position: position,
+                                  pageLabel: pageLabel,
+                                  fieldList: fieldList,
+                                )) {
+                                  return;
+                                }
                                 _handleCommonSubmit(true);
                               } else {
                                 _handleSubmit(true);
@@ -4794,7 +5118,10 @@ class _HomePageState extends State<HomePage> {
   Future<void> _requestReviewEditAndRefreshContext(String currentField) async {
     final store = context.read<AppStore>();
     if (!mounted) return;
-    setState(() => _submitLoading = true);
+    setState(() {
+      _captureHeaderPositionForSubmit(store);
+      _submitLoading = true;
+    });
     try {
       debugPrint(
           '[HomePage] review_edit_page: $currentField (${widget.company}/${widget.workflowName})');

@@ -880,13 +880,31 @@ bool isDdpiFormField(Map<dynamic, dynamic> f) {
       (dn.contains('demat') && dn.contains('debit') && dn.contains('pledge'));
 }
 
-/// User selected Yes / affirmative for DDPI (radio, select, or checkbox).
-bool isDdpiAffirmativeValue(dynamic value) {
+/// User selected Yes / affirmative (radio, select, or checkbox).
+bool isAffirmativeYesValue(dynamic value) {
   if (value == null) return false;
   if (value is bool) return value;
   final s = value.toString().trim().toLowerCase();
   if (s.isEmpty) return false;
   return s == 'yes' || s == 'y' || s == 'true' || s == '1' || s.startsWith('yes');
+}
+
+/// User selected Yes / affirmative for DDPI (radio, select, or checkbox).
+bool isDdpiAffirmativeValue(dynamic value) => isAffirmativeYesValue(value);
+
+/// Personal details — tax residency outside India (FATCA).
+bool isTaxResidencyOutsideIndiaField(Map<dynamic, dynamic> f) {
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (nl.contains('tax_resid') ||
+      nl == 'taxresidency' ||
+      nl.contains('taxresidency') ||
+      (nl.contains('tax') && nl.contains('residen'))) {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  return (dn.contains('tax') && dn.contains('residen')) ||
+      (dn.contains('residen') && dn.contains('outside')) ||
+      dn.contains('fatca');
 }
 
 /// KRA review step — fetched KRA data is display-only (live web parity).
