@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
+import 'package:meon_kyc/utils/api_error_message.dart';
 
 bool _isGenericHtml500(String body) {
   final t = body.trim().toLowerCase();
@@ -52,11 +53,11 @@ class AppStore extends ChangeNotifier {
         _fields = data?['workflow'];
         debugPrint('[AppStore] fetchWorkflowFields OK, workflow keys: ${_fields is Map ? (_fields as Map).keys.toList() : 'n/a'}');
       } else {
-        _error = res.body;
+        _error = friendlyApiErrorMessage(res.body, statusCode: res.statusCode);
         debugPrint('[AppStore] fetchWorkflowFields ERROR: ${res.body}');
       }
     } catch (e, st) {
-      _error = e.toString();
+      _error = friendlyApiErrorMessage(e.toString());
       debugPrint('[AppStore] fetchWorkflowFields Exception: $e\n$st');
     } finally {
       _loading = false;
@@ -170,15 +171,21 @@ class AppStore extends ChangeNotifier {
               errorMsg = data['msg']?.toString();
             }
           }
-          _errorWithAuth = errorMsg ?? res.body;
+          _errorWithAuth = friendlyApiErrorMessage(
+            errorMsg ?? res.body,
+            statusCode: res.statusCode,
+          );
           debugPrint('[AppStore] fetchWorkflowFieldsWithAuth ERROR (success: false): $_errorWithAuth');
         }
       } else {
-        _errorWithAuth = res.body;
+        _errorWithAuth = friendlyApiErrorMessage(
+          res.body,
+          statusCode: res.statusCode,
+        );
         debugPrint('[AppStore] fetchWorkflowFieldsWithAuth ERROR: ${res.body}');
       }
     } catch (e, st) {
-      _errorWithAuth = e.toString();
+      _errorWithAuth = friendlyApiErrorMessage(e.toString());
       debugPrint('[AppStore] fetchWorkflowFieldsWithAuth Exception: $e\n$st');
     } finally {
       _loadingWithAuth = false;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -14,6 +15,129 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:meon_kyc/services/storage_service.dart';
+
+/// Hard-freezes page scroll while Aadhaar/PIN inputs are focused (DigiLocker step only).
+const String _kDigilockerFreezeJs = r'''
+(function() {
+  if (window.__meonDigilockerFreeze) return;
+  window.__meonDigilockerFreeze = true;
+  var origScrollTo = window.scrollTo.bind(window);
+  var origScrollBy = window.scrollBy.bind(window);
+  Element.prototype.scrollIntoView = function() {};
+  if (Element.prototype.scrollIntoViewIfNeeded) {
+    Element.prototype.scrollIntoViewIfNeeded = function() {};
+  }
+  var frozen = false;
+  var lockedY = 0;
+  var savedBody = null;
+  var rafId = 0;
+  function isFormField(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var t = el.tagName;
+    if (!t) return false;
+    t = t.toUpperCase();
+    return t === "INPUT" || t === "TEXTAREA" || t === "SELECT" || el.isContentEditable === true;
+  }
+  function anyFormFieldFocused() {
+    return isFormField(document.activeElement);
+  }
+  function enforceScroll() {
+    if (!frozen) return;
+    origScrollTo.call(window, 0, lockedY);
+    rafId = requestAnimationFrame(enforceScroll);
+  }
+  function freeze() {
+    if (frozen) return;
+    frozen = true;
+    lockedY = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    var html = document.documentElement;
+    var body = document.body;
+    if (body) {
+      savedBody = {
+        htmlOverflow: html.style.overflow,
+        htmlHeight: html.style.height,
+        bodyOverflow: body.style.overflow,
+        bodyPosition: body.style.position,
+        bodyTop: body.style.top,
+        bodyLeft: body.style.left,
+        bodyWidth: body.style.width,
+        bodyHeight: body.style.height,
+        bodyTouchAction: body.style.touchAction
+      };
+      html.style.overflow = "hidden";
+      html.style.height = "100%";
+      body.style.overflow = "hidden";
+      body.style.position = "fixed";
+      body.style.top = (-lockedY) + "px";
+      body.style.left = "0";
+      body.style.right = "0";
+      body.style.width = "100%";
+      body.style.height = "100%";
+      body.style.touchAction = "manipulation";
+    }
+    window.scrollTo = function() {
+      if (frozen) origScrollTo.call(window, 0, lockedY);
+    };
+    window.scrollBy = function() {
+      if (!frozen) origScrollBy.apply(window, arguments);
+    };
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(enforceScroll);
+  }
+  function unfreeze() {
+    if (!frozen) return;
+    frozen = false;
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+    window.scrollTo = origScrollTo;
+    window.scrollBy = origScrollBy;
+    var html = document.documentElement;
+    var body = document.body;
+    if (savedBody && body) {
+      html.style.overflow = savedBody.htmlOverflow;
+      html.style.height = savedBody.htmlHeight;
+      body.style.overflow = savedBody.bodyOverflow;
+      body.style.position = savedBody.bodyPosition;
+      body.style.top = savedBody.bodyTop;
+      body.style.left = savedBody.bodyLeft;
+      body.style.width = savedBody.bodyWidth;
+      body.style.height = savedBody.bodyHeight;
+      body.style.touchAction = savedBody.bodyTouchAction;
+      savedBody = null;
+      origScrollTo.call(window, 0, lockedY);
+    }
+  }
+  document.addEventListener("focusin", function(e) {
+    if (isFormField(e.target)) freeze();
+  }, true);
+  document.addEventListener("focusout", function() {
+    setTimeout(function() {
+      if (!anyFormFieldFocused()) unfreeze();
+    }, 150);
+  }, true);
+  document.addEventListener("input", function(e) {
+    if (isFormField(e.target)) freeze();
+  }, true);
+  window.addEventListener("scroll", function() {
+    if (frozen) origScrollTo.call(window, 0, lockedY);
+  }, { passive: false });
+  document.addEventListener("touchmove", function(e) {
+    if (frozen) e.preventDefault();
+  }, { passive: false });
+  if (window.visualViewport) {
+    var vv = window.visualViewport;
+    vv.addEventListener("resize", function() {
+      if (frozen) {
+        origScrollTo.call(window, 0, lockedY);
+        requestAnimationFrame(function() { origScrollTo.call(window, 0, lockedY); });
+      }
+    });
+    vv.addEventListener("scroll", function() {
+      if (frozen) origScrollTo.call(window, 0, lockedY);
+    });
+  }
+})();
+''';
 
 /// WebView page for external redirects (DigiLocker, IPV/Face Finder)
 /// Uses InAppWebView for camera/microphone (getUserMedia) support
@@ -96,6 +220,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
   /// True while an eSign PDF save is in flight (ignore duplicate download events).
   bool _esignPdfDownloadInProgress = false;
+
+  /// One reload if iOS still interrupts cloudesign inline load (WK error 102).
+  bool _cloudesignInterruptRecoveryUsed = false;
 
   final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
@@ -218,8 +345,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  /// Blob navigations and WKWebKit "frame load interrupted" (102) are normal
-  /// when pdf.js triggers a download — not a real page failure.
+  /// Benign load errors (blob PDF save, etc.). Cloudesign document URLs are handled
+  /// via [_onNavigationResponse] + optional reload — not silently ignored.
   bool _shouldIgnoreWebViewLoadError(
     String url, {
     int? code,
@@ -227,10 +354,21 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   }) {
     final u = url.toLowerCase();
     if (u.startsWith('blob:')) return true;
+    if (_isCloudesignDocumentUrl(url)) return false;
     if (code == 102) return true;
     final d = (description ?? '').toLowerCase();
     if (d.contains('frame load interrupted')) return true;
     return false;
+  }
+
+  bool _isCloudesignLoadInterruptError({
+    required String url,
+    int? code,
+    String? description,
+  }) {
+    if (!_isCloudesignDocumentUrl(url)) return false;
+    final d = (description ?? '').toLowerCase();
+    return code == 102 || d.contains('frame load interrupted');
   }
 
   Future<bool> _hasEsignDownloadUserGesture(
@@ -459,26 +597,66 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  /// iOS: allow cloudesign / eSign responses to render in-WebView instead of
+  /// cancelling navigation as a download (prevents WK error 102 + 45s timeout).
+  Future<NavigationResponseAction?> _onNavigationResponse(
+    InAppWebViewController controller,
+    NavigationResponse navigationResponse,
+  ) async {
+    if (!navigationResponse.isForMainFrame) {
+      return NavigationResponseAction.ALLOW;
+    }
+
+    final url = navigationResponse.response?.url?.toString() ?? '';
+    if (url.isEmpty) return NavigationResponseAction.ALLOW;
+
+    if (_isCloudesignDocumentUrl(url)) {
+      final hasGesture = await _hasEsignDownloadUserGesture(controller);
+      if (!hasGesture) {
+        debugPrint(
+            '[WebView] Cloudesign document — inline WebView (no auto-download): $url');
+        return NavigationResponseAction.ALLOW;
+      }
+      debugPrint('[WebView] Cloudesign document — user download: $url');
+      return NavigationResponseAction.DOWNLOAD;
+    }
+
+    if (_isProceedToEsignFlowContext(url)) {
+      final mime = navigationResponse.response?.mimeType?.toLowerCase() ?? '';
+      if (mime.startsWith('text/') || mime.contains('html')) {
+        return NavigationResponseAction.ALLOW;
+      }
+      final hasGesture = await _hasEsignDownloadUserGesture(controller);
+      if (!hasGesture) {
+        return NavigationResponseAction.ALLOW;
+      }
+      if (_looksLikePdfFileNavigation(url) || mime.contains('pdf')) {
+        return NavigationResponseAction.DOWNLOAD;
+      }
+    }
+
+    return NavigationResponseAction.ALLOW;
+  }
+
   /// WebView signals a download (often `blob:https://...` from pdf.js).
-  /// Without user tap we ignore it on Android (no auto-save on load).
-  /// iOS: explicit blob downloads after page load are handled in-page.
+  /// Cloudesign document URLs stay in-WebView via [_onNavigationResponse]; this
+  /// handler runs only for explicit user downloads (gesture) or blob/pdf.js.
   Future<void> _onDownloadStartRequest(
     InAppWebViewController controller,
     DownloadStartRequest downloadStartRequest,
   ) async {
     final url = downloadStartRequest.url;
     if (url == null) return;
-    debugPrint('[WebView] onDownloadStartRequest: $url');
-    if (!_isProceedToEsignFlowContext()) return;
-
     final urlStr = url.toString();
-    // Direct cloudesign document URL must display in WebView — never auto-save on load.
+
+    // Cloudesign page load: native may still emit this event — do not save or interrupt.
     if (_isCloudesignDocumentUrl(urlStr) &&
         !await _hasEsignDownloadUserGesture(controller)) {
-      debugPrint(
-          '[WebView] Ignoring cloudesign auto-download (inline document view)');
       return;
     }
+
+    debugPrint('[WebView] onDownloadStartRequest: $urlStr');
+    if (!_isProceedToEsignFlowContext()) return;
     // Blob save handled in shouldOverrideUrlLoading (navigation cancelled).
     if (_isBlobDownloadUrl(urlStr) && _esignPdfDownloadInProgress) {
       return;
@@ -888,12 +1066,77 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         path.contains('facefinder');
   }
 
-  /// On iOS, disabling `scrollIntoView` breaks OTP and form flows; keep the hook only for
-  /// IPV/Face Finder where a stable camera layout is preferred.
+  /// DigiLocker OAuth / Aadhaar–PIN pages (digitallocker.gov.in, digilocker.*).
+  bool _isDigilockerUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    return host.contains('digilocker') || host.contains('digitallocker');
+  }
+
+  /// True only for the DigiLocker KYC step (title + live URL).
+  bool _isDigilockerFlow([String? url]) {
+    if (widget.title.toLowerCase().contains('digilocker')) return true;
+    final sample = url ?? _activeWebViewUrl;
+    return _isDigilockerUrl(sample);
+  }
+
+  String get _activeWebViewUrl =>
+      _currentUrl.isNotEmpty ? _currentUrl : widget.url;
+
+  UnmodifiableListView<UserScript>? get _digilockerInitialUserScripts {
+    if (!_isDigilockerFlow(widget.url)) return null;
+    return UnmodifiableListView<UserScript>([
+      UserScript(
+        source: _kDigilockerFreezeJs,
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        forMainFrameOnly: true,
+      ),
+    ]);
+  }
+
+  /// On iOS, disabling `scrollIntoView` breaks OTP on CAMS/Digio; enable only where
+  /// auto-scroll-on-focus causes visible jank (IPV/Face). DigiLocker uses [_injectDigilockerFreezeJs].
   bool _shouldInjectNoAutoScrollJs(String? url) {
-    if (url == null || url.isEmpty) return true;
+    if (url == null || url.isEmpty) return !Platform.isIOS;
     if (!Platform.isIOS) return true;
+    if (_isDigilockerFlow(url)) return false;
     return _isIpvOrFaceFinderUrl(url);
+  }
+
+  /// iOS scaffold resize + WKWebView keyboard scroll fight on DigiLocker forms.
+  bool _shouldResizeForKeyboard() {
+    if (!Platform.isIOS) return false;
+    return !_isDigilockerFlow();
+  }
+
+  /// DigiLocker-only: disable rubber-band / over-scroll on the native WebView.
+  Future<void> _applyDigilockerWebViewSettings(
+      InAppWebViewController controller) async {
+    if (!_isDigilockerFlow()) return;
+    try {
+      await controller.setSettings(
+        settings: InAppWebViewSettings(
+          disallowOverScroll: true,
+          alwaysBounceVertical: false,
+          alwaysBounceHorizontal: false,
+          contentInsetAdjustmentBehavior:
+              ScrollViewContentInsetAdjustmentBehavior.NEVER,
+        ),
+      );
+    } catch (e) {
+      debugPrint('[WebView] DigiLocker native scroll settings error: $e');
+    }
+  }
+
+  /// DigiLocker step only — freeze viewport while form fields are focused.
+  Future<void> _injectDigilockerFreezeJs(InAppWebViewController controller) async {
+    if (!_isDigilockerFlow()) return;
+    try {
+      await controller.evaluateJavascript(source: _kDigilockerFreezeJs);
+    } catch (e) {
+      debugPrint('[WebView] Error injecting DigiLocker freeze JS: $e');
+    }
   }
 
   bool _isReversePennyDropUrl(String url) {
@@ -1591,7 +1834,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// Injects JavaScript to prevent automatic scroll jumps on input focus.
   /// This keeps the WebView from auto-scrolling when the keyboard opens;
   /// users can still scroll manually.
-  Future<void> _injectNoAutoScrollJs(InAppWebViewController controller) async {
+  Future<void> _injectNoAutoScrollJs(
+    InAppWebViewController controller, {
+    String? url,
+  }) async {
+    if (_isDigilockerFlow(url)) {
+      await _injectDigilockerFreezeJs(controller);
+      return;
+    }
     const script = r'''
       (function() {
         try {
@@ -1612,15 +1862,24 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _applyDigilockerScrollGuards(
+    InAppWebViewController controller, {
+    String? url,
+  }) async {
+    if (!_isDigilockerFlow(url)) return;
+    await _applyDigilockerWebViewSettings(controller);
+    await _injectDigilockerFreezeJs(controller);
+  }
+
   @override
   Widget build(BuildContext context) {
-    // iOS: shrink the scaffold when the keyboard opens so WKWebView can reflow (CAMS AA OTP,
-    // Digio UPI popup, etc.). Android unchanged. scrollIntoView stays enabled except on IPV/Face.
+    // iOS: shrink scaffold for keyboard on OTP flows (CAMS, Digio). DigiLocker keeps a fixed
+    // WebView height to avoid resize + scrollIntoView fighting (Aadhaar/PIN jump).
     return ScaffoldMessenger(
       key: _scaffoldMessengerKey,
       child: Scaffold(
       backgroundColor: Colors.white,
-      resizeToAvoidBottomInset: Platform.isIOS,
+      resizeToAvoidBottomInset: _shouldResizeForKeyboard(),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -1674,6 +1933,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 ? const Center(child: CircularProgressIndicator())
                 : InAppWebView(
                     initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                    initialUserScripts: _digilockerInitialUserScripts,
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
                       // eSign pdf.js uses blob: URLs — listen here, save in-page (see _onDownloadStartRequest).
@@ -1684,6 +1944,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       mediaPlaybackRequiresUserGesture: false,
                       allowsInlineMediaPlayback: true,
                       useHybridComposition: true,
+                      // DigiLocker step: no rubber-band / inset scroll while typing Aadhaar/PIN
+                      disallowOverScroll: _isDigilockerFlow(widget.url) ? true : null,
+                      alwaysBounceVertical: _isDigilockerFlow(widget.url) ? false : null,
+                      alwaysBounceHorizontal: _isDigilockerFlow(widget.url) ? false : null,
+                      contentInsetAdjustmentBehavior: _isDigilockerFlow(widget.url)
+                          ? ScrollViewContentInsetAdjustmentBehavior.NEVER
+                          : null,
                       // Disable pinch-zoom to keep layout stable
                       supportZoom: false,
                       // Android-specific: Enable camera/microphone/location access in WebView
@@ -1694,6 +1961,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       // Enable geolocation for IPV/Face Finder (required for location-based verification)
                       geolocationEnabled: true,
                     ),
+                    onNavigationResponse: _onNavigationResponse,
                     onDownloadStartRequest: _onDownloadStartRequest,
                     onWebViewCreated: (controller) {
                       _webViewController = controller;
@@ -1892,6 +2160,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         if (_isProceedToEsignFlowContext(urlStr)) {
                           await _resetEsignDownloadUserGesture(controller);
                         }
+                        if (_isCloudesignDocumentUrl(urlStr)) {
+                          _cloudesignInterruptRecoveryUsed = false;
+                        }
 
                         // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
                         // Close WebView immediately on success redirect (don't wait for page load)
@@ -1996,6 +2267,20 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       }
                       debugPrint(
                           '[WebView] onReceivedError: ${error.description}, url=$errUrl');
+                      if (_isCloudesignLoadInterruptError(
+                        url: errUrl,
+                        code: error.type.toNativeValue(),
+                        description: error.description,
+                      )) {
+                        debugPrint(
+                            '[WebView] Cloudesign load interrupted by download policy — keeping inline view');
+                        if (!_cloudesignInterruptRecoveryUsed &&
+                            !_redirectHandled) {
+                          _cloudesignInterruptRecoveryUsed = true;
+                          Future.microtask(() => controller.reload());
+                        }
+                        return;
+                      }
                       if (_shouldIgnoreWebViewLoadError(
                         errUrl,
                         code: error.type.toNativeValue(),
@@ -2045,8 +2330,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               );
                             }
                             await _onPageFinished(urlStr);
+                            await _applyDigilockerScrollGuards(controller, url: urlStr);
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
-                              await _injectNoAutoScrollJs(controller);
+                              await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
                             return;
                           }
@@ -2115,8 +2401,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         }
 
                         await _onPageFinished(urlStr);
+                        await _applyDigilockerScrollGuards(controller, url: urlStr);
                         if (_shouldInjectNoAutoScrollJs(urlStr)) {
-                          await _injectNoAutoScrollJs(controller);
+                          await _injectNoAutoScrollJs(controller, url: urlStr);
                         }
                         if (_isReversePennyDropUrl(urlStr)) {
                           if (!_rpdSigningSessionFlagReset) {
@@ -2338,7 +2625,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           if (url != null) {
                             final urlStr = url.toString();
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
-                              await _injectNoAutoScrollJs(controller);
+                              await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
 
                             if (_isReversePennyDropUrl(urlStr)) {

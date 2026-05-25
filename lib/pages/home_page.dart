@@ -27,6 +27,7 @@ import 'package:meon_kyc/components/brokerage_plan_dialog.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/hooks/conditional_form.dart';
 import 'package:meon_kyc/utils/conditional_flow.dart';
+import 'package:meon_kyc/utils/api_error_message.dart';
 import 'package:meon_kyc/utils/field_validators.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 import 'package:meon_kyc/services/storage_service.dart';
@@ -420,8 +421,9 @@ class _HomePageState extends State<HomePage> {
                 }
               } else if (store.isReturningFromWebView) {
                 // Show retry UI — never fall back to the old step's form
-                setState(() => _webViewReturnError =
-                    store.errorWithAuth ?? 'Something went wrong, please try again.');
+                setState(() => _webViewReturnError = friendlyApiErrorMessage(
+                    store.errorWithAuth ??
+                        'Something went wrong, please try again.'));
               } else {
                 Fluttertoast.showToast(
                   msg: store.errorWithAuth ?? 'Error refreshing page',
@@ -1748,24 +1750,33 @@ class _HomePageState extends State<HomePage> {
   /// Supports common keys: msg, message, error, detail (string or list).
   static String _errorMessageFromResponse(int statusCode, String bodyStr) {
     if (bodyStr.trim().isEmpty) {
-      return statusCode >= 400 ? 'Request failed. Please try again.' : 'Submission failed';
+      return friendlyApiErrorMessage(null, statusCode: statusCode);
     }
     try {
       final body = jsonDecode(bodyStr) as Map<String, dynamic>?;
-      if (body == null) return bodyStr.length <= 200 ? bodyStr : 'Submission failed';
+      if (body == null) {
+        return friendlyApiErrorMessage(bodyStr, statusCode: statusCode);
+      }
       final msg = body['msg'] ?? body['message'] ?? body['error'];
       if (msg != null) {
-        if (msg is String) return msg;
-        if (msg is List && msg.isNotEmpty) return msg.first.toString();
+        if (msg is String) {
+          return friendlyApiErrorMessage(msg, statusCode: statusCode);
+        }
+        if (msg is List && msg.isNotEmpty) {
+          return friendlyApiErrorMessage(msg.first.toString(), statusCode: statusCode);
+        }
       }
       final detail = body['detail'];
-      if (detail is String) return detail;
-      if (detail is List && detail.isNotEmpty) return detail.first.toString();
+      if (detail is String) {
+        return friendlyApiErrorMessage(detail, statusCode: statusCode);
+      }
+      if (detail is List && detail.isNotEmpty) {
+        return friendlyApiErrorMessage(detail.first.toString(), statusCode: statusCode);
+      }
     } catch (_) {
-      // Non-JSON body (e.g. plain text error)
-      if (bodyStr.length <= 200) return bodyStr.trim();
+      return friendlyApiErrorMessage(bodyStr, statusCode: statusCode);
     }
-    return statusCode >= 400 ? 'Request failed. Please try again.' : 'Submission failed';
+    return friendlyApiErrorMessage(bodyStr, statusCode: statusCode);
   }
 
   /// Builds kyc-post-v2 path segment from get-context page: page.name + page.id (e.g. mobile_otp2, email3).
@@ -2468,17 +2479,73 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildWebViewReturnRetryContent(AppStore store) {
+  Widget _buildAuthenticatedHeaderActions(AppStore store) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: (_refreshLoading || _loadWorkflowActive || _logoutLoading)
+                ? null
+                : () async {
+                    store.clearAuthError();
+                    setState(() {
+                      _webViewReturnError = null;
+                      _refreshLoading = true;
+                    });
+                    try {
+                      await _loadWorkflow();
+                    } finally {
+                      if (mounted) setState(() => _refreshLoading = false);
+                    }
+                  },
+            icon: (_refreshLoading || _loadWorkflowActive)
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: KycTheme.primary,
+                    ),
+                  )
+                : const Icon(Icons.refresh, color: KycTheme.textPrimary),
+          ),
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: _logoutLoading ? null : _handleLogout,
+            icon: _logoutLoading
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: KycTheme.primary,
+                    ),
+                  )
+                : const Icon(Icons.logout, color: KycTheme.textPrimary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildApiErrorRetryContent(
+    AppStore store, {
+    required String message,
+    VoidCallback? onRetry,
+  }) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline_rounded, size: 64, color: Colors.orange.shade400),
+            Icon(Icons.cloud_off_rounded, size: 64, color: Colors.orange.shade400),
             const SizedBox(height: 16),
             Text(
-              _webViewReturnError!,
+              message,
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 15,
@@ -2501,18 +2568,66 @@ class _HomePageState extends State<HomePage> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 elevation: 0,
               ),
-              onPressed: () {
-                store.clearAuthError();
-                setState(() {
-                  _webViewReturnError = null;
-                  _returnFlowMessage = 'Loading your next step...';
-                });
-                _loadWorkflow();
-              },
+              onPressed: (_refreshLoading || _loadWorkflowActive)
+                  ? null
+                  : () {
+                      store.clearAuthError();
+                      setState(() => _webViewReturnError = null);
+                      if (onRetry != null) {
+                        onRetry();
+                      } else {
+                        _loadWorkflow();
+                      }
+                    },
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildApiErrorScaffold({
+    required AppStore store,
+    required String message,
+    required bool isAuthenticated,
+    VoidCallback? onRetry,
+  }) {
+    final friendly = friendlyApiErrorMessage(message);
+    return Scaffold(
+      backgroundColor: KycTheme.background,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (isAuthenticated) _buildAuthenticatedHeaderActions(store),
+            Expanded(
+              child: KycLayout(
+                title: 'Unable to load',
+                stepperSteps: null,
+                stepperIndex: null,
+                skipScaffold: true,
+                showDocumentsSection: false,
+                child: _buildApiErrorRetryContent(
+                  store,
+                  message: friendly,
+                  onRetry: onRetry,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWebViewReturnRetryContent(AppStore store) {
+    return _buildApiErrorRetryContent(
+      store,
+      message: friendlyApiErrorMessage(_webViewReturnError),
+      onRetry: () {
+        setState(() => _returnFlowMessage = 'Loading your next step...');
+        _loadWorkflow();
+      },
     );
   }
 
@@ -2704,44 +2819,10 @@ class _HomePageState extends State<HomePage> {
               }
               
               if (store.error != null) {
-                return Scaffold(
-                  backgroundColor: KycTheme.background,
-                  body: SafeArea(
-                    child: showStepper
-                        ? Column(
-                            children: [
-                              stepperWidget,
-                              Expanded(
-                                child: KycLayout(
-                                  title: 'Error',
-                                  stepperSteps: null,
-                                  stepperIndex: null,
-                                  skipScaffold: true,
-                                  child: Center(
-                                    child: Text(
-                                      store.error!,
-                                      style: const TextStyle(color: Colors.red),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          )
-                        : KycLayout(
-                            title: 'Error',
-                            stepperSteps: null,
-                            stepperIndex: null,
-                            skipScaffold: true,
-                            child: Center(
-                              child: Text(
-                                store.error!,
-                                style: const TextStyle(color: Colors.red),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ),
-                  ),
+                return _buildApiErrorScaffold(
+                  store: store,
+                  message: store.error!,
+                  isAuthenticated: isAuthenticated,
                 );
               }
               
@@ -2769,52 +2850,12 @@ class _HomePageState extends State<HomePage> {
                 );
               }
 
-              // Show error if get-context API failed
+              // Show error if get-context API failed (502, server HTML, technical tokens, etc.)
               if (store.errorWithAuth != null) {
-                return Scaffold(
-                  backgroundColor: KycTheme.background,
-                  body: SafeArea(
-                    child: showStepper
-                        ? Column(
-                            children: [
-                              stepperWidget,
-                              Expanded(
-                                child: KycLayout(
-                                  title: 'Error',
-                                  stepperSteps: null,
-                                  stepperIndex: null,
-                                  skipScaffold: true,
-                                  child: Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16.0),
-                                      child: Text(
-                                        store.errorWithAuth!,
-                                        style: const TextStyle(color: Colors.red, fontSize: 16),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          )
-                        : KycLayout(
-                            title: 'Error',
-                            stepperSteps: null,
-                            stepperIndex: null,
-                            skipScaffold: true,
-                            child: Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(16.0),
-                                child: Text(
-                                  store.errorWithAuth!,
-                                  style: const TextStyle(color: Colors.red, fontSize: 16),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ),
-                          ),
-                  ),
+                return _buildApiErrorScaffold(
+                  store: store,
+                  message: store.errorWithAuth!,
+                  isAuthenticated: isAuthenticated,
                 );
               }
 
