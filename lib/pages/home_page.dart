@@ -374,6 +374,8 @@ class _HomePageState extends State<HomePage> {
         // Check for redirect after get-context
         // Skip redirect if step completion params present (IPV, RPD, eSign, DigiLocker, etc.)
         // Prevents infinite loop when backend returns redirect despite completed step
+        final isDigilockerVerifyReturn =
+            widget.queryParams['verify'] == 'digilocker';
         final hasCompletionParams = widget.queryParams['success'] == 'yes' ||
             widget.queryParams['verifyCompleted'] == 'true' ||
             widget.queryParams['esign'] == 'yes' ||
@@ -381,7 +383,9 @@ class _HomePageState extends State<HomePage> {
             widget.queryParams.containsKey('reversepennydrop') ||
             widget.queryParams.containsKey('reverse_pennydrop') ||
             widget.queryParams.containsKey('account_aggregator');
-        if (mounted && !hasCompletionParams) {
+        if (mounted && isDigilockerVerifyReturn) {
+          await _handleDigilockerVerifyReturn(store);
+        } else if (mounted && !hasCompletionParams) {
           await _checkAndHandleRedirect(store);
           // If _checkAndHandleRedirect navigated to WebView, mounted will be false
           if (!mounted) navigatingAway = true;
@@ -538,6 +542,70 @@ class _HomePageState extends State<HomePage> {
         redirectUrl.startsWith('/');
   }
 
+  String _getContextQueryFromRedirectUrl(String redirectUrl) {
+    var uri = Uri.tryParse(redirectUrl);
+    if (uri == null || (uri.host.isEmpty && !redirectUrl.startsWith('/'))) {
+      return '?verify=digilocker';
+    }
+    if (uri.host.isEmpty) {
+      uri = Uri.parse(
+        '${EnvConfig.baseUrl}${redirectUrl.startsWith('/') ? redirectUrl : '/$redirectUrl'}',
+      );
+    }
+    return uri.query.isNotEmpty ? '?${uri.query}' : '?verify=digilocker';
+  }
+
+  bool _getContextResponseHasStepContext(dynamic response) {
+    return response is Map && response['context'] is Map;
+  }
+
+  /// After DigiLocker WebView: pass 1 = save (`verify=digilocker`), pass 2 = verify reload.
+  /// Must not call empty get-context (that brings back `render diverge` + breaks the form).
+  Future<void> _handleDigilockerVerifyReturn(AppStore store) async {
+    debugPrint('[HomePage] DigiLocker verify return flow');
+    var response = store.fieldsWithAuth;
+
+    if (response is Map &&
+        response['redirect'] == true &&
+        (response['msg']?.toString() ?? '') == 'redirect on verify is true') {
+      final redirectUrl = response['url']?.toString() ?? '';
+      final queryString = _getContextQueryFromRedirectUrl(redirectUrl);
+      debugPrint(
+          '[HomePage] DigiLocker verify pass 2 — get-context$queryString');
+      await store.fetchWorkflowFieldsWithAuth(
+        widget.company,
+        widget.workflowName,
+        queryString,
+      );
+      response = store.fieldsWithAuth;
+    }
+
+    if (_getContextResponseHasStepContext(response)) {
+      final pos = (response as Map)['context']?['position'];
+      debugPrint('[HomePage] DigiLocker verify OK — step context position=$pos');
+      if (mounted) {
+        _stopReturnFlowTimers();
+        context.go('/${widget.company}/${widget.workflowName}');
+        setState(() {});
+      }
+      return;
+    }
+
+    if (response is Map && response['redirect'] == true) {
+      final url = response['url']?.toString().toLowerCase() ?? '';
+      if (url.contains('digilocker')) {
+        debugPrint(
+            '[HomePage] DigiLocker still pending on backend — not opening WebView again');
+        if (mounted) setState(() {});
+        return;
+      }
+    }
+
+    if (mounted) {
+      await _checkAndHandleRedirect(store);
+    }
+  }
+
   Future<void> _checkAndHandleRedirect(AppStore store) async {
     final response = store.fieldsWithAuth;
     if (response is Map) {
@@ -548,20 +616,50 @@ class _HomePageState extends State<HomePage> {
       // Check if already processed
       final alreadyHasVerifyParam = widget.queryParams.containsKey('verify') || 
                                      widget.queryParams.containsKey('verifyCompleted');
+
+      // DigiLocker just completed — get-context already ran with verify=digilocker + save.
+      if (shouldRedirect &&
+          widget.queryParams['verify'] == 'digilocker' &&
+          (redirectUrl?.toLowerCase().contains('digilocker') ?? false)) {
+        debugPrint(
+            '[HomePage] Skipping repeat DigiLocker WebView after verify=digilocker return');
+        return;
+      }
       
       if (shouldRedirect && redirectUrl != null && redirectUrl.isNotEmpty) {
         // SPECIAL CASE: "redirect on verify is true" - call get-context API (no WebView)
         if (msg == 'redirect on verify is true') {
-          if (alreadyHasVerifyParam) {
+          final digilockerNeedsSecondVerifyPass =
+              widget.queryParams['verify'] == 'digilocker';
+          if (alreadyHasVerifyParam && !digilockerNeedsSecondVerifyPass) {
             debugPrint('[HomePage] Skipping verify API redirect - already processed');
             return;
           }
-          
-          // Extract query params from URL (e.g., verify=digilocker)
-          final uri = Uri.tryParse(redirectUrl);
-          if (uri != null) {
-            // Build query string with verify param
-            final queryString = uri.query; // This is "verify=digilocker"
+
+          final queryString = _getContextQueryFromRedirectUrl(redirectUrl);
+          if (digilockerNeedsSecondVerifyPass ||
+              redirectUrl.toLowerCase().contains('verify=digilocker')) {
+            debugPrint(
+                '[HomePage] DigiLocker verify reload via get-context$queryString');
+            await store.fetchWorkflowFieldsWithAuth(
+              widget.company,
+              widget.workflowName,
+              queryString,
+            );
+            if (_getContextResponseHasStepContext(store.fieldsWithAuth) &&
+                mounted) {
+              context.go('/${widget.company}/${widget.workflowName}');
+              setState(() {});
+            }
+            return;
+          }
+
+          // Extract query params from URL (e.g., verify=digilocker) — IPV / other verify flows
+          final uri = Uri.parse(redirectUrl.startsWith('http')
+              ? redirectUrl
+              : '${EnvConfig.baseUrl}${redirectUrl.startsWith('/') ? redirectUrl : '/$redirectUrl'}');
+          {
+            final queryFromUri = uri.query;
             final lowerHost = uri.host.toLowerCase();
             final lowerPath = uri.path.toLowerCase();
             final isIpvOrFace =
@@ -572,14 +670,14 @@ class _HomePageState extends State<HomePage> {
                 lowerHost.contains('face');
             
             debugPrint('[HomePage] Special case: "redirect on verify is true" - calling get-context API');
-            debugPrint('[HomePage] Extracted query from URL: $queryString');
-            
+            debugPrint('[HomePage] Extracted query from URL: $queryFromUri');
+
             // Call get-context API with verify param
             setState(() => _submitLoading = true);
             await store.fetchWorkflowFieldsWithAuth(
-              widget.company, 
-              widget.workflowName, 
-              queryString.isEmpty ? '' : '?$queryString',
+              widget.company,
+              widget.workflowName,
+              queryFromUri.isEmpty ? '' : '?$queryFromUri',
             );
             setState(() => _submitLoading = false);
             
@@ -594,7 +692,7 @@ class _HomePageState extends State<HomePage> {
             // IPV/Face KYC case:
             // Backend provides a direct return URL (often with EMPTY query params).
             // In that scenario, we must open WebView automatically; otherwise user gets stuck on the non-IPV screen.
-            if (isIpvOrFace && queryString.isEmpty && mounted) {
+            if (isIpvOrFace && queryFromUri.isEmpty && mounted) {
               final ensuredRedirectUrl = _forceHttpsForRpd(redirectUrl);
               final friendlyTitle = _deriveWebViewTitle(msg, ensuredRedirectUrl);
               debugPrint('[HomePage] Auto-opening WebView for IPV/Face after verify reload: $redirectUrl');

@@ -1081,6 +1081,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     return _isDigilockerUrl(sample);
   }
 
+  /// After DigiLocker WebView, Home must call get-context with `verify=digilocker` (save: true).
+  void _appendDigilockerVerifyIfNeeded(Map<String, String> queryParams) {
+    if (!_isDigilockerFlow()) return;
+    queryParams['verify'] = 'digilocker';
+    debugPrint(
+        '[WebView] DigiLocker flow complete — passing verify=digilocker to Home/get-context');
+  }
+
   String get _activeWebViewUrl =>
       _currentUrl.isNotEmpty ? _currentUrl : widget.url;
 
@@ -1716,9 +1724,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             gravity: ToastGravity.TOP,
           );
           // Fallback: navigate with params
-          final query = queryParams.isEmpty
+          final fallbackParams = <String, String>{...queryParams};
+          _appendDigilockerVerifyIfNeeded(fallbackParams);
+          final query = fallbackParams.isEmpty
               ? ''
-              : '?${queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
+              : '?${fallbackParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
           context.read<AppStore>().setReturningFromWebView(true);
           context.go('/${widget.company}/${widget.workflowName}$query');
         }
@@ -1733,6 +1743,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       // Add completion params (success=yes, transaction_id=..., etc.) from any segment
       // so get-context API knows step is complete and next step can proceed
       queryParams.addAll(_completionParams);
+      _appendDigilockerVerifyIfNeeded(queryParams);
 
       final query = queryParams.isEmpty
           ? ''
