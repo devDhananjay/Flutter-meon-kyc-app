@@ -59,6 +59,8 @@ class _HomePageState extends State<HomePage> {
   late ConditionalFormNotifier _formNotifier;
   bool _submitLoading = false;
   bool _resendOtpLoading = false;
+  /// Bumped after successful resend so [OtpVerifySection] restarts cooldown/expiry timers.
+  int _otpResendTimerEpoch = 0;
   bool _webViewTransitionActive = false;
   bool _logoutLoading = false;
   // Non-null when an API call fails while we're returning from WebView.
@@ -347,13 +349,11 @@ class _HomePageState extends State<HomePage> {
           }
         }
         
-        // --- Stepper API (hidden temporarily) ---
-        // Uncomment to fetch step labels for KycStepperBar when re-enabling the stepper.
-        // if (workflowId != null && workflowId.isNotEmpty) {
-        //   debugPrint('[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
-        //   // Backend route: /kycadmin_getWorkflow/{workflowName}/{workflowId}
-        //   await store.fetchStepperWorkflow(widget.workflowName, workflowId);
-        // }
+        if (workflowId != null && workflowId.isNotEmpty) {
+          debugPrint(
+              '[HomePage] Fetching stepper workflow: ${widget.workflowName} / $workflowId');
+          await store.fetchStepperWorkflow(widget.workflowName, workflowId);
+        }
         
         // Check if KYC is completed (is_admin: true)
         if (response is Map && response['is_admin'] == true) {
@@ -827,61 +827,38 @@ class _HomePageState extends State<HomePage> {
   int _getStepperIndex(AppStore store, bool isAuth) {
     if (!isAuth) return 0;
 
-    String normalize(String s) => s.toLowerCase().trim().replaceAll(' ', '_');
-    
-    // Use dynamic position-based index from AppStore
     final currentIndex = store.getCurrentStepIndex();
     if (currentIndex != null) {
-      debugPrint('[HomePage] Stepper index from position: $currentIndex');
+      debugPrint('[HomePage] Stepper index from AppStore: $currentIndex');
       return currentIndex;
     }
 
     final displayedSteps = _getStepperSteps(store);
-
-    // Fallback 1 (legacy): backend index/step value.
-    // Backend commonly sends one-based index (e.g., "16" for the second mobile_otp step).
     final ctx = (store.fieldsWithAuth as Map?)?['context'];
-    if (ctx is Map) {
-      // Try 'index' first (from get-context response), then 'step'
-      final indexStr = ctx['index']?.toString() ?? ctx['step']?.toString();
-      if (indexStr != null) {
-        final idx = int.tryParse(indexStr);
-        if (idx != null) {
-          final steps = displayedSteps;
-          final maxIndex = steps.isNotEmpty ? steps.length - 1 : 4;
-          // Prefer one-based interpretation when possible.
-          if (idx >= 1 && idx <= steps.length) {
-            return (idx - 1).clamp(0, maxIndex);
-          }
-          // Fallback: already zero-based.
-          if (idx >= 0) {
-            return idx.clamp(0, maxIndex);
-          }
+    var pageKey = store.currentPageId;
+    if (pageKey == null || pageKey.isEmpty) {
+      if (ctx is Map) {
+        final page = ctx['page'];
+        if (page is Map) {
+          pageKey = page['id']?.toString();
         }
+        pageKey ??= ctx['index']?.toString();
       }
     }
 
-    // Fallback 2: derive from current position against the same step list that UI shows
-    // (works even when stepper metadata API is unavailable).
-    final position = (store.currentPosition ?? '').toLowerCase().trim();
-    if (position.isNotEmpty && displayedSteps.isNotEmpty) {
-      final normalizedPosition = normalize(position);
-      var byPosition = displayedSteps.indexWhere(
-        (step) => normalize(step) == normalizedPosition,
-      );
-      if (byPosition == -1) {
-        byPosition = displayedSteps.indexWhere((step) {
-          final n = normalize(step);
-          return n.startsWith(normalizedPosition) ||
-              normalizedPosition.startsWith(n);
-        });
+    // Never map duplicate positions (e.g. mobile_otp) without page id — that hits step 2.
+    if (pageKey != null && pageKey.isNotEmpty) {
+      final keyNum = int.tryParse(pageKey);
+      if (keyNum != null && keyNum >= 1 && displayedSteps.isNotEmpty) {
+        final idx = (keyNum - 1).clamp(0, displayedSteps.length - 1);
+        debugPrint('[HomePage] Stepper index from page key $pageKey: $idx');
+        return idx;
       }
-      if (byPosition != -1) {
-        debugPrint(
-            '[HomePage] Stepper index from fallback position "$position": $byPosition');
-        return byPosition;
-      }
+      debugPrint(
+          '[HomePage] Stepper index: page key $pageKey present but not mapped');
+      return 0;
     }
+
     return 0;
   }
   
@@ -1095,6 +1072,45 @@ class _HomePageState extends State<HomePage> {
         validationType: f['validation']?.toString(),
         validateWith: f['validateWith']?.toString(),
       );
+    }
+  }
+
+  /// After header refresh / get-context reload, unblock submit if form is not Yes.
+  void _clearFatcaTaxResidencySubmitBlockIfFormAllows(List<dynamic> fieldList) {
+    if (_fatcaTaxResidencyYesFields(fieldList).isNotEmpty) return;
+    if (!_fatcaTaxResidencyMustPickNo) return;
+    if (mounted) {
+      setState(() => _fatcaTaxResidencyMustPickNo = false);
+    } else {
+      _fatcaTaxResidencyMustPickNo = false;
+    }
+  }
+
+  Future<void> _refreshWorkflowFromHeader(AppStore store) async {
+    store.clearAuthError();
+    if (!mounted) return;
+    setState(() {
+      _webViewReturnError = null;
+      _returnFlowMessage = 'Loading your next step...';
+      _fatcaTaxResidencyMustPickNo = false;
+      _refreshLoading = true;
+    });
+    try {
+      await _loadWorkflow();
+      if (!mounted) return;
+      final active = _getActiveFields(store);
+      final list = (active?['fields'] as List?) ?? <dynamic>[];
+      final flow = active?['conditionalFlow'] as List?;
+      _formNotifier.updateFields(
+        list,
+        flow,
+        fieldsWithAuth: store.fieldsWithAuth,
+      );
+      _runPersonalDetailsBpWealthPipeline(store, list);
+      _clearFatcaTaxResidencySubmitBlockIfFormAllows(list);
+      if (mounted) setState(() {});
+    } finally {
+      if (mounted) setState(() => _refreshLoading = false);
     }
   }
 
@@ -2911,19 +2927,14 @@ class _HomePageState extends State<HomePage> {
                 ? null
                 : () async {
                     if (onRefreshOverride != null) {
+                      store.clearAuthError();
+                      if (mounted) {
+                        setState(() => _fatcaTaxResidencyMustPickNo = false);
+                      }
                       onRefreshOverride();
                       return;
                     }
-                    store.clearAuthError();
-                    setState(() {
-                      _webViewReturnError = null;
-                      _refreshLoading = true;
-                    });
-                    try {
-                      await _loadWorkflow();
-                    } finally {
-                      if (mounted) setState(() => _refreshLoading = false);
-                    }
+                    await _refreshWorkflowFromHeader(store);
                   },
             icon: refreshBusy
                 ? const SizedBox(
@@ -3131,13 +3142,7 @@ class _HomePageState extends State<HomePage> {
                             onRefreshOverride: (_loadWorkflowActive || _logoutLoading)
                                 ? null
                                 : () {
-                                    store.clearAuthError();
-                                    setState(() {
-                                      _webViewReturnError = null;
-                                      _returnFlowMessage =
-                                          'Loading your next step...';
-                                    });
-                                    _loadWorkflow();
+                                    _refreshWorkflowFromHeader(store);
                                   },
                           ),
                         // Stepper stays visible throughout (hidden — see showStepper above)
@@ -4431,13 +4436,15 @@ class _HomePageState extends State<HomePage> {
       return show;
     }).toList();
 
-    final otpField = visibleFields.cast<Map?>().where((f) {
-      if (f == null) return false;
-      final t = f['type']?.toString();
-      final n = (f['name']?.toString() ?? '').toLowerCase();
-      return t == 'otp' || n == 'otp' || n == 'otp_code';
-    }).firstOrNull;
-    final otpFieldName = otpField?['name']?.toString();
+    final pageId = ctx?['page']?['id']?.toString();
+    final pickedOtpField = _pickOtpFieldForContext(visibleFields, position, pageId);
+    final nomineeOptOutOtp = _isNomineeOptOutOtpStep(
+      fields: visibleFields,
+      otpField: pickedOtpField,
+    );
+    // Nominee opt-out OTP: normal labelled field + Submit (not SMS OtpVerify card).
+    final otpField = nomineeOptOutOtp ? null : pickedOtpField;
+    final otpFieldName = pickedOtpField?['name']?.toString();
 
     // Hide sirf "confirm OTP" / re-enter OTP type field – design: one OTP entry
     // Account number jaise "Confirm Account Number" fields ko HIDE mat karo
@@ -4448,8 +4455,8 @@ class _HomePageState extends State<HomePage> {
     final visibleFieldsForDisplay = visibleFields.where((f) {
       if (f is! Map) return false;
 
-      // On mobile_otp screen: HIDE all mobile/phone input fields
-      if (isMobileOtpScreen) {
+      // On mobile_otp screen: hide mobile number inputs, keep OTP fields (e.g. otp_nom).
+      if (isMobileOtpScreen && !_isOtpFormField(f)) {
         final fieldName = (f['name']?.toString() ?? '').toLowerCase();
         if (fieldName == 'mobile' ||
             fieldName == 'phone' ||
@@ -4457,7 +4464,7 @@ class _HomePageState extends State<HomePage> {
             fieldName == 'phone_number' ||
             fieldName.contains('mobile') ||
             fieldName.contains('phone')) {
-          return false; // Hide mobile input fields
+          return false;
         }
       }
 
@@ -4465,7 +4472,7 @@ class _HomePageState extends State<HomePage> {
       if (isEmailOtpScreen) {
         final fieldName = (f['name']?.toString() ?? '').toLowerCase();
         final type = (f['type']?.toString() ?? '').toLowerCase();
-        final isOtpField = type == 'otp' || fieldName == 'otp' || fieldName == 'otp_code';
+        final isOtpField = _isOtpFormField(f);
         if (!isOtpField &&
             (fieldName == 'email' ||
                 fieldName == 'email_id' ||
@@ -4675,6 +4682,16 @@ class _HomePageState extends State<HomePage> {
                     pageLabel: pageLabel,
                     ctx: ctx,
                   )),
+            if (nomineeOptOutOtp && pickedOtpField != null) ...[
+              const SizedBox(height: 4),
+              OtpResendControls(
+                key: ValueKey('nominee-otp-resend-$_otpResendTimerEpoch'),
+                otpExpiry: _resolveOtpExpiryConfig(visibleFields, pickedOtpField),
+                onResendOtp: _resendMobileOtp,
+                resendLoading: _resendOtpLoading,
+              ),
+              const SizedBox(height: 8),
+            ],
             // Terms & Conditions and Aadhaar note (mobile login step only)
             // Show only when API page label AND position both indicate "mobile"
             if (pageLabel == 'mobile') ...[
@@ -5173,8 +5190,100 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Nominee opt-out OTP (page 16 / otp_nom) — use standard form, not mobile SMS verify card.
+  bool _isNomineeOptOutOtpStep({
+    required List<dynamic> fields,
+    required Map? otpField,
+  }) {
+    if (otpField != null) {
+      final n = (otpField['name']?.toString() ?? '').toLowerCase();
+      final dn = (otpField['displayName']?.toString() ?? '').toLowerCase();
+      if (n.contains('nom') || n == 'otp_nom') return true;
+      if (dn.contains('nominee') && dn.contains('otp')) return true;
+    }
+    for (final f in fields) {
+      if (f is! Map) continue;
+      if (f['otpExpiry'] is Map) {
+        final ref =
+            (f['otpExpiry'] as Map)['otpField']?.toString().toLowerCase() ?? '';
+        if (ref.contains('nom')) return true;
+      }
+      final dn = (f['displayName']?.toString() ?? '').toLowerCase();
+      if (dn.contains('nominee') && dn.contains('opt') && dn.contains('otp')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isOtpFormField(Map<dynamic, dynamic> f) {
+    final t = (f['type']?.toString() ?? '').toLowerCase();
+    final n = (f['name']?.toString() ?? '').toLowerCase();
+    final v = (f['validation']?.toString() ?? '').toLowerCase();
+    if (t == 'otp' || v == 'otp') return true;
+    if (n == 'otp' || n == 'otp_code') return true;
+    if (n.contains('otp')) return true;
+    return false;
+  }
+
+  /// Picks the OTP input for this page when multiple OTP fields exist (e.g. mobile_otp vs mobile_otp_nom).
+  Map<dynamic, dynamic>? _pickOtpFieldForContext(
+    List<dynamic> fields,
+    String? position,
+    String? pageId,
+  ) {
+    final candidates = fields
+        .whereType<Map>()
+        .where(_isOtpFormField)
+        .cast<Map<dynamic, dynamic>>()
+        .toList();
+    if (candidates.isEmpty) return null;
+    if (candidates.length == 1) return candidates.first;
+
+    for (final f in fields) {
+      if (f is! Map || f['otpExpiry'] is! Map) continue;
+      final ref = (f['otpExpiry'] as Map)['otpField']?.toString();
+      if (ref == null || ref.isEmpty) continue;
+      final match =
+          candidates.where((c) => c['name']?.toString() == ref).toList();
+      if (match.isNotEmpty) return match.first;
+    }
+
+    final pageNum = int.tryParse(pageId ?? '');
+    final nomineeCandidates = candidates
+        .where((c) => (c['name']?.toString() ?? '').toLowerCase().contains('nom'))
+        .toList();
+    // Later workflow pages (e.g. id 16) reuse position mobile_otp for nominee OTP.
+    if (nomineeCandidates.isNotEmpty && pageNum != null && pageNum >= 10) {
+      return nomineeCandidates.first;
+    }
+
+    final primaryCandidates = candidates
+        .where((c) => !(c['name']?.toString() ?? '').toLowerCase().contains('nom'))
+        .toList();
+    return primaryCandidates.isNotEmpty ? primaryCandidates.first : candidates.first;
+  }
+
+  Map<String, dynamic>? _resolveOtpExpiryConfig(
+    List<dynamic> fields,
+    Map? otpField,
+  ) {
+    if (otpField == null) return null;
+    final name = otpField['name']?.toString();
+    final direct = otpField['otpExpiry'];
+    if (direct is Map) return Map<String, dynamic>.from(direct);
+    if (name != null) {
+      for (final f in fields) {
+        if (f is! Map || f['otpExpiry'] is! Map) continue;
+        final exp = Map<String, dynamic>.from(f['otpExpiry'] as Map);
+        if (exp['otpField']?.toString() == name) return exp;
+      }
+    }
+    return null;
+  }
+
   /// OTP verify card: separate UI for email_otp vs mobile_otp (Figma)
-  Future<void> _resendOtpByPosition({
+  Future<bool> _resendOtpByPosition({
     required AppStore store,
     required String positionSegment,
     required Map<String, dynamic> payload,
@@ -5190,16 +5299,16 @@ class _HomePageState extends State<HomePage> {
         msg: _errorMessageFromResponse(res.statusCode, res.body),
         gravity: ToastGravity.TOP,
       );
-      return;
+      return false;
     }
-    await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
-    if (mounted && store.errorWithAuth != null) {
+    if (mounted) {
+      setState(() => _otpResendTimerEpoch++);
       Fluttertoast.showToast(
-        msg: store.errorWithAuth ?? failureMessage,
+        msg: 'OTP sent successfully',
         gravity: ToastGravity.TOP,
       );
-      return;
     }
+    return true;
   }
 
   String _getResendOtpPositionSegment(Map? ctx, String fallbackPosition) {
@@ -5210,8 +5319,7 @@ class _HomePageState extends State<HomePage> {
     return '$effectivePosition$pageId';
   }
 
-  Future<void> _resendMobileOtpAfterEdit(String mobileNumber) async {
-    _persistedMobileDigitsForOtp = mobileNumber;
+  Future<void> _resendMobileOtp() async {
     final store = context.read<AppStore>();
     FocusScope.of(context).unfocus();
     if (!mounted) return;
@@ -5220,12 +5328,11 @@ class _HomePageState extends State<HomePage> {
       final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
       final resendPositionSegment =
           _getResendOtpPositionSegment(ctx, 'mobile_otp');
-      final payload = <String, dynamic>{'mobile_number': mobileNumber};
       await _resendOtpByPosition(
         store: store,
         positionSegment: resendPositionSegment,
-        payload: payload,
-        failureMessage: 'Failed to refresh OTP step',
+        payload: const <String, dynamic>{},
+        failureMessage: 'Failed to resend OTP',
       );
     } finally {
       if (mounted) {
@@ -5297,9 +5404,9 @@ class _HomePageState extends State<HomePage> {
           : null;
     }
 
-    Map<String, dynamic>? otpExpiry;
-    if (otpField.containsKey('otpExpiry') && otpField['otpExpiry'] is Map) {
-      otpExpiry = Map<String, dynamic>.from(otpField['otpExpiry'] as Map);
+    final fieldList = activeFields is List ? activeFields : <dynamic>[];
+    final otpExpiry = _resolveOtpExpiryConfig(fieldList, otpField);
+    if (otpExpiry != null) {
       debugPrint('[HomePage] OTP expiry config: $otpExpiry');
     }
 
@@ -5308,6 +5415,7 @@ class _HomePageState extends State<HomePage> {
       mainAxisSize: MainAxisSize.min,
       children: [
         OtpVerifySection(
+          key: ValueKey('otp-$position-$_otpResendTimerEpoch'),
           sentToText: sentToText,
           onEdit: onEdit,
           onVerify: (otp) {
@@ -5318,18 +5426,7 @@ class _HomePageState extends State<HomePage> {
             debugPrint('[HomePage] Resend OTP clicked');
             _formNotifier.handleChange(otpName, '');
             if (isMobileOtp) {
-              final digits = _resolveMobileDigitsForOtpUi(
-                  Map<String, dynamic>.from(_formNotifier.formData));
-              debugPrint('[HomePage] Resend OTP resolved digits len=${digits.length}');
-              if (digits.length != 10 ||
-                  !RegExp(r'^[6-9]').hasMatch(digits)) {
-                Fluttertoast.showToast(
-                  msg: 'Please use Edit to enter a valid mobile number',
-                  gravity: ToastGravity.TOP,
-                );
-                return;
-              }
-              _resendMobileOtpAfterEdit(digits);
+              _resendMobileOtp();
             } else {
               final email = _resolveEmailForOtpUi(
                   Map<String, dynamic>.from(_formNotifier.formData));

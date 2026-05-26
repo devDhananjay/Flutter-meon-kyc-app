@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
+import 'package:meon_kyc/utils/conditional_flow.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 
 // BugFixes: date helpers + select value resolution + date picker use existing API value (dropoff).
@@ -271,12 +272,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   Widget _buildLabel(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: RichText(
-        text: TextSpan(
-          style: TextStyle(
+      child: Text.rich(
+        TextSpan(
+          style: const TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w500,
             color: KycTheme.textPrimary,
+            height: 1.35,
           ),
           children: [
             TextSpan(text: text),
@@ -396,7 +398,81 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   static const TextStyle _kFieldTextStyle = TextStyle(
     fontSize: 16,
     color: KycTheme.textPrimary,
+    height: 1.35,
   );
+
+  static const double _kSelectFieldHeight = 52.0;
+
+  /// Label is shown above the field; long copy must not repeat inside the box.
+  bool _selectHasLongLabelAbove() => widget.displayName.trim().length > 48;
+
+  /// KRA continue dropdown: full question as label above, `--Select--` inside the box.
+  bool _selectUsesPlaceholderInsideBox() {
+    if (_selectHasLongLabelAbove()) return true;
+    return kraDetailsContinueWithKraChoiceField({
+      'name': widget.name,
+      'displayName': widget.displayName,
+    });
+  }
+
+  /// Closed dropdown hint when no value is selected yet (label above stays [displayName]).
+  String _selectClosedHint() {
+    if (_selectUsesPlaceholderInsideBox()) return '--Select--';
+    return widget.displayName;
+  }
+
+  int _selectMenuTextMaxLines(String text) {
+    final len = text.trim().length;
+    if (len <= 48) return 1;
+    if (len <= 96) return 2;
+    return 3;
+  }
+
+  double _selectMenuItemHeight(String text) {
+    final lines = _selectMenuTextMaxLines(text);
+    if (lines <= 1) return _kSelectFieldHeight;
+    return 26.0 * lines + 16.0;
+  }
+
+  Widget _selectDropdownText(
+    String text, {
+    int maxLines = 1,
+    Color? color,
+  }) {
+    return Text(
+      text,
+      style: _kFieldTextStyle.copyWith(
+        color: color ?? KycTheme.textPrimary,
+        height: 1.3,
+      ),
+      maxLines: maxLines,
+      softWrap: true,
+      overflow: TextOverflow.clip,
+      textAlign: TextAlign.start,
+    );
+  }
+
+  /// Vertically centered closed-state row (hint or selected value).
+  Widget _selectClosedFieldChild(
+    String text, {
+    Color? color,
+    int maxLines = 1,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      height: _kSelectFieldHeight,
+      child: Center(
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: _selectDropdownText(
+            text,
+            maxLines: maxLines,
+            color: color,
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildText() {
     if (_textController == null) {
@@ -614,42 +690,59 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     final resolvedValue = _resolveSelectValue(currentRaw, entries);
     final isValidValue = resolvedValue != null;
 
+    final longLabelAbove = _selectHasLongLabelAbove();
+    final closedHint = _selectClosedHint();
+    var longestMenuLabel = widget.displayName;
+    for (final e in entries) {
+      if (e.value.length > longestMenuLabel.length) {
+        longestMenuLabel = e.value;
+      }
+    }
+    final menuItemHeight = _selectMenuItemHeight(longestMenuLabel);
+    final menuMaxLines = _selectMenuTextMaxLines(longestMenuLabel);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildLabel(widget.displayName),
         DropdownButtonFormField<String>(
           value: isValidValue ? resolvedValue : null,
-          decoration: _fieldInputDecoration(hintText: widget.displayName),
-          hint: Text(widget.displayName),
-          isExpanded: true, // Prevents overflow by expanding to available width
+          decoration: _fieldInputDecoration().copyWith(
+            contentPadding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
+            constraints: const BoxConstraints(minHeight: _kSelectFieldHeight),
+          ),
+          hint: _selectClosedFieldChild(
+            closedHint,
+            color: KycTheme.textSecondary,
+            maxLines: _selectMenuTextMaxLines(closedHint),
+          ),
+          isExpanded: true,
           style: _kFieldTextStyle,
           iconEnabledColor: KycTheme.textSecondary,
           iconDisabledColor: KycTheme.textSecondary,
+          itemHeight: menuItemHeight,
           items: entries
               .map(
                 (e) => DropdownMenuItem<String>(
                   value: e.key,
-                  child: Text(
-                    e.value,
-                    overflow: TextOverflow.ellipsis, // Truncate long text with ...
-                    maxLines: 1,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _selectDropdownText(
+                        e.value,
+                        maxLines: menuMaxLines,
+                      ),
+                    ),
                   ),
                 ),
               )
               .toList(),
-          // selectedItemBuilder forces the closed-state label to use full primary color
-          // even when [onChanged] is null (disabled), so read-only dropdowns don't appear greyed.
           selectedItemBuilder: (ctx) => entries
               .map(
-                (e) => Align(
-                  alignment: AlignmentDirectional.centerStart,
-                  child: Text(
-                    e.value,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: _kFieldTextStyle,
-                  ),
+                (e) => _selectClosedFieldChild(
+                  e.value,
+                  maxLines: _selectMenuTextMaxLines(e.value),
                 ),
               )
               .toList(),

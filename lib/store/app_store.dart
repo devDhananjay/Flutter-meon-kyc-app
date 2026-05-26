@@ -286,6 +286,44 @@ class AppStore extends ChangeNotifier {
         .toList();
   }
 
+  /// Maps workflow page key (e.g. "16") to a 0-based step index in [steps].
+  int? _stepIndexFromPageKey(String pageKey, List<String> steps) {
+    if (pageKey.isEmpty || steps.isEmpty) return null;
+
+    if (_stepperWorkflow is Map && (_stepperWorkflow as Map).isNotEmpty) {
+      final sortedKeys = (_stepperWorkflow as Map).keys.toList()
+        ..sort((a, b) {
+          final aInt = int.tryParse(a.toString());
+          final bInt = int.tryParse(b.toString());
+          if (aInt != null && bInt != null) return aInt.compareTo(bInt);
+          return a.toString().compareTo(b.toString());
+        });
+
+      var visibleIndex = -1;
+      for (final key in sortedKeys) {
+        final workflowValue = _stepperWorkflow[key];
+        if (workflowValue is! Map) continue;
+        final data = workflowValue['data'] as Map?;
+        final rawLabel =
+            data?['label']?.toString() ?? workflowValue['moduleName']?.toString();
+        final label = rawLabel?.toLowerCase().trim() ?? '';
+        if (label.isEmpty || _hiddenStepperSteps.contains(label)) continue;
+
+        visibleIndex++;
+        if (key.toString() == pageKey) {
+          return visibleIndex.clamp(0, steps.length - 1);
+        }
+      }
+    }
+
+    // No stepper metadata (or key missing): workflow keys are 1-based ordinals.
+    final keyNum = int.tryParse(pageKey);
+    if (keyNum != null && keyNum >= 1) {
+      return (keyNum - 1).clamp(0, steps.length - 1);
+    }
+    return null;
+  }
+
   /// Get current step index based on Position and Page ID
   /// Returns index of Position in stepper steps, or null if not found
   /// IMPORTANT: Current step should NOT be marked as completed, only steps BEFORE it
@@ -297,42 +335,15 @@ class AppStore extends ChangeNotifier {
     if (steps.isEmpty) return null;
     
     final positionLower = _currentPosition!.toLowerCase().trim();
-    final pageId = _currentPageId?.trim(); // Page ID is the workflow key (e.g., "16", "17")
-    
-    // Priority 1: Match using page.id (workflow key) - most accurate for duplicate positions
-    // Page ID corresponds to the workflow key (e.g., "16" means workflow["16"])
-    if (pageId != null && pageId.isNotEmpty && _stepperWorkflow is Map) {
-      // Find the index by matching the workflow key
-      final sortedKeys = (_stepperWorkflow as Map).keys.toList()
-        ..sort((a, b) {
-          final aInt = int.tryParse(a.toString());
-          final bInt = int.tryParse(b.toString());
-          if (aInt != null && bInt != null) {
-            return aInt.compareTo(bInt);
-          }
-          return a.toString().compareTo(b.toString());
-        });
-      
-      // Find visible step index for pageId (aligned with getStepperSteps filtering)
-      int visibleIndex = -1;
-      for (final key in sortedKeys) {
-        final workflowValue = _stepperWorkflow[key];
-        if (workflowValue is! Map) continue;
-        final data = workflowValue['data'] as Map?;
-        final rawLabel = data?['label']?.toString() ?? workflowValue['moduleName']?.toString();
-        final label = rawLabel?.toLowerCase().trim() ?? '';
-        if (label.isEmpty || _hiddenStepperSteps.contains(label)) continue;
+    final pageId = _currentPageId?.trim();
 
-        visibleIndex++;
-        if (key.toString() == pageId) {
-          if (label == positionLower || label.startsWith(positionLower)) {
-            return visibleIndex;
-          }
-          break;
-        }
-      }
+    // Priority 1: workflow page id / index (handles duplicate position names)
+    if (pageId != null && pageId.isNotEmpty) {
+      final fromPage = _stepIndexFromPageKey(pageId, steps);
+      if (fromPage != null) return fromPage;
+      return null;
     }
-    
+
     // Priority 2: Exact match by position (case-insensitive)
     int index = steps.indexWhere(
       (step) => step.toLowerCase().trim() == positionLower,
