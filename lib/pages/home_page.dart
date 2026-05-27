@@ -1094,6 +1094,33 @@ class _HomePageState extends State<HomePage> {
     return (position: position, pageLabel: pageLabel);
   }
 
+  /// `additional_nominee_second`: toast only — submit button stays enabled.
+  bool _toastAndBlockIfNomineeSecondTotalNot100(AppStore store) {
+    final step = _submitValidationStep(store);
+    if (!isAdditionalNomineeSecondKycStep(step.position, step.pageLabel)) {
+      return false;
+    }
+    final activeFields = _getActiveFields(store);
+    final fieldList = (activeFields?['fields'] as List?) ?? [];
+    final msg = validateAdditionalNomineeSecondSubmitPercentage(
+      fields: fieldList,
+      formData: _formNotifier.formData,
+      runtimeFieldVisibility: _formNotifier.fieldVisibility,
+      company: widget.company,
+      position: step.position,
+      pageLabel: step.pageLabel,
+    );
+    if (msg == null) return false;
+    Fluttertoast.showToast(
+      msg: msg,
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.TOP,
+      backgroundColor: Colors.orange.shade700,
+      textColor: Colors.white,
+    );
+    return true;
+  }
+
   void _showValidationFailureToast() {
     final formToast = _formNotifier.validationToastMessage;
     if (formToast != null && formToast.trim().isNotEmpty) {
@@ -1869,6 +1896,7 @@ class _HomePageState extends State<HomePage> {
         _showValidationFailureToast();
         return;
       }
+      if (_toastAndBlockIfNomineeSecondTotalNot100(store)) return;
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] Send OTP / Submit START');
@@ -2400,6 +2428,7 @@ class _HomePageState extends State<HomePage> {
         _showValidationFailureToast();
         return;
       }
+      if (_toastAndBlockIfNomineeSecondTotalNot100(store)) return;
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] _handleCommonSubmit START');
@@ -4586,6 +4615,7 @@ class _HomePageState extends State<HomePage> {
           shouldHideNomineeGhostInputField(
             field: f,
             formData: _formNotifier.formData,
+            fields: fieldList,
           )) {
         return false;
       }

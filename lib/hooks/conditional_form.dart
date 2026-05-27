@@ -115,7 +115,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
       final stepPos = ctx?['position']?.toString();
       final stepLbl = ctx?['page']?['data']?['label']?.toString();
       if (isAdditionalNomineeKycStep(stepPos, stepLbl)) {
-        lockPriorNomineeAllocatedPercentForStep(fields);
+        lockPriorNomineeAllocatedPercentForStep(
+          fields,
+          position: stepPos,
+          pageLabel: stepLbl,
+        );
       } else {
         clearLockedPriorNomineeAllocatedPercent();
       }
@@ -256,7 +260,16 @@ class ConditionalFormNotifier extends ChangeNotifier {
     }
     _applyConditionalLogic(name);
 
-    // Run after conditional flow so empty/prePopulate rules cannot wipe the copy.
+    if (isNomineeExtendedUiStep(stepPos, stepLbl) &&
+        shouldRunNomineeRealtimeUiSync(name)) {
+      _runNomineeRealtimeUiSync(
+        position: stepPos,
+        pageLabel: stepLbl,
+        changedFieldName: name,
+      );
+    }
+
+    // After conditional + nominee UI sync — fill address last so nothing clears it.
     if (isNomineeSameAsMyAddressCheckbox(name)) {
       syncNomineeAddressFromSameAsCheckbox(
         formData,
@@ -264,15 +277,6 @@ class ConditionalFormNotifier extends ChangeNotifier {
         formData[name],
         stepFields: _fields,
         fieldsWithAuth: _fieldsWithAuthSnapshot,
-      );
-    }
-
-    if (isNomineeExtendedUiStep(stepPos, stepLbl) &&
-        shouldRunNomineeRealtimeUiSync(name)) {
-      _runNomineeRealtimeUiSync(
-        position: stepPos,
-        pageLabel: stepLbl,
-        changedFieldName: name,
       );
     }
 
@@ -285,6 +289,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
     String? changedFieldName,
   }) {
     if (isNomineeKycStep(position, pageLabel)) {
+      if (changedFieldName != null &&
+          watchedFields.contains(changedFieldName) &&
+          isNomineeProofTypeField(changedFieldName)) {
+        _applyConditionalLogic(changedFieldName);
+      }
       _syncNomineePercentageFromContext(
         position: position,
         pageLabel: pageLabel,
@@ -294,7 +303,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
       if (changedFieldName != null &&
           watchedFields.contains(changedFieldName) &&
           (isAdditionalNomineeAddCheckbox(changedFieldName) ||
-              isNomineePercentageFieldName(changedFieldName))) {
+              isNomineePercentageFieldName(changedFieldName) ||
+              isNomineeProofTypeField(changedFieldName) ||
+              isNomineeSameAsMyAddressCheckbox(changedFieldName) ||
+              (changedFieldName.toLowerCase().contains('nominee') &&
+                  changedFieldName.toLowerCase().contains('dob')))) {
         _applyConditionalLogic(changedFieldName);
       }
       syncAdditionalNomineeStepSideEffects(

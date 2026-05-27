@@ -147,7 +147,86 @@ const Map<String, List<String>> kNomineeSameAsAddressGroups = {
     'nominee6_country',
     'nominee6_pincode',
   ],
+  'nominee7_same_as_my_address': [
+    'nominee7_add1',
+    'nominee_7_city',
+    'nominee7_state',
+    'nominee7_country',
+    'nominee7_pincode',
+  ],
+  'nominee8_same_as_my_address': [
+    'nominee8_add1',
+    'nominee_8_city',
+    'nominee8_state',
+    'nominee8_country',
+    'nominee8_pincode',
+  ],
+  'nominee9_same_as_my_address': [
+    'nominee9_add1',
+    'nominee9_city',
+    'nominee9_state',
+    'nominee9_country',
+    'nominee9_pincode',
+  ],
+  'nominee10_same_as_my_address': [
+    'nominee10_add1',
+    'nominee_10_city',
+    'nominee10_state',
+    'nominee10_country',
+    'nominee10_pincode',
+  ],
 };
+
+const Map<String, int> _kNomineeWordSlotsForAddress = {
+  'one': 1,
+  'two': 2,
+  'three': 3,
+  'four': 4,
+  'five': 5,
+  'six': 6,
+  'seven': 7,
+  'eight': 8,
+  'nine': 9,
+  'ten': 10,
+};
+
+/// Nominee slot from field name (digits + word forms like nominee_ten).
+int? _nomineeSlotFromFieldNameForAddress(String name) {
+  final lower = name.toLowerCase();
+  if (lower.contains('guardian')) return null;
+  final compact = lower.replaceAll('_', '');
+  final m = RegExp(r'nominee(\d+)').firstMatch(compact);
+  if (m != null) return int.tryParse(m.group(1)!);
+  for (final e in _kNomineeWordSlotsForAddress.entries) {
+    if (compact.contains('nominee${e.key}')) return e.value;
+  }
+  return null;
+}
+
+bool _isNomineeAddressDataFieldName(String name) {
+  final n = name.toLowerCase();
+  if (n.contains('same_as_my_address')) return false;
+  if (n.contains('guardian')) return false;
+  if (RegExp(r'nominee\d+_(mobile|email|name|relation|dob)').hasMatch(n)) {
+    return false;
+  }
+  if (RegExp(r'nominee_\d+_(mobile|email|name|relation|dob)').hasMatch(n)) {
+    return false;
+  }
+  if (n.contains('percentage') ||
+      n.contains('proof_type') ||
+      n.contains('upload') ||
+      (n.contains('pan') && !n.contains('pincode')) ||
+      n.contains('aadhar') ||
+      n.contains('aadhaar')) {
+    return false;
+  }
+  return n.contains('_add') ||
+      n.contains('city') ||
+      n.contains('state') ||
+      n.contains('country') ||
+      n.contains('pincode');
+}
 
 /// Step fields + static map — covers additional nominee slots from API.
 Map<String, List<String>> resolveNomineeSameAsAddressGroups(
@@ -162,12 +241,7 @@ Map<String, List<String>> resolveNomineeSameAsAddressGroups(
     if (checkbox == null || !checkbox.contains('same_as_my_address')) continue;
     if (groups.containsKey(checkbox)) continue;
 
-    final slot = RegExp(r'nominee[_]?(\d+)[_]same_as')
-            .firstMatch(checkbox.toLowerCase())
-            ?.group(1) ??
-        RegExp(r'nominee(\d+)_same')
-            .firstMatch(checkbox.toLowerCase())
-            ?.group(1);
+    final slot = _nomineeSlotFromFieldNameForAddress(checkbox);
     if (slot == null) continue;
 
     final targets = <String>[];
@@ -176,31 +250,9 @@ Map<String, List<String>> resolveNomineeSameAsAddressGroups(
       final n = f2['name']?.toString() ?? '';
       final type = (f2['type']?.toString() ?? '').toLowerCase();
       if (type == 'button' || type == 'hidden' || type == 'file') continue;
-      if (!n.contains('nominee$slot') && !n.contains('nominee_$slot')) {
-        continue;
-      }
-      if (n.contains('same_as_my_address')) continue;
-      if (n.contains('guardian') ||
-          n.contains('percentage') ||
-          n.contains('proof_type') ||
-          n.contains('upload') ||
-          n.contains('pan') ||
-          n.contains('aadhar') ||
-          n.contains('aadhaar') ||
-          n.contains('mobile') ||
-          n.contains('email') ||
-          n.contains('name') ||
-          n.contains('relation') ||
-          n.contains('dob')) {
-        continue;
-      }
-      if (n.contains('add') ||
-          n.contains('city') ||
-          n.contains('state') ||
-          n.contains('country') ||
-          n.contains('pincode')) {
-        targets.add(n);
-      }
+      if (_nomineeSlotFromFieldNameForAddress(n) != slot) continue;
+      if (!_isNomineeAddressDataFieldName(n)) continue;
+      targets.add(n);
     }
     if (targets.isNotEmpty) groups[checkbox] = targets;
   }
@@ -559,6 +611,100 @@ bool looksLikeAddressFieldKey(String s) {
   return false;
 }
 
+const Map<String, String> _kAadharKeyByAddressComponent = {
+  'add1': 'aadhar_address',
+  'add2': 'aadhar_address',
+  'city': 'aadhar_dist',
+  'state': 'aadhar_state',
+  'country': 'aadhar_country',
+  'pincode': 'aadhar_pincode',
+};
+
+/// When API omits `prepopulateValue` (e.g. nominee10_*), use same aadhar sources as nominee7.
+String? defaultAadharSourceKeyForNomineeAddressField(String targetFieldName) {
+  final component = _getNomineeAddressSourceField(targetFieldName);
+  if (component == null) return null;
+  return _kAadharKeyByAddressComponent[component];
+}
+
+/// Resolve a stored value or field-key placeholder to real address text.
+String lookupAddressValueByFieldKey(
+  String key,
+  Map<String, String> index,
+  Map<String, dynamic> formData,
+) {
+  final k = _stripFieldKeyPrefix(key);
+  if (k.isEmpty) return '';
+  for (final candidate in [k, '\$$k']) {
+    final fromIndex = index[candidate];
+    if (fromIndex != null &&
+        fromIndex.isNotEmpty &&
+        !looksLikeAddressFieldKey(fromIndex)) {
+      return fromIndex;
+    }
+    final fromForm = formData[candidate]?.toString().trim();
+    if (fromForm != null &&
+        fromForm.isNotEmpty &&
+        !looksLikeAddressFieldKey(fromForm)) {
+      return fromForm;
+    }
+  }
+  return '';
+}
+
+String _resolveStoredAddressValue(
+  String raw,
+  Map<String, String> index,
+  Map<String, dynamic> formData,
+) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  if (looksLikeAddressFieldKey(trimmed)) {
+    return lookupAddressValueByFieldKey(trimmed, index, formData);
+  }
+  return trimmed;
+}
+
+/// Turn cached `$aadhar_*` placeholders into real address lines for same-as copy.
+Map<String, String> resolveUserAddressMapForNomineeCopy({
+  required Map<String, String> raw,
+  required Map<String, String> index,
+  required Map<String, dynamic> formData,
+}) {
+  final out = _emptyUserAddressMap();
+  for (final component in _kAadharKeyByAddressComponent.keys) {
+    var v = _resolveStoredAddressValue(raw[component] ?? '', index, formData);
+    if (v.isEmpty) {
+      final aadharKey = _kAadharKeyByAddressComponent[component];
+      if (aadharKey != null) {
+        v = lookupAddressValueByFieldKey(aadharKey, index, formData);
+      }
+    }
+    if (v.isNotEmpty) out[component] = v;
+  }
+  if (out.values.every((v) => v.isEmpty)) {
+    return _mergeAddressMaps(out, resolveUserAddressFromFormData(formData));
+  }
+  return out;
+}
+
+/// Copy from another nominee slot on this step (e.g. nominee7_add1 → nominee10_add1).
+String? copyFromFilledNomineeAddressField({
+  required String targetFieldName,
+  required Map<String, dynamic> formData,
+}) {
+  final component = _getNomineeAddressSourceField(targetFieldName);
+  if (component == null) return null;
+  for (final e in formData.entries) {
+    final name = e.key.toString();
+    if (name == targetFieldName) continue;
+    if (_getNomineeAddressSourceField(name) != component) continue;
+    final v = e.value?.toString().trim() ?? '';
+    if (v.isNotEmpty && !looksLikeAddressFieldKey(v)) return v;
+  }
+  return null;
+}
+
 /// Parses API `prepopulateValue` → source field name (e.g. aadhar_address).
 String? parsePrepopulateSourceFieldName(dynamic prepopulateValue) {
   if (prepopulateValue == null) return null;
@@ -654,20 +800,19 @@ String resolveNomineeTargetAddressValue({
       return ownValue;
     }
 
-    final sourceKey = parsePrepopulateSourceFieldName(fieldDef['prepopulateValue']);
+    var sourceKey = parsePrepopulateSourceFieldName(fieldDef['prepopulateValue']);
+    sourceKey ??= defaultAadharSourceKeyForNomineeAddressField(targetFieldName);
     if (sourceKey != null) {
-      final resolved = index[sourceKey] ??
-          index['\$$sourceKey'] ??
-          formData[sourceKey]?.toString().trim();
-      if (resolved != null &&
-          resolved.isNotEmpty &&
-          !looksLikeAddressFieldKey(resolved)) {
-        return resolved;
-      }
+      final resolved = lookupAddressValueByFieldKey(sourceKey, index, formData);
+      if (resolved.isNotEmpty) return resolved;
     }
   }
 
-  return '';
+  return copyFromFilledNomineeAddressField(
+        targetFieldName: targetFieldName,
+        formData: formData,
+      ) ??
+      '';
 }
 
 /// Fill or clear nominee address using each field's API prepopulateValue mapping.
@@ -683,15 +828,26 @@ void syncNomineeAddressFromSameAsCheckbox(
   if (targets == null) return;
 
   if (isCheckboxCheckedValue(checkboxValue)) {
-    final userAddr = getUserAddressForNomineeCopy(formData);
+    refreshUserAddressCache(
+      formData: formData,
+      fieldsWithAuth: fieldsWithAuth,
+      stepFields: stepFields,
+    );
+    final index = buildFieldValueIndex(
+      formData: formData,
+      stepFields: stepFields,
+      fieldsWithAuth: fieldsWithAuth,
+    );
+    final userAddr = resolveUserAddressMapForNomineeCopy(
+      raw: getUserAddressForNomineeCopy(formData),
+      index: index,
+      formData: formData,
+    );
     for (final target in targets) {
       var val = '';
       final component = _getNomineeAddressSourceField(target);
       if (component != null) {
-        final fromUser = userAddr[component]?.trim() ?? '';
-        if (fromUser.isNotEmpty && !looksLikeAddressFieldKey(fromUser)) {
-          val = fromUser;
-        }
+        val = userAddr[component]?.trim() ?? '';
       }
       if (val.isEmpty) {
         val = resolveNomineeTargetAddressValue(
@@ -700,6 +856,13 @@ void syncNomineeAddressFromSameAsCheckbox(
           stepFields: stepFields,
           fieldsWithAuth: fieldsWithAuth,
         );
+      }
+      if (val.isEmpty) {
+        val = copyFromFilledNomineeAddressField(
+              targetFieldName: target,
+              formData: formData,
+            ) ??
+            '';
       }
       formData[target] = val;
       debugPrint('[ConditionalForm] Same-as fill $target <- "$val"');
@@ -1311,6 +1474,7 @@ Map<String, dynamic> filterKycPostV2BodyForStep({
     'total_nominee_percentage',
     'total_nominee_percentage2',
     'remain_nominee_percent',
+    'remain_nominee_percent2',
   ]) {
     if (data.containsKey(name)) allowed.add(name);
   }
