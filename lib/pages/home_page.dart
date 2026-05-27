@@ -2198,21 +2198,12 @@ class _HomePageState extends State<HomePage> {
     return false;
   }
 
-  static String _stripBasicHtmlForDialog(String s) {
-    if (s.isEmpty) return '';
-    var t = s.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
-    t = t.replaceAll(RegExp(r'<[^>]+>'), '');
-    return t.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
-  }
-
-  /// Prefer cleaned `msg`; fall back to `pennydrop` for eKYC mismatch responses.
   static String _pennyDropSaveRetakeDialogTitle(Map body) {
-    final rawMsg = body['msg']?.toString().trim() ?? '';
-    final fromMsg = _stripBasicHtmlForDialog(rawMsg);
-    if (fromMsg.isNotEmpty) return fromMsg;
-    final p = body['pennydrop']?.toString().trim() ?? '';
-    if (p.isNotEmpty) return p;
-    return 'Penny drop';
+    final msg = body['msg']?.toString().toLowerCase().trim() ?? '';
+    if (msg.contains('penny drop verified')) {
+      return 'Penny drop verification';
+    }
+    return 'Penny drop failed';
   }
 
   Future<String?> _showPennyDropVerifiedSaveRetakeDialog(String title) async {
@@ -2220,12 +2211,7 @@ class _HomePageState extends State<HomePage> {
       context: context,
       barrierDismissible: true,
       builder: (ctx) => AlertDialog(
-        title: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 220),
-          child: SingleChildScrollView(
-            child: Text(title),
-          ),
-        ),
+        title: Text(title),
         content: const Text(
           'Save these bank details, or retake penny drop verification.',
         ),
@@ -2612,7 +2598,8 @@ class _HomePageState extends State<HomePage> {
           _isPennyDropVerifiedAwaitingSaveOrRetake(body)) {
         if (mounted) setState(() => _submitLoading = false);
         final dialogTitle = _pennyDropSaveRetakeDialogTitle(body!);
-        final choice = await _showPennyDropVerifiedSaveRetakeDialog(dialogTitle);
+        final choice =
+            await _showPennyDropVerifiedSaveRetakeDialog(dialogTitle);
         if (!mounted) return;
         if (choice == null) return;
         setState(() => _submitLoading = true);
