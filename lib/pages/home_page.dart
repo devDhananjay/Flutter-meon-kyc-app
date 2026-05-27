@@ -1769,6 +1769,13 @@ class _HomePageState extends State<HomePage> {
         position: nomineePos,
         pageLabel: nomineeLbl,
       );
+      // After filter: re-inject step % total (filter drops hidden computed fields).
+      syncNomineeStepPercentTotalsSubmitPayload(
+        data: data,
+        fields: fieldList,
+        position: nomineePos,
+        pageLabel: nomineeLbl,
+      );
     }
 
     if (activeFields == null) return data;
@@ -4575,7 +4582,7 @@ class _HomePageState extends State<HomePage> {
       }
 
       // Nominee: hide ghost PAN/Aadhaar boxes (nominee 2 / 3) with no label.
-      if (isNomineeKycStep(position, pageLabel) &&
+      if (isNomineeExtendedUiStep(position, pageLabel) &&
           shouldHideNomineeGhostInputField(
             field: f,
             formData: _formNotifier.formData,

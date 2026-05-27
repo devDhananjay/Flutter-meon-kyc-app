@@ -251,6 +251,18 @@ bool isNomineeKycStep(String? position, String? pageLabel) {
   return p == 'nominee' || l == 'nominee';
 }
 
+/// `additional_nominee` / `additional_nominee_second` workflow steps.
+bool isAdditionalNomineeKycStep(String? position, String? pageLabel) {
+  final p = (position ?? '').toLowerCase();
+  final l = (pageLabel ?? '').toLowerCase();
+  return p.contains('additional_nominee') || l.contains('additional_nominee');
+}
+
+bool isNomineeExtendedUiStep(String? position, String? pageLabel) {
+  return isNomineeKycStep(position, pageLabel) ||
+      isAdditionalNomineeKycStep(position, pageLabel);
+}
+
 bool _addNomineeSelectedYes(Map<String, dynamic> formData) {
   return _isKycYesNoValue(formData['add_nominee']);
 }
@@ -264,6 +276,37 @@ const String kAddThirdNomineeField = 'add_3_nominee';
 /// API field: select "Do you want to add more nominee" (`fieldShow: false`, conditional).
 const String kExtraNomineeField = 'extra_nominee';
 
+/// Main nominee step (`nominee12`): hidden total of slot 1–3 percentages.
+const String kTotalNomineePercentageField = 'total_nominee_percentage';
+
+/// Additional nominee step (`additional_nominee13`): carries forward prior total.
+const String kRemainNomineePercentField = 'remain_nominee_percent';
+
+const Map<String, int> _kNomineeWordSlotNumbers = {
+  'one': 1,
+  'two': 2,
+  'three': 3,
+  'four': 4,
+  'five': 5,
+  'six': 6,
+  'seven': 7,
+  'eight': 8,
+  'nine': 9,
+  'ten': 10,
+};
+
+/// Frozen on step load — prior % from earlier steps only (not this step's typing).
+double? _lockedPriorNomineeAllocatedPercent;
+
+void lockPriorNomineeAllocatedPercentForStep(List<dynamic>? fields) {
+  _lockedPriorNomineeAllocatedPercent =
+      readPriorNomineeAllocatedPercentFromApi(fields);
+}
+
+void clearLockedPriorNomineeAllocatedPercent() {
+  _lockedPriorNomineeAllocatedPercent = null;
+}
+
 /// Legacy alias; prefer [kExtraNomineeField].
 const List<String> kAddMoreNomineeDropdownCandidates = [
   kExtraNomineeField,
@@ -275,15 +318,26 @@ const List<String> _kDefaultNomineePercentageFieldNames = [
   'nominee_2_percentage',
   'nominee3_percentage',
   'nominee_3_percentage',
+  // Additional nominees (when present) may use different slot names.
+  // We keep only common variants here; when `fields` is non-null, resolver
+  // will discover the exact names from API.
+  'nominee_4_percentage',
+  'nominee_5_percentage',
+  'nominee6_percentage',
 ];
 
-/// Slot 1/2/3 from API name (`nominee_1_percentage`, `nominee3_percentage`, etc.).
+/// Slot number from API name (`nominee_1_percentage`, `nominee3_percentage`,
+/// `nominee_4_percentage`, `nominee6_percentage`, etc.).
 int? nomineePercentageSlotIndex(String fieldName) {
   final compact = fieldName.toLowerCase().replaceAll('_', '');
-  if (compact.contains('nominee1') && compact.contains('percentage')) return 1;
-  if (compact.contains('nominee2') && compact.contains('percentage')) return 2;
-  if (compact.contains('nominee3') && compact.contains('percentage')) return 3;
-  return null;
+  // Examples after compaction:
+  // - nominee_4_percentage -> nominee4percentage
+  // - nominee6_percentage  -> nominee6percentage
+  final m = RegExp(r'nominee(\d+)percentage').firstMatch(compact);
+  if (m == null) return null;
+  final n = int.tryParse(m.group(1)!);
+  if (n == null) return null;
+  return n;
 }
 
 bool isNomineePercentageFieldName(String name) {
@@ -364,6 +418,7 @@ bool shouldSyncNomineePercentageField(String name) {
       name == kAddSecondNomineeField ||
       name == kAddThirdNomineeField ||
       name == kExtraNomineeField ||
+      isAdditionalNomineeAddCheckbox(name) ||
       name == 'add_nominee';
 }
 
@@ -375,12 +430,15 @@ bool shouldRunNomineeRealtimeUiSync(String name) {
     return true;
   }
   if (n.contains('nominee') && n.contains('dob')) return true;
+  if (n.contains('guardian') && n.contains('dob')) return true;
   if (isGuardian1Field(name) ||
       isGuardian2Field(name) ||
       isGuardian3Field(name) ||
+      guardianSlotFromFieldName(name) != null ||
       name.startsWith('guardian_same_as_address')) {
     return true;
   }
+  if (isNomineeSameAsMyAddressCheckbox(name)) return true;
   return false;
 }
 
@@ -388,6 +446,8 @@ bool shouldRunNomineeRealtimeUiSync(String name) {
 bool isNomineeSyncProtectedFormField(String name) {
   return name == kAddSecondNomineeField ||
       name == kAddThirdNomineeField ||
+      name == kRemainNomineePercentField ||
+      isAdditionalNomineeAddCheckbox(name) ||
       isNomineePercentageFieldName(name);
 }
 
@@ -467,6 +527,353 @@ double sumActiveNomineePercentages({
   return total;
 }
 
+/// Step total of nominee percentages based on step field visibility (works for slot 4+ too).
+double sumVisibleNomineePercentagesForStep({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (fields == null) return 0.0;
+  var total = 0.0;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null || name.isEmpty) continue;
+    if (!isNomineePercentageFieldName(name)) continue;
+    final show = kycFieldVisibleForFormStep(
+      f,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    final visible = runtimeFieldVisibility[name] ?? show;
+    if (!visible) continue;
+    total += _parseNomineePercentageValue(formData[name]) ?? 0;
+  }
+  return total;
+}
+
+/// Payload ke andar jo nominee percentage keys present hain (active/visible ke alawa bhi)
+/// unka sum. This is robust for steps where `fieldShow: false` makes
+/// runtime visibility unreliable.
+double sumNomineePercentagesFromPayload(Map<String, dynamic> formData) {
+  double total = 0.0;
+  for (final entry in formData.entries) {
+    final k = entry.key;
+    if (!isNomineePercentageFieldName(k)) continue;
+    total += _parseNomineePercentageValue(entry.value) ?? 0.0;
+  }
+  return total;
+}
+
+/// Sum only percentage fields defined on the current step (avoids stale keys from other steps).
+double sumNomineePercentagesForStepFields({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+}) {
+  if (fields == null || fields.isEmpty) {
+    return sumNomineePercentagesFromPayload(formData);
+  }
+  var total = 0.0;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null || name.isEmpty) continue;
+    if (!isNomineePercentageFieldName(name)) continue;
+    total += _parseNomineePercentageValue(formData[name]) ?? 0.0;
+  }
+  return total;
+}
+
+dynamic _formatNomineePercentTotalForApi(double total) {
+  if ((total - total.roundToDouble()).abs() < 0.0001) {
+    return total.round();
+  }
+  return double.parse(total.toStringAsFixed(2));
+}
+
+/// Prior % from get-context field `value` only (not live formData).
+double readPriorNomineeAllocatedPercentFromApi(List<dynamic>? fields) {
+  final remain =
+      _findFieldDefByName(fields, kRemainNomineePercentField)?['value'];
+  final total =
+      _findFieldDefByName(fields, kTotalNomineePercentageField)?['value'];
+  return _parseNomineePercentageValue(remain) ??
+      _parseNomineePercentageValue(total) ??
+      0.0;
+}
+
+/// Already-allocated nominee % from earlier steps (frozen at additional-nominee step load).
+double readPriorNomineeAllocatedPercent({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+}) {
+  if (_lockedPriorNomineeAllocatedPercent != null) {
+    return _lockedPriorNomineeAllocatedPercent!;
+  }
+  final fromApi = readPriorNomineeAllocatedPercentFromApi(fields);
+  if (fromApi > 0) return fromApi;
+  return _parseNomineePercentageValue(
+        formData[kTotalNomineePercentageField],
+      ) ??
+      0.0;
+}
+
+/// How much % the user may still assign on this additional-nominee step.
+double nomineeRemainingBudgetOnAdditionalStep({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+}) {
+  final prior = readPriorNomineeAllocatedPercent(
+    formData: formData,
+    fields: fields,
+  );
+  return (100.0 - prior).clamp(0.0, 100.0);
+}
+
+bool isAdditionalNomineeAddCheckbox(String name) {
+  return RegExp(r'^add_\d+_nominee$').hasMatch(name);
+}
+
+/// `add_5_nominee` → slot 5, sorted by slot.
+List<MapEntry<int, String>> resolveAdditionalAddNomineeCheckboxes(
+  List<dynamic>? fields,
+) {
+  final out = <MapEntry<int, String>>[];
+  if (fields == null) return out;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString() ?? '';
+    final m = RegExp(r'^add_(\d+)_nominee$').firstMatch(name);
+    if (m == null) continue;
+    final slot = int.tryParse(m.group(1)!);
+    if (slot == null) continue;
+    out.add(MapEntry(slot, name));
+  }
+  out.sort((a, b) => a.key.compareTo(b.key));
+  return out;
+}
+
+List<int> listNomineePercentageSlotsOnStep(List<dynamic>? fields) {
+  final slots = <int>{};
+  if (fields == null) return [];
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null) continue;
+    final slot = nomineePercentageSlotIndex(name);
+    if (slot != null) slots.add(slot);
+  }
+  final list = slots.toList()..sort();
+  return list;
+}
+
+bool isNomineeSlotActiveOnAdditionalStep({
+  required int slot,
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required int baseSlot,
+  List<MapEntry<int, String>>? addCheckboxes,
+}) {
+  if (slot == baseSlot) return true;
+  final adds =
+      addCheckboxes ?? resolveAdditionalAddNomineeCheckboxes(fields);
+  for (final e in adds) {
+    if (e.key == slot) {
+      return isCheckboxCheckedValue(formData[e.value]);
+    }
+  }
+  return false;
+}
+
+double sumActiveAdditionalNomineeStepPercentages({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  final fieldList = fields;
+  if (fieldList == null) return 0.0;
+  final slots = listNomineePercentageSlotsOnStep(fieldList);
+  if (slots.isEmpty) return 0.0;
+  final baseSlot = slots.first;
+  final adds = resolveAdditionalAddNomineeCheckboxes(fieldList);
+  var total = 0.0;
+  for (final slot in slots) {
+    if (!isNomineeSlotActiveOnAdditionalStep(
+      slot: slot,
+      formData: formData,
+      fields: fieldList,
+      baseSlot: baseSlot,
+      addCheckboxes: adds,
+    )) {
+      continue;
+    }
+    final name = _nomineePercentageFieldForSlot(fieldList, slot);
+    if (name == null) continue;
+    if (!isNomineePercentageFieldActive(
+      name,
+      fieldList,
+      runtimeFieldVisibility,
+      formData: formData,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    )) {
+      continue;
+    }
+    total += _parseNomineePercentageValue(formData[name]) ?? 0.0;
+  }
+  return total;
+}
+
+double _cumulativeNomineePercentBeforeSlot({
+  required double priorAllocated,
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required List<int> pctSlots,
+  required int beforeSlot,
+  required int baseSlot,
+}) {
+  final adds = resolveAdditionalAddNomineeCheckboxes(fields);
+  var sum = priorAllocated;
+  for (final slot in pctSlots) {
+    if (slot >= beforeSlot) break;
+    if (!isNomineeSlotActiveOnAdditionalStep(
+      slot: slot,
+      formData: formData,
+      fields: fields,
+      baseSlot: baseSlot,
+      addCheckboxes: adds,
+    )) {
+      continue;
+    }
+    final name = _nomineePercentageFieldForSlot(fields, slot);
+    if (name == null) continue;
+    sum += _parseNomineePercentageValue(formData[name]) ?? 0.0;
+  }
+  return sum;
+}
+
+void _hideAllNomineeSlotFields(
+  List<dynamic>? fields,
+  Map<String, bool> runtimeFieldVisibility,
+  int slot,
+) {
+  if (fields == null) return;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null) continue;
+    if (nomineeSlotFromFieldName(name) != slot) continue;
+    if (isAdditionalNomineeAddCheckbox(name) ||
+        isNomineeBackendOnlyField(name) ||
+        name == kRemainNomineePercentField) {
+      continue;
+    }
+    runtimeFieldVisibility[name] = false;
+  }
+}
+
+void _applyAdditionalNomineeAddButtonsVisibility({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+}) {
+  if (fields == null) return;
+  final prior = readPriorNomineeAllocatedPercent(
+    formData: formData,
+    fields: fields,
+  );
+  final pctSlots = listNomineePercentageSlotsOnStep(fields);
+  if (pctSlots.isEmpty) return;
+  final baseSlot = pctSlots.first;
+  final addChecks = resolveAdditionalAddNomineeCheckboxes(fields);
+
+  runtimeFieldVisibility[kRemainNomineePercentField] = false;
+
+  if (_nomineeShareSumAtLeast100(prior)) {
+    for (final e in addChecks) {
+      runtimeFieldVisibility[e.value] = false;
+    }
+    return;
+  }
+
+  for (final entry in addChecks) {
+    final targetSlot = entry.key;
+    final checkbox = entry.value;
+    final prevSlot = targetSlot - 1;
+    final prevEntered =
+        _nomineeSlotPercentageEntered(formData, fields, prevSlot);
+    final prevCheckbox = 'add_${prevSlot}_nominee';
+    final prevAddOk = prevSlot == baseSlot ||
+        isCheckboxCheckedValue(formData[prevCheckbox]);
+    final sumBefore = _cumulativeNomineePercentBeforeSlot(
+      priorAllocated: prior,
+      formData: formData,
+      fields: fields,
+      pctSlots: pctSlots,
+      beforeSlot: targetSlot,
+      baseSlot: baseSlot,
+    );
+    final showAdd =
+        prevEntered && prevAddOk && !_nomineeShareSumAtLeast100(sumBefore);
+
+    if (_findFieldDefByName(fields, checkbox) == null) continue;
+    runtimeFieldVisibility[checkbox] = showAdd;
+
+    final checked = isCheckboxCheckedValue(formData[checkbox]);
+    if (!checked) {
+      _hideAllNomineeSlotFields(fields, runtimeFieldVisibility, targetSlot);
+      final pct = _nomineePercentageFieldForSlot(fields, targetSlot);
+      if (pct != null) formData.remove(pct);
+      continue;
+    }
+    // Checked: API conditional flow controls show/hide — do not override visibility.
+  }
+}
+
+/// Sets `total_nominee_percentage` (main nominee) or cumulative `remain_nominee_percent`
+/// (prior allocated + this step) before kyc-post-v2.
+void syncNomineeStepPercentTotalsSubmitPayload({
+  required Map<String, dynamic> data,
+  required List<dynamic>? fields,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeExtendedUiStep(position, pageLabel)) return;
+
+  if (isNomineeKycStep(position, pageLabel)) {
+    final total = sumNomineePercentagesForStepFields(
+      formData: data,
+      fields: fields,
+    );
+    data[kTotalNomineePercentageField] =
+        _formatNomineePercentTotalForApi(total);
+    return;
+  }
+
+  if (isAdditionalNomineeKycStep(position, pageLabel) &&
+      _findFieldDefByName(fields, kRemainNomineePercentField) != null) {
+    final prior = readPriorNomineeAllocatedPercent(
+      formData: data,
+      fields: fields,
+    );
+    final stepSum = sumNomineePercentagesForStepFields(
+      formData: data,
+      fields: fields,
+    );
+    data[kRemainNomineePercentField] = _formatNomineePercentTotalForApi(
+      prior + stepSum,
+    );
+  }
+}
+
 /// Caps input: max 100 per field; total of **active** nominee slots cannot exceed 100.
 String? clampNomineePercentageValue({
   required String fieldName,
@@ -486,6 +893,11 @@ String? clampNomineePercentageValue({
   }
   final parsed = _parseNomineePercentageValue(rawValue);
   if (parsed == null) return null;
+
+  final onAdditional = isAdditionalNomineeKycStep(position, pageLabel);
+  final priorAllocated = onAdditional
+      ? readPriorNomineeAllocatedPercent(formData: formData, fields: fields)
+      : 0.0;
 
   final pctFields = resolveNomineePercentageFieldNames(fields);
   var others = 0.0;
@@ -512,9 +924,9 @@ String? clampNomineePercentageValue({
     }
   }
 
-  var capped = parsed.clamp(0.0, 100.0);
-  final maxForSlot = (100.0 - others).clamp(0.0, 100.0);
-  if (capped > maxForSlot) capped = maxForSlot;
+  final maxForSlot =
+      (100.0 - priorAllocated - others).clamp(0.0, 100.0);
+  final capped = parsed.clamp(0.0, maxForSlot);
 
   if (capped == capped.roundToDouble()) {
     return capped.round().toString();
@@ -672,25 +1084,54 @@ bool isNomineePanOrAadharField(String name) {
   return n.contains('pan') || n.contains('aadhar') || n.contains('aadhaar');
 }
 
-int? _nomineeSlotFromPanAadharField(String name) {
+int? nomineeSlotFromFieldName(String name) {
   if (isNomineeBackendOnlyField(name)) return null;
-  final n = name.toLowerCase();
-  if (n.startsWith('nominee1_') ||
-      n.startsWith('nominee_1') ||
-      n.startsWith('nominee_one_')) {
-    return 1;
+  final lower = name.toLowerCase();
+  if (lower.contains('additional_nominee')) return null;
+  final compact = lower.replaceAll('_', '');
+  final m = RegExp(r'nominee(\d+)').firstMatch(compact);
+  if (m != null) {
+    return int.tryParse(m.group(1)!);
   }
-  if (n.startsWith('nominee2_') ||
-      n.startsWith('nominee_2') ||
-      n.startsWith('nominee_two_')) {
-    return 2;
-  }
-  if (n.startsWith('nominee3_') ||
-      n.startsWith('nominee_3') ||
-      n.startsWith('nominee_three_')) {
-    return 3;
+  for (final e in _kNomineeWordSlotNumbers.entries) {
+    if (compact.contains('nominee${e.key}')) return e.value;
   }
   return null;
+}
+
+int? _nomineeSlotFromPanAadharField(String name) =>
+    nomineeSlotFromFieldName(name);
+
+int? guardianSlotFromFieldName(String name) {
+  final m = RegExp(r'guardian_?(\d+)').firstMatch(name.toLowerCase());
+  if (m == null) return null;
+  return int.tryParse(m.group(1)!);
+}
+
+String? _nomineeDobFieldForSlot(int slot) {
+  // Backend conditional rules for additional nominee steps use:
+  //   nominee{N}_dob < 18  => show guardian{N}_*
+  // This matches JSON in your provided files (additional_nominee*).
+  return 'nominee${slot}_dob';
+}
+
+String? _nomineeProofTypeFieldForSlot(int slot) {
+  switch (slot) {
+    case 1:
+      return 'nominee_one_proof_type';
+    case 2:
+      return 'nominee_two_proof_type';
+    case 3:
+      return 'nominee_three_proof_type';
+    case 4:
+      return 'nominee_four_proof_type';
+    case 5:
+      return 'nominee_five_proof_type';
+    case 6:
+      return 'nominee_six_proof_type';
+    default:
+      return null;
+  }
 }
 
 bool _nomineePanAadharFieldVisible({
@@ -725,6 +1166,17 @@ bool _nomineePanAadharFieldVisible({
     );
   }
 
+  final guardianSlot = guardianSlotFromFieldName(name);
+  if (guardianSlot != null && guardianSlot >= 4) {
+    final dobField = _nomineeDobFieldForSlot(guardianSlot);
+    if (dobField == null) return false;
+    if (!_isNomineeMinor(formData, dobField)) return false;
+    return _proofTypeIncludes(
+      formData['guardian${guardianSlot}_proof_type'],
+      isPan ? 'PAN' : 'AADHA',
+    );
+  }
+
   final slot = _nomineeSlotFromPanAadharField(name);
   if (slot == null) return false;
   if (slot == 2 && !isCheckboxCheckedValue(formData[kAddSecondNomineeField])) {
@@ -733,12 +1185,14 @@ bool _nomineePanAadharFieldVisible({
   if (slot == 3 && !isCheckboxCheckedValue(formData[kAddThirdNomineeField])) {
     return false;
   }
+  final addKey = 'add_${slot}_nominee';
+  if (formData.containsKey(addKey) &&
+      !isCheckboxCheckedValue(formData[addKey])) {
+    return false;
+  }
 
-  final proofKey = slot == 1
-      ? 'nominee_one_proof_type'
-      : slot == 2
-          ? 'nominee_two_proof_type'
-          : 'nominee_three_proof_type';
+  final proofKey = _nomineeProofTypeFieldForSlot(slot);
+  if (proofKey == null) return false;
   return _proofTypeIncludes(formData[proofKey], isPan ? 'PAN' : 'AADHA');
 }
 
@@ -828,9 +1282,12 @@ void _applyNomineeSupplementaryFieldsVisibility({
   required Map<String, dynamic> formData,
   required List<dynamic>? fields,
   required Map<String, bool> runtimeFieldVisibility,
+  String? position,
+  String? pageLabel,
 }) {
   if (fields == null) return;
 
+  final onMainNominee = isNomineeKycStep(position, pageLabel);
   final add2 = isCheckboxCheckedValue(formData[kAddSecondNomineeField]);
   final add3 = isCheckboxCheckedValue(formData[kAddThirdNomineeField]);
   final minor1 = _isNomineeMinor(formData, 'nominee1_dob');
@@ -851,15 +1308,46 @@ void _applyNomineeSupplementaryFieldsVisibility({
       runtimeFieldVisibility[name] = add2 && minor2;
     } else if (isGuardian3Field(name)) {
       runtimeFieldVisibility[name] = add3 && minor3;
-    } else if (isAdditionalNomineeField(name)) {
-      runtimeFieldVisibility[name] = extraYes;
-    } else if (isNomineeStepAuxiliaryField(name)) {
-      runtimeFieldVisibility[name] = false;
-    } else if (isNomineePanOrAadharField(name)) {
-      runtimeFieldVisibility[name] =
-          _nomineePanAadharFieldVisible(name: name, formData: formData);
+    } else {
+      final gSlot = guardianSlotFromFieldName(name);
+      if (gSlot != null && gSlot >= 4) {
+        // Additional nominee JSON rules are based on nominee{N}_dob < 18.
+        final dobField = _nomineeDobFieldForSlot(gSlot);
+        runtimeFieldVisibility[name] =
+            dobField != null && _isNomineeMinor(formData, dobField);
+      } else if (isAdditionalNomineeField(name) && onMainNominee) {
+        runtimeFieldVisibility[name] = extraYes;
+      } else if (isNomineeStepAuxiliaryField(name)) {
+        runtimeFieldVisibility[name] = false;
+      } else if (isNomineePanOrAadharField(name)) {
+        runtimeFieldVisibility[name] =
+            _nomineePanAadharFieldVisible(name: name, formData: formData);
+      }
     }
   }
+}
+
+/// Additional nominee steps: prior % budget, add_N checkboxes, guardian, PAN/Aadhaar.
+void syncAdditionalNomineeStepSideEffects({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isAdditionalNomineeKycStep(position, pageLabel)) return;
+  _applyAdditionalNomineeAddButtonsVisibility(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+  );
+  _applyNomineeSupplementaryFieldsVisibility(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    position: position,
+    pageLabel: pageLabel,
+  );
 }
 
 void _setNomineeTier3FieldsVisible(
@@ -1102,6 +1590,8 @@ void syncNomineePercentageSideEffects({
     formData: formData,
     fields: fields,
     runtimeFieldVisibility: runtimeFieldVisibility,
+    position: position,
+    pageLabel: pageLabel,
   );
 }
 
@@ -1113,23 +1603,79 @@ void applyNomineeStepSubmitPayload({
   String? position,
   String? pageLabel,
 }) {
-  syncNomineePercentageSideEffects(
-    formData: data,
-    fieldEditable: {},
+  final onMainNomineeStep = isNomineeKycStep(position, pageLabel);
+  final onNomineeLikeStep = isNomineeExtendedUiStep(position, pageLabel);
+
+  if (onMainNomineeStep) {
+    syncNomineePercentageSideEffects(
+      formData: data,
+      fieldEditable: {},
+      fields: fields,
+      runtimeFieldVisibility: runtimeFieldVisibility,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+  }
+
+  if (onNomineeLikeStep) {
+    runtimeFieldVisibility[kTotalNomineePercentageField] = true;
+    runtimeFieldVisibility[kRemainNomineePercentField] = true;
+    syncNomineeStepPercentTotalsSubmitPayload(
+      data: data,
+      fields: fields,
+      position: position,
+      pageLabel: pageLabel,
+    );
+  }
+
+  if (onMainNomineeStep) {
+    syncExtraNomineeSubmitPayload(
+      data: data,
+      fields: fields,
+      runtimeFieldVisibility: runtimeFieldVisibility,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+  }
+}
+
+/// Additional nominee: prior % + this step cannot exceed 100%.
+String? validateAdditionalNomineePercentageTotal({
+  required List<dynamic>? fields,
+  required Map<String, dynamic> formData,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isAdditionalNomineeKycStep(position, pageLabel)) return null;
+  if (fields == null) return null;
+
+  final prior = readPriorNomineeAllocatedPercent(
+    formData: formData,
+    fields: fields,
+  );
+  final stepSum = sumActiveAdditionalNomineeStepPercentages(
+    formData: formData,
     fields: fields,
     runtimeFieldVisibility: runtimeFieldVisibility,
     company: company,
     position: position,
     pageLabel: pageLabel,
   );
-  syncExtraNomineeSubmitPayload(
-    data: data,
-    fields: fields,
-    runtimeFieldVisibility: runtimeFieldVisibility,
-    company: company,
-    position: position,
-    pageLabel: pageLabel,
-  );
+  if (prior + stepSum > 100.001) {
+    final remaining = nomineeRemainingBudgetOnAdditionalStep(
+      formData: formData,
+      fields: fields,
+    );
+    if (remaining <= 0.001) {
+      return 'You have already allocated 100% nominee share on previous steps';
+    }
+    return 'Nominee share on this step cannot exceed ${remaining == remaining.roundToDouble() ? remaining.round() : remaining.toStringAsFixed(2)}%';
+  }
+  return null;
 }
 
 /// Submit: active nominee % total = 100%, unless `extra_nominee` is Yes (below 100% OK).

@@ -82,7 +82,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
       );
 
       // Nominee address: only keep values when "same as my address" is checked.
-      clearNomineeAddressesWhenUnchecked(formData);
+      clearNomineeAddressesWhenUnchecked(formData, stepFields: fields);
       
       // Apply initial conditional flow for all fields with values
       // This ensures correct initial visibility based on pre-filled data
@@ -98,7 +98,8 @@ class ConditionalFormNotifier extends ChangeNotifier {
         }
       }
 
-      for (final entry in kNomineeSameAsAddressGroups.entries) {
+      final sameAsGroups = resolveNomineeSameAsAddressGroups(fields);
+      for (final entry in sameAsGroups.entries) {
         if (isCheckboxCheckedValue(formData[entry.key])) {
           syncNomineeAddressFromSameAsCheckbox(
             formData,
@@ -113,17 +114,15 @@ class ConditionalFormNotifier extends ChangeNotifier {
       final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
       final stepPos = ctx?['position']?.toString();
       final stepLbl = ctx?['page']?['data']?['label']?.toString();
-      if (isNomineeKycStep(stepPos, stepLbl)) {
-        _runNomineeRealtimeUiSync(
-          position: stepPos,
-          pageLabel: stepLbl,
-        );
+      if (isAdditionalNomineeKycStep(stepPos, stepLbl)) {
+        lockPriorNomineeAllocatedPercentForStep(fields);
       } else {
-        _syncNomineePercentageFromContext(
-          position: stepPos,
-          pageLabel: stepLbl,
-        );
+        clearLockedPriorNomineeAllocatedPercent();
       }
+      _runNomineeRealtimeUiSync(
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
 
       // Only notify listeners if fields actually changed
       notifyListeners();
@@ -134,6 +133,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
   List<String> get watchedFields => getWatchedFields(_conditionalFlow);
 
   void resetForm() {
+    clearLockedPriorNomineeAllocatedPercent();
     formData = {};
     errors = {};
     validationToastMessage = null;
@@ -212,7 +212,8 @@ class ConditionalFormNotifier extends ChangeNotifier {
     final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
     final stepPos = ctx?['position']?.toString();
     final stepLbl = ctx?['page']?['data']?['label']?.toString();
-    if (isNomineeKycStep(stepPos, stepLbl)) {
+    if (isNomineeExtendedUiStep(stepPos, stepLbl) &&
+        isNomineePercentageFieldName(name)) {
       final clamped = clampNomineePercentageValue(
         fieldName: name,
         rawValue: processedValue,
@@ -266,7 +267,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
       );
     }
 
-    if (isNomineeKycStep(stepPos, stepLbl) &&
+    if (isNomineeExtendedUiStep(stepPos, stepLbl) &&
         shouldRunNomineeRealtimeUiSync(name)) {
       _runNomineeRealtimeUiSync(
         position: stepPos,
@@ -283,11 +284,32 @@ class ConditionalFormNotifier extends ChangeNotifier {
     String? pageLabel,
     String? changedFieldName,
   }) {
-    _syncNomineePercentageFromContext(
-      position: position,
-      pageLabel: pageLabel,
-    );
-    _clearNomineeProtectedEditableOverrides();
+    if (isNomineeKycStep(position, pageLabel)) {
+      _syncNomineePercentageFromContext(
+        position: position,
+        pageLabel: pageLabel,
+      );
+      _clearNomineeProtectedEditableOverrides();
+    } else if (isAdditionalNomineeKycStep(position, pageLabel)) {
+      if (changedFieldName != null &&
+          watchedFields.contains(changedFieldName) &&
+          (isAdditionalNomineeAddCheckbox(changedFieldName) ||
+              isNomineePercentageFieldName(changedFieldName))) {
+        _applyConditionalLogic(changedFieldName);
+      }
+      syncAdditionalNomineeStepSideEffects(
+        formData: formData,
+        fields: _fields,
+        runtimeFieldVisibility: fieldVisibility,
+        position: position,
+        pageLabel: pageLabel,
+      );
+      return;
+    } else {
+      return;
+    }
+
+    if (!isNomineeKycStep(position, pageLabel)) return;
 
     // Percentage typing: sync only — re-running `add_nominee` was resetting add_2 / % input.
     final reapplyConditional = changedFieldName == kAddSecondNomineeField ||
@@ -340,7 +362,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
     final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
     final stepPos = ctx?['position']?.toString();
     final stepLbl = ctx?['page']?['data']?['label']?.toString();
-    final onNominee = isNomineeKycStep(stepPos, stepLbl);
+    final onNominee = isNomineeExtendedUiStep(stepPos, stepLbl);
     
     debugPrint('[ConditionalForm] Applying logic for: $fieldName = ${formData[fieldName]}');
     final state = evaluateConditionalFlowForField(_conditionalFlow, formData, fieldName);
@@ -410,8 +432,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
         );
     if (field == null) return;
 
-    if (isNomineePercentageFieldName(fieldName) &&
-        isNomineeKycStep(position, pageLabel)) {
+    if (isNomineeExtendedUiStep(position, pageLabel) &&
+        (isNomineePercentageFieldName(fieldName) ||
+            (fieldName.toLowerCase().contains('nominee') &&
+                fieldName.toLowerCase().contains('dob')))) {
       _runNomineeRealtimeUiSync(
         position: position,
         pageLabel: pageLabel,
@@ -441,30 +465,55 @@ class ConditionalFormNotifier extends ChangeNotifier {
     String? pageLabel,
   }) {
     validationToastMessage = null;
+    final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+    final stepPos = position ?? ctx?['position']?.toString();
+    final stepLbl = pageLabel ?? ctx?['page']?['data']?['label']?.toString();
+    if (isNomineeKycStep(stepPos, stepLbl)) {
+      _syncNomineePercentageFromContext(
+        company: company,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+    } else if (isAdditionalNomineeKycStep(stepPos, stepLbl)) {
+      syncAdditionalNomineeStepSideEffects(
+        formData: formData,
+        fields: _fields,
+        runtimeFieldVisibility: fieldVisibility,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+    }
+
     errors = validateFormWithConditions(
       _fields,
       formData,
       _conditionalFlow,
       company: company,
-      position: position,
-      pageLabel: pageLabel,
+      position: stepPos,
+      pageLabel: stepLbl,
       runtimeFieldVisibility: fieldVisibility,
     );
 
-    _syncNomineePercentageFromContext(
-      company: company,
-      position: position,
-      pageLabel: pageLabel,
-    );
-
-    final nomineePctError = validateNomineePercentageTotal(
-      fields: _fields,
-      formData: formData,
-      runtimeFieldVisibility: fieldVisibility,
-      company: company,
-      position: position,
-      pageLabel: pageLabel,
-    );
+    String? nomineePctError;
+    if (isNomineeKycStep(stepPos, stepLbl)) {
+      nomineePctError = validateNomineePercentageTotal(
+        fields: _fields,
+        formData: formData,
+        runtimeFieldVisibility: fieldVisibility,
+        company: company,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+    } else if (isAdditionalNomineeKycStep(stepPos, stepLbl)) {
+      nomineePctError = validateAdditionalNomineePercentageTotal(
+        fields: _fields,
+        formData: formData,
+        runtimeFieldVisibility: fieldVisibility,
+        company: company,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
+    }
     if (nomineePctError != null) {
       validationToastMessage = nomineePctError;
       notifyListeners();

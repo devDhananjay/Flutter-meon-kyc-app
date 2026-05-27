@@ -122,7 +122,90 @@ const Map<String, List<String>> kNomineeSameAsAddressGroups = {
     'nominee3_country',
     'nominee3_pincode',
   ],
+  'nominee4_same_as_my_address': [
+    'nominee4_add1',
+    'nominee4_add2',
+    'nominee_4_city',
+    'nominee4_state',
+    'nominee4_country',
+    'nominee4_pincode',
+  ],
+  'nominee5_same_as_my_address': [
+    'nominee5_add1',
+    'nominee5_add2',
+    'nominee_5_city',
+    'nominee5_state',
+    'nominee5_country',
+    'nominee5_pincode',
+  ],
+  'nominee6_same_as_my_address': [
+    'nominee6_add1',
+    'nominee6_add2',
+    'nominee6_city',
+    'nominee_6_city',
+    'nominee6_state',
+    'nominee6_country',
+    'nominee6_pincode',
+  ],
 };
+
+/// Step fields + static map — covers additional nominee slots from API.
+Map<String, List<String>> resolveNomineeSameAsAddressGroups(
+  List<dynamic>? fields,
+) {
+  final groups = Map<String, List<String>>.from(kNomineeSameAsAddressGroups);
+  if (fields == null) return groups;
+
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final checkbox = f['name']?.toString();
+    if (checkbox == null || !checkbox.contains('same_as_my_address')) continue;
+    if (groups.containsKey(checkbox)) continue;
+
+    final slot = RegExp(r'nominee[_]?(\d+)[_]same_as')
+            .firstMatch(checkbox.toLowerCase())
+            ?.group(1) ??
+        RegExp(r'nominee(\d+)_same')
+            .firstMatch(checkbox.toLowerCase())
+            ?.group(1);
+    if (slot == null) continue;
+
+    final targets = <String>[];
+    for (final f2 in fields) {
+      if (f2 is! Map) continue;
+      final n = f2['name']?.toString() ?? '';
+      final type = (f2['type']?.toString() ?? '').toLowerCase();
+      if (type == 'button' || type == 'hidden' || type == 'file') continue;
+      if (!n.contains('nominee$slot') && !n.contains('nominee_$slot')) {
+        continue;
+      }
+      if (n.contains('same_as_my_address')) continue;
+      if (n.contains('guardian') ||
+          n.contains('percentage') ||
+          n.contains('proof_type') ||
+          n.contains('upload') ||
+          n.contains('pan') ||
+          n.contains('aadhar') ||
+          n.contains('aadhaar') ||
+          n.contains('mobile') ||
+          n.contains('email') ||
+          n.contains('name') ||
+          n.contains('relation') ||
+          n.contains('dob')) {
+        continue;
+      }
+      if (n.contains('add') ||
+          n.contains('city') ||
+          n.contains('state') ||
+          n.contains('country') ||
+          n.contains('pincode')) {
+        targets.add(n);
+      }
+    }
+    if (targets.isNotEmpty) groups[checkbox] = targets;
+  }
+  return groups;
+}
 
 bool isNomineeSameAsMyAddressCheckbox(String? fieldName) {
   return fieldName != null && fieldName.contains('same_as_my_address');
@@ -132,6 +215,14 @@ bool isNomineeAddressTargetField(String? fieldName) {
   if (fieldName == null) return false;
   for (final targets in kNomineeSameAsAddressGroups.values) {
     if (targets.contains(fieldName)) return true;
+  }
+  if (fieldName.contains('nominee') &&
+      (fieldName.contains('_add') ||
+          fieldName.contains('city') ||
+          fieldName.contains('state') ||
+          fieldName.contains('country') ||
+          fieldName.contains('pincode'))) {
+    return true;
   }
   return false;
 }
@@ -587,17 +678,29 @@ void syncNomineeAddressFromSameAsCheckbox(
   List<dynamic>? stepFields,
   dynamic fieldsWithAuth,
 }) {
-  final targets = kNomineeSameAsAddressGroups[checkboxName];
+  final targets =
+      resolveNomineeSameAsAddressGroups(stepFields)[checkboxName];
   if (targets == null) return;
 
   if (isCheckboxCheckedValue(checkboxValue)) {
+    final userAddr = getUserAddressForNomineeCopy(formData);
     for (final target in targets) {
-      final val = resolveNomineeTargetAddressValue(
-        targetFieldName: target,
-        formData: formData,
-        stepFields: stepFields,
-        fieldsWithAuth: fieldsWithAuth,
-      );
+      var val = '';
+      final component = _getNomineeAddressSourceField(target);
+      if (component != null) {
+        final fromUser = userAddr[component]?.trim() ?? '';
+        if (fromUser.isNotEmpty && !looksLikeAddressFieldKey(fromUser)) {
+          val = fromUser;
+        }
+      }
+      if (val.isEmpty) {
+        val = resolveNomineeTargetAddressValue(
+          targetFieldName: target,
+          formData: formData,
+          stepFields: stepFields,
+          fieldsWithAuth: fieldsWithAuth,
+        );
+      }
       formData[target] = val;
       debugPrint('[ConditionalForm] Same-as fill $target <- "$val"');
     }
@@ -609,8 +712,12 @@ void syncNomineeAddressFromSameAsCheckbox(
 }
 
 /// On load: keep nominee address only when that nominee's checkbox is checked.
-void clearNomineeAddressesWhenUnchecked(Map<String, dynamic> formData) {
-  for (final entry in kNomineeSameAsAddressGroups.entries) {
+void clearNomineeAddressesWhenUnchecked(
+  Map<String, dynamic> formData, {
+  List<dynamic>? stepFields,
+}) {
+  final groups = resolveNomineeSameAsAddressGroups(stepFields);
+  for (final entry in groups.entries) {
     if (!isCheckboxCheckedValue(formData[entry.key])) {
       for (final field in entry.value) {
         formData[field] = '';
@@ -624,8 +731,8 @@ String? _getNomineeAddressSourceField(String nomineeField) {
   // Map nominee1_add1 -> add1, address_line1, current_add1, etc.
   if (nomineeField.endsWith('_add1')) return 'add1';
   if (nomineeField.endsWith('_add2')) return 'add2';
-  if (nomineeField.endsWith('_city') || nomineeField == 'nominee_1_city' || 
-      nomineeField == 'nominee_2_city') {
+  if (nomineeField.endsWith('_city') ||
+      RegExp(r'nominee_\d+_city').hasMatch(nomineeField)) {
     return 'city';
   }
   if (nomineeField.endsWith('_state')) return 'state';
@@ -1198,6 +1305,14 @@ Map<String, dynamic> filterKycPostV2BodyForStep({
   }
 
   if (allowed.isEmpty) return data;
+
+  // Computed nominee % totals (`fieldShow: false`, type hidden) must still post.
+  for (final name in [
+    'total_nominee_percentage',
+    'remain_nominee_percent',
+  ]) {
+    if (data.containsKey(name)) allowed.add(name);
+  }
 
   final out = <String, dynamic>{};
   for (final name in allowed) {
