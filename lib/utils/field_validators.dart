@@ -282,6 +282,9 @@ const String kTotalNomineePercentageField = 'total_nominee_percentage';
 /// Additional nominee step (`additional_nominee13`): carries forward prior total.
 const String kRemainNomineePercentField = 'remain_nominee_percent';
 
+/// Cumulative nominee % after additional_nominee step (prior + current) for next-step rules.
+const String kTotalNomineePercentage2Field = 'total_nominee_percentage2';
+
 const Map<String, int> _kNomineeWordSlotNumbers = {
   'one': 1,
   'two': 2,
@@ -597,11 +600,14 @@ dynamic _formatNomineePercentTotalForApi(double total) {
 
 /// Prior % from get-context field `value` only (not live formData).
 double readPriorNomineeAllocatedPercentFromApi(List<dynamic>? fields) {
+  final total2 =
+      _findFieldDefByName(fields, kTotalNomineePercentage2Field)?['value'];
   final remain =
       _findFieldDefByName(fields, kRemainNomineePercentField)?['value'];
   final total =
       _findFieldDefByName(fields, kTotalNomineePercentageField)?['value'];
-  return _parseNomineePercentageValue(remain) ??
+  return _parseNomineePercentageValue(total2) ??
+      _parseNomineePercentageValue(remain) ??
       _parseNomineePercentageValue(total) ??
       0.0;
 }
@@ -617,8 +623,10 @@ double readPriorNomineeAllocatedPercent({
   final fromApi = readPriorNomineeAllocatedPercentFromApi(fields);
   if (fromApi > 0) return fromApi;
   return _parseNomineePercentageValue(
-        formData[kTotalNomineePercentageField],
+        formData[kTotalNomineePercentage2Field],
       ) ??
+      _parseNomineePercentageValue(formData[kRemainNomineePercentField]) ??
+      _parseNomineePercentageValue(formData[kTotalNomineePercentageField]) ??
       0.0;
 }
 
@@ -858,19 +866,24 @@ void syncNomineeStepPercentTotalsSubmitPayload({
     return;
   }
 
-  if (isAdditionalNomineeKycStep(position, pageLabel) &&
-      _findFieldDefByName(fields, kRemainNomineePercentField) != null) {
-    final prior = readPriorNomineeAllocatedPercent(
-      formData: data,
-      fields: fields,
-    );
-    final stepSum = sumNomineePercentagesForStepFields(
-      formData: data,
-      fields: fields,
-    );
-    data[kRemainNomineePercentField] = _formatNomineePercentTotalForApi(
-      prior + stepSum,
-    );
+  if (!isAdditionalNomineeKycStep(position, pageLabel)) return;
+
+  final prior = readPriorNomineeAllocatedPercent(
+    formData: data,
+    fields: fields,
+  );
+  final stepSum = sumNomineePercentagesForStepFields(
+    formData: data,
+    fields: fields,
+  );
+  final cumulative = prior + stepSum;
+  final formatted = _formatNomineePercentTotalForApi(cumulative);
+
+  // Next step conditions (e.g. additional_nominee_second) read this cumulative total.
+  data[kTotalNomineePercentage2Field] = formatted;
+
+  if (_findFieldDefByName(fields, kRemainNomineePercentField) != null) {
+    data[kRemainNomineePercentField] = formatted;
   }
 }
 

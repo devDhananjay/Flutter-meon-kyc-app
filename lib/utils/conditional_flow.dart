@@ -1309,6 +1309,7 @@ Map<String, dynamic> filterKycPostV2BodyForStep({
   // Computed nominee % totals (`fieldShow: false`, type hidden) must still post.
   for (final name in [
     'total_nominee_percentage',
+    'total_nominee_percentage2',
     'remain_nominee_percent',
   ]) {
     if (data.containsKey(name)) allowed.add(name);
