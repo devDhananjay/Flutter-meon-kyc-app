@@ -1254,6 +1254,40 @@ String? resolveNomineeProofTypeFieldForSlot(
   return legacy;
 }
 
+/// Guardian slot from `guardian{N}_*` or `guardian_same_as_address{N}`.
+int? _resolveGuardianSlotFromFieldName(String name) {
+  final fromGuardian = guardianSlotFromFieldName(name);
+  if (fromGuardian != null) return fromGuardian;
+  final m = RegExp(
+    r'^guardian_same_as_address(\d+)$',
+    caseSensitive: false,
+  ).firstMatch(name.trim());
+  if (m != null) return int.tryParse(m.group(1)!);
+  return null;
+}
+
+/// Guardian block visible when nominee {slot} is minor (+ add_N for slots 2–10).
+bool _guardianBlockVisibleForSlot(int slot, Map<String, dynamic> formData) {
+  final dobField = _nomineeDobFieldForSlot(slot);
+  if (dobField == null || !_isNomineeMinor(formData, dobField)) {
+    return false;
+  }
+  switch (slot) {
+    case 1:
+      return true;
+    case 2:
+      return isCheckboxCheckedValue(formData[kAddSecondNomineeField]);
+    case 3:
+      return isCheckboxCheckedValue(formData[kAddThirdNomineeField]);
+    default:
+      final addKey = 'add_${slot}_nominee';
+      if (formData.containsKey(addKey)) {
+        return isCheckboxCheckedValue(formData[addKey]);
+      }
+      return true;
+  }
+}
+
 bool _nomineePanAadharFieldVisible({
   required String name,
   required Map<String, dynamic> formData,
@@ -1263,38 +1297,13 @@ bool _nomineePanAadharFieldVisible({
   final isPan = n.contains('pan');
 
   final panGuardianSlot = guardianSlotFromFieldName(name);
-  if (panGuardianSlot == 1) {
-    return _proofTypeIncludes(
-      formData['guardian1_proof_type'],
-      isPan ? 'PAN' : 'AADHA',
-    );
-  }
-  if (panGuardianSlot == 2) {
-    if (!isCheckboxCheckedValue(formData[kAddSecondNomineeField])) {
+  if (panGuardianSlot != null &&
+      (n.contains('pan') || n.contains('aadhar') || n.contains('aadhaar'))) {
+    if (!_guardianBlockVisibleForSlot(panGuardianSlot, formData)) {
       return false;
     }
     return _proofTypeIncludes(
-      formData['guardian2_proof_type'],
-      isPan ? 'PAN' : 'AADHA',
-    );
-  }
-  if (panGuardianSlot == 3) {
-    if (!isCheckboxCheckedValue(formData[kAddThirdNomineeField])) {
-      return false;
-    }
-    return _proofTypeIncludes(
-      formData['guardian3_proof_type'],
-      isPan ? 'PAN' : 'AADHA',
-    );
-  }
-
-  final guardianSlot = panGuardianSlot;
-  if (guardianSlot != null && guardianSlot >= 4) {
-    final dobField = _nomineeDobFieldForSlot(guardianSlot);
-    if (dobField == null) return false;
-    if (!_isNomineeMinor(formData, dobField)) return false;
-    return _proofTypeIncludes(
-      formData['guardian${guardianSlot}_proof_type'],
+      formData['guardian${panGuardianSlot}_proof_type'],
       isPan ? 'PAN' : 'AADHA',
     );
   }
@@ -1415,11 +1424,6 @@ void _applyNomineeSupplementaryFieldsVisibility({
   if (fields == null) return;
 
   final onMainNominee = isNomineeKycStep(position, pageLabel);
-  final add2 = isCheckboxCheckedValue(formData[kAddSecondNomineeField]);
-  final add3 = isCheckboxCheckedValue(formData[kAddThirdNomineeField]);
-  final minor1 = _isNomineeMinor(formData, 'nominee1_dob');
-  final minor2 = _isNomineeMinor(formData, 'nominee2_dob');
-  final minor3 = _isNomineeMinor(formData, 'nominee3_dob');
   final extraYes = _isKycYesNoValue(formData[kExtraNomineeField]);
 
   for (final f in fields) {
@@ -1429,30 +1433,34 @@ void _applyNomineeSupplementaryFieldsVisibility({
 
     if (isNomineeBackendOnlyField(name)) {
       runtimeFieldVisibility[name] = false;
-    } else if (isGuardian1Field(name)) {
-      runtimeFieldVisibility[name] = minor1;
-    } else if (isGuardian2Field(name)) {
-      runtimeFieldVisibility[name] = add2 && minor2;
-    } else if (isGuardian3Field(name)) {
-      runtimeFieldVisibility[name] = add3 && minor3;
-    } else {
-      final gSlot = guardianSlotFromFieldName(name);
-      if (gSlot != null && gSlot >= 4) {
-        // Additional nominee JSON rules are based on nominee{N}_dob < 18.
-        final dobField = _nomineeDobFieldForSlot(gSlot);
-        runtimeFieldVisibility[name] =
-            dobField != null && _isNomineeMinor(formData, dobField);
-      } else if (isAdditionalNomineeField(name) && onMainNominee) {
-        runtimeFieldVisibility[name] = extraYes;
-      } else if (isNomineeStepAuxiliaryField(name)) {
-        runtimeFieldVisibility[name] = false;
-      } else if (isNomineePanOrAadharField(name)) {
+      continue;
+    }
+
+    final gSlot = _resolveGuardianSlotFromFieldName(name);
+    if (gSlot != null) {
+      if (isNomineePanOrAadharField(name)) {
         runtimeFieldVisibility[name] = _nomineePanAadharFieldVisible(
           name: name,
           formData: formData,
           fields: fields,
         );
+      } else {
+        runtimeFieldVisibility[name] =
+            _guardianBlockVisibleForSlot(gSlot, formData);
       }
+      continue;
+    }
+
+    if (isAdditionalNomineeField(name) && onMainNominee) {
+      runtimeFieldVisibility[name] = extraYes;
+    } else if (isNomineeStepAuxiliaryField(name)) {
+      runtimeFieldVisibility[name] = false;
+    } else if (isNomineePanOrAadharField(name)) {
+      runtimeFieldVisibility[name] = _nomineePanAadharFieldVisible(
+        name: name,
+        formData: formData,
+        fields: fields,
+      );
     }
   }
 }
