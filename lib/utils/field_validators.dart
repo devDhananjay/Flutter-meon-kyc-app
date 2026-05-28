@@ -292,6 +292,8 @@ const String kAddThirdNomineeField = 'add_3_nominee';
 
 /// API field: select "Do you want to add more nominee" (`fieldShow: false`, conditional).
 const String kExtraNomineeField = 'extra_nominee';
+/// Additional nominee step API field: "Do you want to add more nominee".
+const String kExtraSecondNomineeField = 'extra_second_nominee';
 
 /// Main nominee step (`nominee12`): hidden total of slot 1–3 percentages.
 const String kTotalNomineePercentageField = 'total_nominee_percentage';
@@ -1472,6 +1474,7 @@ void syncAdditionalNomineeStepSideEffects({
   required Map<String, dynamic> formData,
   required List<dynamic>? fields,
   required Map<String, bool> runtimeFieldVisibility,
+  required Map<String, bool> fieldEditable,
   String? position,
   String? pageLabel,
 }) {
@@ -1490,6 +1493,34 @@ void syncAdditionalNomineeStepSideEffects({
     position: position,
     pageLabel: pageLabel,
   );
+
+  if (isAdditionalNomineeFirstKycStep(position, pageLabel) &&
+      _findFieldDefByName(fields, kExtraSecondNomineeField) != null) {
+    final prior = readPriorNomineeAllocatedPercent(
+      formData: formData,
+      fields: fields,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    final stepSum = sumActiveAdditionalNomineeStepPercentages(
+      formData: formData,
+      fields: fields,
+      runtimeFieldVisibility: runtimeFieldVisibility,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    final total = prior + stepSum;
+    final add6Checked = isCheckboxCheckedValue(formData['add_6_nominee']);
+    final shouldShowExtraSecond = add6Checked && !_nomineeShareSumAtLeast100(total);
+    if (!shouldShowExtraSecond) {
+      runtimeFieldVisibility[kExtraSecondNomineeField] = false;
+      formData[kExtraSecondNomineeField] = '';
+      fieldEditable[kExtraSecondNomineeField] = true;
+    } else {
+      runtimeFieldVisibility[kExtraSecondNomineeField] = true;
+      fieldEditable.remove(kExtraSecondNomineeField);
+    }
+  }
 }
 
 void _setNomineeTier3FieldsVisible(
@@ -2144,6 +2175,14 @@ String? validateAdditionalNomineeSubmitPercentageRequired100({
       position: position,
       pageLabel: pageLabel,
     );
+  }
+  // `additional_nominee` step: allow submit below 100% when user explicitly
+  // selects "Yes" in "Do you want to add more nominee" (`extra_second_nominee`).
+  if (isAdditionalNomineeFirstKycStep(position, pageLabel)) {
+    final dropdownVisible = runtimeFieldVisibility[kExtraSecondNomineeField] == true;
+    if (dropdownVisible && _isKycYesNoValue(formData[kExtraSecondNomineeField])) {
+      return null;
+    }
   }
   if (!_nomineeShareEquals100(total)) {
     return 'Please complete 100 percent nominee percentage then you are able to submit this';

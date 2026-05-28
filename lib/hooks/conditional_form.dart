@@ -353,6 +353,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
         formData: formData,
         fields: _fields,
         runtimeFieldVisibility: fieldVisibility,
+        fieldEditable: fieldEditable,
         position: position,
         pageLabel: pageLabel,
       );
@@ -531,6 +532,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
         formData: formData,
         fields: _fields,
         runtimeFieldVisibility: fieldVisibility,
+        fieldEditable: fieldEditable,
         position: stepPos,
         pageLabel: stepLbl,
       );
