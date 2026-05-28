@@ -1094,15 +1094,15 @@ class _HomePageState extends State<HomePage> {
     return (position: position, pageLabel: pageLabel);
   }
 
-  /// `additional_nominee_second`: toast only — submit button stays enabled.
-  bool _toastAndBlockIfNomineeSecondTotalNot100(AppStore store) {
+  /// `additional_nominee*`: toast only — submit button stays enabled.
+  bool _toastAndBlockIfAdditionalNomineeTotalNot100(AppStore store) {
     final step = _submitValidationStep(store);
-    if (!isAdditionalNomineeSecondKycStep(step.position, step.pageLabel)) {
+    if (!isAdditionalNomineeKycStep(step.position, step.pageLabel)) {
       return false;
     }
     final activeFields = _getActiveFields(store);
     final fieldList = (activeFields?['fields'] as List?) ?? [];
-    final msg = validateAdditionalNomineeSecondSubmitPercentage(
+    final msg = validateAdditionalNomineeSubmitPercentageRequired100(
       fields: fieldList,
       formData: _formNotifier.formData,
       runtimeFieldVisibility: _formNotifier.fieldVisibility,
@@ -1898,7 +1898,7 @@ class _HomePageState extends State<HomePage> {
         _showValidationFailureToast();
         return;
       }
-      if (_toastAndBlockIfNomineeSecondTotalNot100(store)) return;
+      if (_toastAndBlockIfAdditionalNomineeTotalNot100(store)) return;
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] Send OTP / Submit START');
@@ -2430,7 +2430,7 @@ class _HomePageState extends State<HomePage> {
         _showValidationFailureToast();
         return;
       }
-      if (_toastAndBlockIfNomineeSecondTotalNot100(store)) return;
+      if (_toastAndBlockIfAdditionalNomineeTotalNot100(store)) return;
     }
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] _handleCommonSubmit START');

@@ -1848,6 +1848,12 @@ Map<String, dynamic> buildNomineeKycPostV2Body({
             : 'true';
   }
 
+  // Additional nominee step parity: send add_N_nominee toggles explicitly.
+  for (final entry in resolveAdditionalAddNomineeCheckboxes(fields)) {
+    final key = entry.value;
+    out[key] = isCheckboxCheckedValue(data[key]) ? 'true' : 'false';
+  }
+
   return out;
 }
 
@@ -2097,6 +2103,50 @@ String? validateAdditionalNomineeSecondSubmitPercentage({
         ? remaining.round().toString()
         : remaining.toStringAsFixed(2);
     return 'Total nominee share (previous + current) must equal 100%. Please allocate remaining $remStr% on this step.';
+  }
+  return null;
+}
+
+/// Submit gate for `additional_nominee*`: previous + current must be exactly 100%.
+String? validateAdditionalNomineeSubmitPercentageRequired100({
+  required List<dynamic>? fields,
+  required Map<String, dynamic> formData,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isAdditionalNomineeKycStep(position, pageLabel)) return null;
+  if (fields == null) return null;
+
+  final prior = readPriorNomineeAllocatedPercent(
+    formData: formData,
+    fields: fields,
+    position: position,
+    pageLabel: pageLabel,
+  );
+  final stepSum = sumActiveAdditionalNomineeStepPercentages(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  );
+  final total = prior + stepSum;
+
+  if (total > 100.001) {
+    return validateAdditionalNomineePercentageTotal(
+      fields: fields,
+      formData: formData,
+      runtimeFieldVisibility: runtimeFieldVisibility,
+      company: company,
+      position: position,
+      pageLabel: pageLabel,
+    );
+  }
+  if (!_nomineeShareEquals100(total)) {
+    return 'Please complete 100 percent nominee percentage then you are able to submit this';
   }
   return null;
 }

@@ -25,6 +25,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
   List<dynamic>? _fields;
   List<dynamic>? _conditionalFlow;
   dynamic _fieldsWithAuthSnapshot;
+  String? _lastStableAddNomineeRefreshKey;
   List<dynamic>? get fields => _fields;
   List<dynamic>? get conditionalFlow => _conditionalFlow;
 
@@ -43,6 +44,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
     if (fieldsWithAuth != null) _fieldsWithAuthSnapshot = fieldsWithAuth;
     
     if (fieldsChanged && fields != null) {
+      _lastStableAddNomineeRefreshKey = null;
       // Fresh step/context should not inherit stale show/hide/edit flags.
       fieldVisibility = {};
       fieldEditable = {};
@@ -144,11 +146,19 @@ class ConditionalFormNotifier extends ChangeNotifier {
     if (!fieldsChanged && fields != null) {
       final hasAddNomineeWatcher = watchedFields.contains('add_nominee');
       if (hasAddNomineeWatcher && formData.containsKey('add_nominee')) {
-        _applyConditionalLogic('add_nominee');
         final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+        final stepPos = ctx?['position']?.toString() ?? '';
+        final stepLbl = ctx?['page']?['data']?['label']?.toString() ?? '';
+        final addNomineeVal = formData['add_nominee']?.toString() ?? '';
+        final refreshKey = '$stepPos|$stepLbl|$addNomineeVal';
+        if (_lastStableAddNomineeRefreshKey == refreshKey) {
+          return;
+        }
+        _lastStableAddNomineeRefreshKey = refreshKey;
+        _applyConditionalLogic('add_nominee');
         _runNomineeRealtimeUiSync(
-          position: ctx?['position']?.toString(),
-          pageLabel: ctx?['page']?['data']?['label']?.toString(),
+          position: stepPos,
+          pageLabel: stepLbl,
           changedFieldName: 'add_nominee',
         );
         notifyListeners();
@@ -167,6 +177,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
     fieldEditable = {};
     clearUserAddressCache();
     _fieldsWithAuthSnapshot = null;
+    _lastStableAddNomineeRefreshKey = null;
     notifyListeners();
   }
 
