@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:meon_kyc/utils/conditional_flow.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 
@@ -1668,6 +1671,15 @@ bool isNomineeActiveShareFull({
   return _nomineeShareSumAtLeast100(total);
 }
 
+/// Multipart/JSON: send these even when value is `''` (backend routing).
+bool shouldSendEmptyNomineeKycPostField(String fieldName) {
+  return fieldName == kExtraNomineeField ||
+      fieldName == kTotalNomineePercentageField ||
+      fieldName == kTotalNomineePercentage2Field ||
+      fieldName == kRemainNomineePercentField ||
+      fieldName == kRemainNomineePercent2Field;
+}
+
 /// Submit: `extra_nominee` blank until the dropdown is shown; then keep user Yes/No.
 void syncExtraNomineeSubmitPayload({
   required Map<String, dynamic> data,
@@ -1681,6 +1693,26 @@ void syncExtraNomineeSubmitPayload({
     return;
   }
   if (_findFieldDefByName(fields, kExtraNomineeField) == null) return;
+
+  // Main nominee at 100% → explicit blank (skip additional_nominee step).
+  if (isNomineeActiveShareFull(
+    formData: data,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    company: company,
+    position: position,
+    pageLabel: pageLabel,
+  )) {
+    if (_findFieldDefByName(fields, kAddSecondNomineeField) != null) {
+      data[kAddSecondNomineeField] = false;
+    }
+    if (_findFieldDefByName(fields, kAddThirdNomineeField) != null) {
+      data[kAddThirdNomineeField] = false;
+    }
+    data[kExtraNomineeField] = '';
+    return;
+  }
+
   if (isExtraNomineeDropdownVisible(
     formData: data,
     fields: fields,
@@ -1733,6 +1765,202 @@ void syncNomineePercentageSideEffects({
     position: position,
     pageLabel: pageLabel,
   );
+}
+
+/// Hidden computed nominee totals — always included on nominee kyc-post when present.
+const List<String> kNomineeComputedSubmitFieldNames = [
+  kTotalNomineePercentageField,
+  kTotalNomineePercentage2Field,
+  kRemainNomineePercentField,
+  kRemainNomineePercent2Field,
+];
+
+bool isSubmittableNomineeStepField(Map<dynamic, dynamic> field) {
+  final name = field['name']?.toString();
+  if (name == null || name.isEmpty) return false;
+  final type = (field['type']?.toString() ?? '').toLowerCase();
+  return type != 'button';
+}
+
+/// Backend expects every step field: filled values as-is, unused slots as `''`.
+String normalizeNomineeKycPostFieldValue(dynamic value) {
+  if (value == null) return '';
+  if (value is bool) return value ? 'true' : 'false';
+  final s = value.toString();
+  return s;
+}
+
+/// Nominee / additional_nominee*: all API fields on the step, blanks for slots not opened.
+Map<String, dynamic> buildNomineeKycPostV2Body({
+  required Map<String, dynamic> data,
+  required List<dynamic>? fields,
+}) {
+  final out = <String, dynamic>{};
+  if (fields == null || fields.isEmpty) {
+    return Map<String, dynamic>.from(data);
+  }
+
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final field = Map<dynamic, dynamic>.from(f);
+    if (!isSubmittableNomineeStepField(field)) continue;
+    final name = field['name']?.toString();
+    if (name == null || name.isEmpty) continue;
+    final type = (field['type']?.toString() ?? '').toLowerCase();
+    if (name == kAddSecondNomineeField || name == kAddThirdNomineeField) {
+      out[name] = isCheckboxCheckedValue(data[name]) ? 'true' : 'false';
+      continue;
+    }
+    if (type == 'file') {
+      final v = data[name];
+      if (v is File) {
+        out[name] = v;
+      } else {
+        out[name] = '';
+      }
+      continue;
+    }
+    out[name] = normalizeNomineeKycPostFieldValue(data[name]);
+  }
+
+  for (final name in kNomineeComputedSubmitFieldNames) {
+    if (data.containsKey(name)) {
+      out[name] = normalizeNomineeKycPostFieldValue(data[name]);
+    }
+  }
+
+  // Web parity: when add_2/add_3 checkboxes exist on this step, backend expects
+  // explicit string booleans. Missing key should still travel as "false".
+  final hasAdd2 = _findFieldDefByName(fields, kAddSecondNomineeField) != null;
+  final hasAdd3 = _findFieldDefByName(fields, kAddThirdNomineeField) != null;
+  final n1Field = _nomineePercentageFieldForSlot(fields, 1) ?? 'nominee_1_percentage';
+  final nominee1FullShare =
+      (_parseNomineePercentageValue(data[n1Field]) ?? 0) >= 99.999;
+  if (hasAdd2) {
+    out[kAddSecondNomineeField] =
+        (nominee1FullShare || !isCheckboxCheckedValue(data[kAddSecondNomineeField]))
+            ? 'false'
+            : 'true';
+  }
+  if (hasAdd3) {
+    out[kAddThirdNomineeField] =
+        (nominee1FullShare || !isCheckboxCheckedValue(data[kAddThirdNomineeField]))
+            ? 'false'
+            : 'true';
+  }
+
+  return out;
+}
+
+/// Keys backend uses for nominee-step routing / completion signals.
+const List<String> kNomineeRoutingDiagnosticKeys = [
+  'add_nominee',
+  kExtraNomineeField,
+  kTotalNomineePercentageField,
+  kTotalNomineePercentage2Field,
+  kRemainNomineePercentField,
+  kRemainNomineePercent2Field,
+  kAddSecondNomineeField,
+  kAddThirdNomineeField,
+  'nominee_1_percentage',
+  'nominee_2_percentage',
+  'nominee_3_percentage',
+  'nominee3_percentage',
+  'nominee_3_percentage',
+];
+
+bool nomineeMultipartWouldSendField(
+  dynamic value, {
+  String? position,
+  String? pageLabel,
+}) {
+  if (value is File) return true;
+  if (value is bool) return true;
+  if (value == null) return false;
+  if (isNomineeExtendedUiStep(position, pageLabel)) return true;
+  return value.toString().isNotEmpty;
+}
+
+/// Debug: exact payload keys/values for backend proof (not truncated like multipart dump).
+void logNomineeKycPostPayloadDiagnostics({
+  required Map<String, dynamic> data,
+  String? position,
+  String? pageLabel,
+  Map<String, String>? wireMultipartFields,
+}) {
+  if (!isNomineeExtendedUiStep(position, pageLabel)) return;
+
+  debugPrint('[NomineeSubmit] ========== PAYLOAD DIAGNOSTICS ==========');
+  debugPrint(
+    '[NomineeSubmit] step position=$position pageLabel=$pageLabel keys=${data.length}',
+  );
+
+  for (final key in kNomineeRoutingDiagnosticKeys) {
+    final inData = data.containsKey(key);
+    final raw = inData ? data[key] : null;
+    final valueDesc = !inData
+        ? '(key missing from data map)'
+        : raw is File
+            ? '<File>'
+            : '"${raw.toString()}" (len=${raw.toString().length})';
+    final wouldSend = nomineeMultipartWouldSendField(
+      raw,
+      position: position,
+      pageLabel: pageLabel,
+    );
+    final onWire = wireMultipartFields == null
+        ? 'n/a'
+        : wireMultipartFields.containsKey(key).toString();
+    final wireVal = wireMultipartFields?[key];
+    debugPrint(
+      '[NomineeSubmit] CRITICAL $key | data.containsKey=$inData | '
+      'dataValue=$valueDesc | appWouldSend=$wouldSend | '
+      'wire.containsKey=$onWire | wireValue=${wireVal == null ? "(none)" : "\"$wireVal\""}',
+    );
+  }
+
+  final blankSamples = <String>[];
+  for (final e in data.entries) {
+    if (e.value is File) continue;
+    final s = e.value?.toString() ?? '';
+    if (s.isEmpty) blankSamples.add(e.key);
+  }
+  blankSamples.sort();
+  debugPrint(
+    '[NomineeSubmit] blank string fields count=${blankSamples.length}',
+  );
+  if (blankSamples.isNotEmpty) {
+    debugPrint('[NomineeSubmit] blank samples: ${blankSamples.take(25).join(", ")}');
+    if (blankSamples.length > 25) {
+      debugPrint('[NomineeSubmit] ... +${blankSamples.length - 25} more blank keys');
+    }
+  }
+
+  final keys = data.keys.toList()..sort();
+  const chunkSize = 12;
+  for (var i = 0; i < keys.length; i += chunkSize) {
+    final end = (i + chunkSize < keys.length) ? i + chunkSize : keys.length;
+    final chunk = keys.sublist(i, end);
+    final parts = <String>[];
+    for (final k in chunk) {
+      final v = data[k];
+      if (v is File) {
+        parts.add('$k:<file>');
+      } else {
+        final s = v?.toString() ?? 'null';
+        final short = s.length > 30 ? '${s.substring(0, 30)}…' : s;
+        parts.add('$k:"$short"');
+      }
+    }
+    debugPrint('[NomineeSubmit] allKeys[$i-${end - 1}]: ${parts.join(' | ')}');
+  }
+
+  if (wireMultipartFields != null) {
+    debugPrint(
+      '[NomineeSubmit] wire multipart field count=${wireMultipartFields.length}',
+    );
+  }
+  debugPrint('[NomineeSubmit] ========================================');
 }
 
 void applyNomineeStepSubmitPayload({

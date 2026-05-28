@@ -1470,11 +1470,13 @@ Map<String, dynamic> filterKycPostV2BodyForStep({
   if (allowed.isEmpty) return data;
 
   // Computed nominee % totals (`fieldShow: false`, type hidden) must still post.
+  // `extra_nominee` blank = backend skips additional_nominee when share is 100%.
   for (final name in [
     'total_nominee_percentage',
     'total_nominee_percentage2',
     'remain_nominee_percent',
     'remain_nominee_percent2',
+    'extra_nominee',
   ]) {
     if (data.containsKey(name)) allowed.add(name);
   }
@@ -1484,7 +1486,12 @@ Map<String, dynamic> filterKycPostV2BodyForStep({
     if (!data.containsKey(name)) continue;
     final v = data[name];
     if (v == null) continue;
-    if (omitEmptyStrings && v is String && v.trim().isEmpty) continue;
+    if (omitEmptyStrings && v is String && v.trim().isEmpty) {
+      if (name == 'extra_nominee') {
+        out[name] = '';
+      }
+      continue;
+    }
     out[name] = v;
   }
   return out;

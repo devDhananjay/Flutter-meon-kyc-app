@@ -1777,14 +1777,16 @@ class _HomePageState extends State<HomePage> {
 
     // Only send fields for the active step — not entire accumulated formData.
     if (fieldList != null && position != 'segments') {
-      final filtered = filterKycPostV2BodyForStep(
-        data: data,
-        fields: fieldList,
-        runtimeFieldVisibility: _formNotifier.fieldVisibility,
-        company: widget.company,
-        position: nomineePos,
-        pageLabel: nomineeLbl,
-      );
+      final filtered = isNomineeExtendedUiStep(nomineePos, nomineeLbl)
+          ? buildNomineeKycPostV2Body(data: data, fields: fieldList)
+          : filterKycPostV2BodyForStep(
+              data: data,
+              fields: fieldList,
+              runtimeFieldVisibility: _formNotifier.fieldVisibility,
+              company: widget.company,
+              position: nomineePos,
+              pageLabel: nomineeLbl,
+            );
       data
         ..clear()
         ..addAll(filtered);
@@ -2502,8 +2504,19 @@ class _HomePageState extends State<HomePage> {
         debugPrint('[HomePage] DigiLocker step: save=true on kyc-post-v2');
       }
 
-      debugPrint('[HomePage] _handleCommonSubmit data: $data pathSegment: $pathSegment');
-      
+      final pageLabelForSubmit = ctx?['page']?['data']?['label']?.toString();
+      if (isNomineeExtendedUiStep(currentPosition, pageLabelForSubmit)) {
+        logNomineeKycPostPayloadDiagnostics(
+          data: data,
+          position: currentPosition,
+          pageLabel: pageLabelForSubmit,
+        );
+      }
+
+      debugPrint(
+        '[HomePage] _handleCommonSubmit data keys=${data.length} pathSegment=$pathSegment',
+      );
+
       // Check saveFilesAPI flag from context.page
       final page = ctx?['page'] as Map?;
       final saveFilesAPI = page?['saveFilesAPI'] == true;
@@ -2588,6 +2601,10 @@ class _HomePageState extends State<HomePage> {
         debugPrint('[HomePage] Using multipart/form-data (file upload detected, saveFilesAPI=false)');
         res = await client.postMultipart(() async {
           final req = http.MultipartRequest('POST', Uri.parse(fullUrl));
+          final nomineeStep = isNomineeExtendedUiStep(
+            currentPosition,
+            pageLabelForSubmit,
+          );
           for (final e in data.entries) {
             final v = e.value;
             if (v is File) {
@@ -2595,15 +2612,39 @@ class _HomePageState extends State<HomePage> {
               debugPrint('[HomePage] Added file: ${e.key} = ${v.path}');
             } else if (v is bool) {
               req.fields[e.key] = v.toString();
-            } else if (v != null && v.toString().isNotEmpty) {
+            } else if (v != null &&
+                (v.toString().isNotEmpty ||
+                    nomineeStep ||
+                    shouldSendEmptyNomineeKycPostField(e.key))) {
               req.fields[e.key] = v.toString();
             }
+          }
+          if (nomineeStep) {
+            logNomineeKycPostPayloadDiagnostics(
+              data: data,
+              position: currentPosition,
+              pageLabel: pageLabelForSubmit,
+              wireMultipartFields: req.fields,
+            );
           }
           return req;
         });
       } else {
         // Use JSON for non-file submissions (or after files uploaded separately)
         debugPrint('[HomePage] Using application/json (no files or files already uploaded)');
+        if (isNomineeExtendedUiStep(currentPosition, pageLabelForSubmit)) {
+          final wire = <String, String>{};
+          for (final e in data.entries) {
+            if (e.value is File) continue;
+            wire[e.key] = e.value?.toString() ?? '';
+          }
+          logNomineeKycPostPayloadDiagnostics(
+            data: data,
+            position: currentPosition,
+            pageLabel: pageLabelForSubmit,
+            wireMultipartFields: wire,
+          );
+        }
         res = await client.post(
           endpoint,
           body: data,
