@@ -982,8 +982,11 @@ String? clampNomineePercentageValue({
       _nomineeTier3Blocked(formData, fields)) {
     return '0';
   }
-  final parsed = _parseNomineePercentageValue(rawValue);
-  if (parsed == null) return null;
+  final raw = rawValue?.toString() ?? '';
+  if (raw.trim().isEmpty) return '';
+  final parsedInt = int.tryParse(raw);
+  if (parsedInt == null) return null;
+  final parsed = parsedInt.toDouble();
 
   final onAdditional = isAdditionalNomineeKycStep(position, pageLabel);
   final priorAllocated = onAdditional
@@ -1022,12 +1025,8 @@ String? clampNomineePercentageValue({
 
   final maxForSlot =
       (100.0 - priorAllocated - others).clamp(0.0, 100.0);
-  final capped = parsed.clamp(0.0, maxForSlot);
-
-  if (capped == capped.roundToDouble()) {
-    return capped.round().toString();
-  }
-  return capped.toStringAsFixed(2);
+  final capped = parsed.clamp(0.0, maxForSlot).round();
+  return capped.toString();
 }
 
 Map<dynamic, dynamic>? _findFieldDefByName(

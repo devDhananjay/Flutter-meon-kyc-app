@@ -43,6 +43,10 @@ class ConditionalFormNotifier extends ChangeNotifier {
     if (fieldsWithAuth != null) _fieldsWithAuthSnapshot = fieldsWithAuth;
     
     if (fieldsChanged && fields != null) {
+      // Fresh step/context should not inherit stale show/hide/edit flags.
+      fieldVisibility = {};
+      fieldEditable = {};
+
       // Set initial field values from API response
       for (final f in fields) {
         if (f is Map && f['name'] != null) {
@@ -59,7 +63,11 @@ class ConditionalFormNotifier extends ChangeNotifier {
           // First paint / missing key: merge dropoff from API.
           final unset = current == null ||
               (current is String && current.trim().isEmpty);
-          if (!formData.containsKey(name) || unset) {
+          final forceApiValueField =
+              name == 'add_nominee' ||
+              name == kAddSecondNomineeField ||
+              name == kAddThirdNomineeField;
+          if (!formData.containsKey(name) || unset || forceApiValueField) {
             final type = f['type']?.toString().toLowerCase();
             formData[name] = type == 'checkbox'
                 ? isCheckboxCheckedValue(val)
@@ -131,7 +139,21 @@ class ConditionalFormNotifier extends ChangeNotifier {
       // Only notify listeners if fields actually changed
       notifyListeners();
     }
-    // If fields didn't change, don't notify listeners to prevent infinite rebuild loops
+    // Refresh on same step can keep stale visibility when fields list is unchanged.
+    // Re-evaluate add_nominee state so No keeps nominee block closed.
+    if (!fieldsChanged && fields != null) {
+      final hasAddNomineeWatcher = watchedFields.contains('add_nominee');
+      if (hasAddNomineeWatcher && formData.containsKey('add_nominee')) {
+        _applyConditionalLogic('add_nominee');
+        final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+        _runNomineeRealtimeUiSync(
+          position: ctx?['position']?.toString(),
+          pageLabel: ctx?['page']?['data']?['label']?.toString(),
+          changedFieldName: 'add_nominee',
+        );
+        notifyListeners();
+      }
+    }
   }
 
   List<String> get watchedFields => getWatchedFields(_conditionalFlow);
@@ -218,6 +240,12 @@ class ConditionalFormNotifier extends ChangeNotifier {
     final stepLbl = ctx?['page']?['data']?['label']?.toString();
     if (isNomineeExtendedUiStep(stepPos, stepLbl) &&
         isNomineePercentageFieldName(name)) {
+      // Nominee share accepts integers only (no decimal input like 0.10 / .20).
+      if (processedValue != null) {
+        final raw = processedValue.toString();
+        final digitsOnly = raw.replaceAll(RegExp(r'[^0-9]'), '');
+        processedValue = digitsOnly;
+      }
       final clamped = clampNomineePercentageValue(
         fieldName: name,
         rawValue: processedValue,
