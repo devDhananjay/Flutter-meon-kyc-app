@@ -295,6 +295,13 @@ const String kExtraNomineeField = 'extra_nominee';
 /// Additional nominee step API field: "Do you want to add more nominee".
 const String kExtraSecondNomineeField = 'extra_second_nominee';
 
+const String kNomineePctMustBeExactly100Message =
+    'Total nominee percentage must be exactly 100%.';
+const String kNomineePctAllocateRemainingMessage =
+    'Please allocate the remaining nominee percentage to make the total 100%.';
+const String kNomineePctCannotExceed100Message =
+    'Total nominee percentage cannot exceed 100%.';
+
 /// Main nominee step (`nominee12`): hidden total of slot 1–3 percentages.
 const String kTotalNomineePercentageField = 'total_nominee_percentage';
 
@@ -2072,16 +2079,7 @@ String? validateAdditionalNomineePercentageTotal({
     pageLabel: pageLabel,
   );
   if (prior + stepSum > 100.001) {
-    final remaining = nomineeRemainingBudgetOnAdditionalStep(
-      formData: formData,
-      fields: fields,
-      position: position,
-      pageLabel: pageLabel,
-    );
-    if (remaining <= 0.001) {
-      return 'You have already allocated 100% nominee share on previous steps';
-    }
-    return 'Nominee share on this step cannot exceed ${remaining == remaining.roundToDouble() ? remaining.round() : remaining.toStringAsFixed(2)}%';
+    return kNomineePctCannotExceed100Message;
   }
   return null;
 }
@@ -2126,14 +2124,7 @@ String? validateAdditionalNomineeSecondSubmitPercentage({
   }
 
   if (!_nomineeShareEquals100(total)) {
-    final remaining = (100.0 - total).clamp(0.0, 100.0);
-    if (remaining <= 0.001) {
-      return 'Total nominee share (previous + current) must equal 100%. You have exceeded 100% — please reduce nominee percentages.';
-    }
-    final remStr = remaining == remaining.roundToDouble()
-        ? remaining.round().toString()
-        : remaining.toStringAsFixed(2);
-    return 'Total nominee share (previous + current) must equal 100%. Please allocate remaining $remStr% on this step.';
+    return kNomineePctAllocateRemainingMessage;
   }
   return null;
 }
@@ -2185,7 +2176,7 @@ String? validateAdditionalNomineeSubmitPercentageRequired100({
     }
   }
   if (!_nomineeShareEquals100(total)) {
-    return 'Please complete 100 percent nominee percentage then you are able to submit this';
+    return kNomineePctAllocateRemainingMessage;
   }
   return null;
 }
@@ -2230,7 +2221,7 @@ String? validateNomineePercentageTotal({
     pageLabel: pageLabel,
   );
   if (total > 100.001) {
-    return 'Total nominee share cannot exceed 100%';
+    return kNomineePctCannotExceed100Message;
   }
   if (!_nomineeShareEquals100(total)) {
     // "Do you want to add more nominee" = Yes (only when dropdown is visible).
@@ -2245,7 +2236,7 @@ String? validateNomineePercentageTotal({
         _isKycYesNoValue(formData[kExtraNomineeField])) {
       return null;
     }
-    return 'Total nominee share must equal 100%';
+    return kNomineePctMustBeExactly100Message;
   }
   return null;
 }
