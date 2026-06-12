@@ -1461,7 +1461,10 @@ class _HomePageState extends State<HomePage> {
   bool _useDdMmYyyyPanDateStep(String? position, String? pageLabel) {
     final p = (position ?? '').toLowerCase();
     final l = (pageLabel ?? '').toLowerCase();
-    return p == 'pan' || l == 'pan' || p == 'detailspan' || l == 'detailspan';
+    return p == 'pan' ||
+        l == 'pan' ||
+        p.startsWith('detailspan') ||
+        l.startsWith('detailspan');
   }
 
   /// Primary submit text: strip trailing arrows/chevrons from API `buttonName` (avoids double-arrow UI).

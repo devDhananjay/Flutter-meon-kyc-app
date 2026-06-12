@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/pages/home_page.dart';
@@ -16,6 +17,16 @@ class MeonKycApp extends StatelessWidget {
       title: 'Meon KYC',
       debugShowCheckedModeBanner: false,
       theme: KycTheme.theme,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('en', 'US'),
+        Locale('en', 'IN'),
+        Locale('en', 'GB'),
+      ],
       routerConfig: GoRouter(
         initialLocation: '/${EnvConfig.companyName}/${EnvConfig.workflowName}',
         routes: [

@@ -88,12 +88,16 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   TextEditingController? _textareaController;
   TextEditingController? _passwordController;
 
+  static const Locale _ddMmYyyyPickerLocale = Locale('en', 'IN');
+
   /// Stored value remains ISO `yyyy-MM-dd`; label uses step-specific pattern.
   String _formatDateFieldDisplay(dynamic value) {
     if (value == null) return 'Select date';
     final s = value.toString().trim();
     if (s.isEmpty) return 'Select date';
-    final d = parseKycDateValue(value);
+    final d = widget.useDdMmYyyyDateDisplay
+        ? (parseKycDateValueAsDdMmYyyy(value) ?? parseKycDateValue(value))
+        : parseKycDateValue(value);
     if (d == null) return s;
     final pattern =
         widget.useDdMmYyyyDateDisplay ? 'dd/MM/yyyy' : 'MM/dd/yyyy';
@@ -774,13 +778,25 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                   var initial = existing ?? last;
                   if (initial.isAfter(last)) initial = last;
                   if (initial.isBefore(first)) initial = first;
+                  final ddMmLocale = widget.useDdMmYyyyDateDisplay
+                      ? _ddMmYyyyPickerLocale
+                      : null;
                   final d = await showDatePicker(
                     context: context,
                     initialDate: initial,
                     firstDate: first,
                     lastDate: last,
+                    locale: ddMmLocale,
+                    builder: ddMmLocale == null
+                        ? null
+                        : (context, child) => Localizations.override(
+                              context: context,
+                              locale: ddMmLocale,
+                              child: child!,
+                            ),
                   );
                   if (d != null) {
+                    // API payload stays `yyyy-MM-dd`; only UI shows dd/MM/yyyy.
                     widget.onChange(widget.name, d.toIso8601String().split('T')[0]);
                     widget.onBlur?.call(widget.name);
                   }
