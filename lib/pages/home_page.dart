@@ -3103,18 +3103,9 @@ class _HomePageState extends State<HomePage> {
     return _headerDisplayPosition;
   }
 
-  /// `personal_details` → `Personal Details`
+  /// Workflow position → centered header title.
   String _formatPositionDisplayText(String position) {
-    return position
-        .trim()
-        .replaceAll('_', ' ')
-        .split(RegExp(r'\s+'))
-        .where((w) => w.isNotEmpty)
-        .map((w) {
-          final lower = w.toLowerCase();
-          return '${lower[0].toUpperCase()}${lower.substring(1)}';
-        })
-        .join(' ');
+    return KycStepperBar.formatLabel(position);
   }
 
   Widget _buildHeaderPositionText(String position) {
@@ -3124,7 +3115,7 @@ class _HomePageState extends State<HomePage> {
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
       style: const TextStyle(
-        fontSize: KycTheme.fontSizeTitleSm,
+        fontSize: KycTheme.fontSizeBodyLg,
         fontWeight: FontWeight.w600,
         color: KycTheme.textPrimary,
       ),

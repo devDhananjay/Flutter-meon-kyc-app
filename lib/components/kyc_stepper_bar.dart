@@ -48,12 +48,31 @@ static const List<String> defaultSteps = [
   'complete',
 ];
 
-  /// Format label to readable step label (capitalize first letter of each word)
+  static const Map<String, String> stepDisplayNames = {
+    'detailspan': 'PAN',
+    'kradetails': 'KRA Details',
+    'pan': 'PAN',
+    'personal_details': 'Personal Details',
+    'nominee': 'Add Nominees',
+    'nominee_mobile': 'Nominee Opt-Out',
+    'bank': 'Bank Details',
+    'bank_details': 'Bank Details',
+    'pan_upload': 'Upload PAN Proof',
+    'income_proof': 'Upload Income Proof',
+    'sign_upload': 'Upload Signature Proof',
+    'bank_upload': 'Upload Bank Proof',
+  };
+
+  /// Workflow position → header / stepper label (falls back to title case).
   static String formatLabel(String label) {
+    final key = label.trim().toLowerCase();
+    final mapped = stepDisplayNames[key];
+    if (mapped != null) return mapped;
     return label
         .replaceAll('_', ' ')
         .split(' ')
-        .map((word) => word.isEmpty ? '' : word[0].toUpperCase() + word.substring(1).toLowerCase())
+        .map((word) =>
+            word.isEmpty ? '' : word[0].toUpperCase() + word.substring(1).toLowerCase())
         .join(' ');
   }
 
