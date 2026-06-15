@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:meon_kyc/api/base_api.dart';
 import 'package:meon_kyc/config/env_config.dart';
 
 class SsoTokenResult {
@@ -116,11 +117,13 @@ class SsoAPI {
     debugPrint('[SSO] Request payload: ${jsonEncode(body)}');
 
     try {
-      final res = await http.post(
-        Uri.parse(url),
-        headers: const {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      );
+      final res = await http
+          .post(
+            Uri.parse(url),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(BaseAPI.requestTimeout);
 
       debugPrint('[SSO] get_sso_route response status=${res.statusCode}');
 

@@ -62,8 +62,8 @@ class ApiClient {
     }
 
     if (skipRefreshOn401) {
-      return send();
+      return send().timeout(BaseAPI.requestTimeout);
     }
-    return ApiInterceptor.request(send);
+    return ApiInterceptor.request(send).timeout(BaseAPI.requestTimeout);
   }
 }

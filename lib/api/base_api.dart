@@ -10,6 +10,9 @@ class BaseAPI {
 
   BaseAPI._internal();
 
+  /// Default timeout for KYC API calls (`get-context`, `kyc-post-v2`, etc.).
+  static const Duration requestTimeout = Duration(seconds: 600);
+
   String get _baseUrl => EnvConfig.baseUrl;
 
   /// Reads [csrf] from JWT payload when present (e.g. Flask-JWT-Extended).
@@ -80,7 +83,9 @@ class BaseAPI {
     final h = {...?headers, 'Content-Type': 'application/json'};
     _applyBearerAndCsrf(h, token);
     try {
-      final res = await http.get(Uri.parse(url), headers: h);
+      final res = await http
+          .get(Uri.parse(url), headers: h)
+          .timeout(requestTimeout);
       _log('GET', 'Response ${res.statusCode}: $url', _truncate(res.body));
       return res;
     } catch (e, st) {
@@ -109,11 +114,13 @@ class BaseAPI {
     }
     _applyBearerAndCsrf(h, token);
     try {
-      final res = await http.post(
-        Uri.parse(url),
-        headers: h,
-        body: bodyStr ?? '{}',
-      );
+      final res = await http
+          .post(
+            Uri.parse(url),
+            headers: h,
+            body: bodyStr ?? '{}',
+          )
+          .timeout(requestTimeout);
       // For kyc-post-v2 debug flows, print full backend message/traceback.
       final shouldLogFullBody = path.contains('/api/kyc-post-v2/');
       _log(

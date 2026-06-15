@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:meon_kyc/api/base_api.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/services/storage_service.dart';
 
@@ -67,13 +68,15 @@ class ApiInterceptor {
 
     final url = '${EnvConfig.baseUrl}/api/user/refresh';
     debugPrint('[ApiInterceptor] Calling refresh API: $url');
-    final res = await http.post(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $refreshToken',
-      },
-    );
+    final res = await http
+        .post(
+          Uri.parse(url),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $refreshToken',
+          },
+        )
+        .timeout(BaseAPI.requestTimeout);
 
     debugPrint('[ApiInterceptor] Refresh API response: ${res.statusCode}');
     if (res.statusCode != 200 && res.statusCode != 201) {
