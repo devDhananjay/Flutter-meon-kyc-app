@@ -3012,10 +3012,6 @@ class _HomePageState extends State<HomePage> {
     return _headerDisplayPosition;
   }
 
-  bool _headerPositionTransitioning(AppStore store) {
-    return _submitLoading || store.loadingWithAuth;
-  }
-
   /// `personal_details` → `Personal Details`
   String _formatPositionDisplayText(String position) {
     return position
@@ -3030,37 +3026,16 @@ class _HomePageState extends State<HomePage> {
         .join(' ');
   }
 
-  Widget _buildHeaderPositionText(
-    String position, {
-    bool transitioning = false,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            _formatPositionDisplayText(position),
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-              color: transitioning
-                  ? KycTheme.textSecondary
-                  : KycTheme.textPrimary,
-            ),
-          ),
-          if (transitioning) ...[
-            const SizedBox(width: 8),
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: KycTheme.primary,
-              ),
-            ),
-          ],
-        ],
+  Widget _buildHeaderPositionText(String position) {
+    return Text(
+      _formatPositionDisplayText(position),
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: KycTheme.fontSizeTitleSm,
+        fontWeight: FontWeight.w600,
+        color: KycTheme.textPrimary,
       ),
     );
   }
@@ -3071,62 +3046,73 @@ class _HomePageState extends State<HomePage> {
     bool refreshBusyOverride = false,
   }) {
     final position = _headerPositionLabel(store);
-    final headerTransitioning = _headerPositionTransitioning(store);
     final refreshBusy = refreshBusyOverride ||
         _refreshLoading ||
         (_loadWorkflowActive && !_ssoInProgress);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 4, 0),
-      child: Row(
-        children: [
-          if (position != null)
-            _buildHeaderPositionText(
-              position,
-              transitioning: headerTransitioning,
+      child: SizedBox(
+        height: 48,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            if (position != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 96),
+                child: _buildHeaderPositionText(position),
+              ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Refresh',
+                    onPressed: (refreshBusy || _logoutLoading)
+                        ? null
+                        : () async {
+                            if (onRefreshOverride != null) {
+                              store.clearAuthError();
+                              if (mounted) {
+                                setState(
+                                    () => _fatcaTaxResidencyMustPickNo = false);
+                              }
+                              onRefreshOverride();
+                              return;
+                            }
+                            await _refreshWorkflowFromHeader(store);
+                          },
+                    icon: refreshBusy
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: KycTheme.primary,
+                            ),
+                          )
+                        : const Icon(Icons.refresh, color: KycTheme.textPrimary),
+                  ),
+                  IconButton(
+                    tooltip: 'Logout',
+                    onPressed: _logoutLoading ? null : _handleLogout,
+                    icon: _logoutLoading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: KycTheme.primary,
+                            ),
+                          )
+                        : const Icon(Icons.logout, color: KycTheme.textPrimary),
+                  ),
+                ],
+              ),
             ),
-          const Spacer(),
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: (refreshBusy || _logoutLoading)
-                ? null
-                : () async {
-                    if (onRefreshOverride != null) {
-                      store.clearAuthError();
-                      if (mounted) {
-                        setState(() => _fatcaTaxResidencyMustPickNo = false);
-                      }
-                      onRefreshOverride();
-                      return;
-                    }
-                    await _refreshWorkflowFromHeader(store);
-                  },
-            icon: refreshBusy
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: KycTheme.primary,
-                    ),
-                  )
-                : const Icon(Icons.refresh, color: KycTheme.textPrimary),
-          ),
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: _logoutLoading ? null : _handleLogout,
-            icon: _logoutLoading
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: KycTheme.primary,
-                    ),
-                  )
-                : const Icon(Icons.logout, color: KycTheme.textPrimary),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
