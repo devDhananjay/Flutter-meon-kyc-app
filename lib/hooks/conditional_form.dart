@@ -37,8 +37,21 @@ class ConditionalFormNotifier extends ChangeNotifier {
     List<dynamic>? fields,
     List<dynamic>? conditionalFlow, {
     dynamic fieldsWithAuth,
+    bool replaceFormData = false,
   }) {
-    final fieldsChanged = !listEquals(_fields, fields) || !listEquals(_conditionalFlow, conditionalFlow);
+    if (replaceFormData) {
+      clearLockedPriorNomineeAllocatedPercent();
+      formData = {};
+      errors = {};
+      validationToastMessage = null;
+      fieldVisibility = {};
+      fieldEditable = {};
+      clearUserAddressCache();
+      _lastStableAddNomineeRefreshKey = null;
+    }
+    final fieldsChanged = replaceFormData ||
+        !listEquals(_fields, fields) ||
+        !listEquals(_conditionalFlow, conditionalFlow);
     _fields = fields;
     _conditionalFlow = conditionalFlow;
     if (fieldsWithAuth != null) _fieldsWithAuthSnapshot = fieldsWithAuth;

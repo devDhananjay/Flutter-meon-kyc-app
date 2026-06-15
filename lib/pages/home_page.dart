@@ -58,6 +58,11 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late ConditionalFormNotifier _formNotifier;
   bool _submitLoading = false;
+
+  /// While submit is in flight, keep the previous step's fields/values on screen.
+  Map<dynamic, dynamic>? _submitFrozenPage;
+  Map<String, dynamic>? _submitFrozenFormSnapshot;
+  Map<String, dynamic>? _submitFrozenContext;
   bool _resendOtpLoading = false;
   /// Bumped after successful resend so [OtpVerifySection] restarts cooldown/expiry timers.
   int _otpResendTimerEpoch = 0;
@@ -1035,6 +1040,82 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  void _beginSubmitTransition(AppStore store) {
+    _captureHeaderPositionForSubmit(store);
+    final page = _getActiveFields(store);
+    if (page is Map) {
+      _submitFrozenPage = Map<dynamic, dynamic>.from(page);
+    }
+    _submitFrozenFormSnapshot =
+        Map<String, dynamic>.from(_formNotifier.formData);
+    final ctx = (store.fieldsWithAuth as Map?)?['context'];
+    if (ctx is Map) {
+      _submitFrozenContext = Map<String, dynamic>.from(
+        ctx.map((k, v) => MapEntry(k.toString(), v)),
+      );
+    }
+  }
+
+  void _clearSubmitFreeze() {
+    _submitFrozenPage = null;
+    _submitFrozenFormSnapshot = null;
+    _submitFrozenContext = null;
+  }
+
+  dynamic _activeFieldsForUi(AppStore store) {
+    if (_submitLoading && _submitFrozenPage != null) {
+      return _submitFrozenPage;
+    }
+    return _getActiveFields(store);
+  }
+
+  Map? _contextForUi(AppStore store) {
+    if (_submitLoading && _submitFrozenContext != null) {
+      return _submitFrozenContext;
+    }
+    return (store.fieldsWithAuth as Map?)?['context'] as Map?;
+  }
+
+  dynamic _displayFormValue(String name) {
+    if (_submitLoading && _submitFrozenFormSnapshot != null) {
+      if (_submitFrozenFormSnapshot!.containsKey(name)) {
+        return _submitFrozenFormSnapshot![name];
+      }
+    }
+    return _formNotifier.formData[name];
+  }
+
+  Future<void> _applyFreshStepAfterSuccessfulSubmit(AppStore store) async {
+    final activeAfter = _getActiveFields(store);
+    final listAfter = (activeAfter?['fields'] as List?) ?? [];
+    final flowAfter = activeAfter?['conditionalFlow'] as List?;
+    _formNotifier.updateFields(
+      listAfter,
+      flowAfter,
+      fieldsWithAuth: store.fieldsWithAuth,
+      replaceFormData: true,
+    );
+    _runPersonalDetailsBpWealthPipeline(store, listAfter);
+    final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+    _syncDigilockerAadharImage(
+      store,
+      listAfter,
+      position: ctx?['position']?.toString(),
+      pageLabel: ctx?['page']?['data']?['label']?.toString(),
+    );
+  }
+
+  void _finishSubmitTransition({
+    required AppStore store,
+    required bool applyFreshStep,
+  }) {
+    if (applyFreshStep) {
+      _applyFreshStepAfterSuccessfulSubmit(store);
+    }
+    _clearSubmitFreeze();
+    if (mounted) setState(() => _submitLoading = false);
+  }
+
   dynamic _getActiveFields(AppStore store) {
     final withAuth = store.fieldsWithAuth;
     if (withAuth != null && withAuth is Map && withAuth['context'] != null) {
@@ -1558,7 +1639,7 @@ class _HomePageState extends State<HomePage> {
             validation: field['validation'],
             popupAfterSubmit: activeFields?['popupAfterSubmit'] as List?,
             value: _coalesceFormFieldValue(
-              _formNotifier.formData[name],
+              _displayFormValue(name),
               field['value'],
             ),
             onGoogleSignIn: _handleGoogleSignIn,
@@ -1906,7 +1987,7 @@ class _HomePageState extends State<HomePage> {
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] Send OTP / Submit START');
     setState(() {
-      _captureHeaderPositionForSubmit(store);
+      _beginSubmitTransition(store);
       _submitLoading = true;
     });
 
@@ -1972,7 +2053,10 @@ class _HomePageState extends State<HomePage> {
                 msg: 'Failed to upload $fileKey',
                 gravity: ToastGravity.TOP,
               );
-              if (mounted) setState(() => _submitLoading = false);
+              if (mounted) {
+                _clearSubmitFreeze();
+                setState(() => _submitLoading = false);
+              }
               return;
             }
           } catch (e) {
@@ -1981,7 +2065,10 @@ class _HomePageState extends State<HomePage> {
               msg: 'Error uploading file: $e',
               gravity: ToastGravity.TOP,
             );
-            if (mounted) setState(() => _submitLoading = false);
+            if (mounted) {
+              _clearSubmitFreeze();
+              setState(() => _submitLoading = false);
+            }
             return;
           }
         }
@@ -2026,7 +2113,10 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[HomePage] Send OTP / Submit Exception: $e\n$st');
       Fluttertoast.showToast(msg: e.toString(), gravity: ToastGravity.TOP);
     } finally {
-      if (mounted) setState(() => _submitLoading = false);
+      if (mounted && _submitFrozenPage != null) {
+        _clearSubmitFreeze();
+        setState(() => _submitLoading = false);
+      }
       debugPrint('[HomePage] Send OTP / Submit DONE');
     }
   }
@@ -2067,21 +2157,14 @@ class _HomePageState extends State<HomePage> {
               msg: 'Could not refresh your progress. Please try again.',
               gravity: ToastGravity.TOP,
             );
+            _finishSubmitTransition(store: store, applyFreshStep: false);
             return;
           }
           await _clearCookiesAndRefresh();
           Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
+          _finishSubmitTransition(store: store, applyFreshStep: false);
           return;
         }
-        _formNotifier.resetForm();
-        final activeAfterSubmit = _getActiveFields(store);
-        final listAfterSubmit = (activeAfterSubmit?['fields'] as List?) ?? [];
-        final flowAfterSubmit = activeAfterSubmit?['conditionalFlow'] as List?;
-        _formNotifier.updateFields(
-          listAfterSubmit,
-          flowAfterSubmit,
-          fieldsWithAuth: store.fieldsWithAuth,
-        );
         if (mounted) {
           final authResponse = store.fieldsWithAuth;
           if (authResponse is Map && authResponse['is_admin'] == true) {
@@ -2089,12 +2172,16 @@ class _HomePageState extends State<HomePage> {
             await store.fetchUserDetails();
             if (!mounted) return;
             if (store.userDetails != null) {
+              _clearSubmitFreeze();
+              setState(() => _submitLoading = false);
               context.go('/${widget.company}/${widget.workflowName}/completed');
               return;
             }
           }
         }
         if (mounted) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          _applyFreshStepAfterSuccessfulSubmit(store);
           final ctx = store.fieldsWithAuth as Map?;
           final pos =
               ctx?['context']?['position']?.toString().toLowerCase() ?? '';
@@ -2108,21 +2195,24 @@ class _HomePageState extends State<HomePage> {
             _persistedMobileDigitsForOtp = null;
             _persistedEmailForOtp = null;
           }
-        }
-        // Small delay for smooth UI transition
-        if (mounted) {
-          await Future.delayed(const Duration(milliseconds: 300));
+          _clearSubmitFreeze();
           setState(() => _submitLoading = false);
-          // Check for redirect before navigating
           await _checkAndHandleRedirect(store);
-          // Context already refreshed via get-context — avoid context.go (prevents Start-screen flash).
         }
       } else {
         final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
         Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
+        if (mounted) {
+          _clearSubmitFreeze();
+          setState(() => _submitLoading = false);
+        }
       }
     } catch (_) {
       Fluttertoast.showToast(msg: 'Submission failed', gravity: ToastGravity.TOP);
+      if (mounted) {
+        _clearSubmitFreeze();
+        setState(() => _submitLoading = false);
+      }
     }
   }
 
@@ -2300,23 +2390,14 @@ class _HomePageState extends State<HomePage> {
           msg: 'Could not refresh your progress. Please try again.',
           gravity: ToastGravity.TOP,
         );
-        if (mounted) setState(() => _submitLoading = false);
+        _finishSubmitTransition(store: store, applyFreshStep: false);
         return;
       }
       await _clearCookiesAndRefresh();
       Fluttertoast.showToast(msg: store.errorWithAuth ?? 'Session updated. Please continue.', gravity: ToastGravity.TOP);
-      if (mounted) setState(() => _submitLoading = false);
+      _finishSubmitTransition(store: store, applyFreshStep: false);
       return;
     }
-    _formNotifier.resetForm();
-    final activeAfter = _getActiveFields(store);
-    final listAfter = (activeAfter?['fields'] as List?) ?? [];
-    final flowAfter = activeAfter?['conditionalFlow'] as List?;
-    _formNotifier.updateFields(
-      listAfter,
-      flowAfter,
-      fieldsWithAuth: store.fieldsWithAuth,
-    );
     if (mounted) {
       final authResponse = store.fieldsWithAuth;
       if (authResponse is Map && authResponse['is_admin'] == true) {
@@ -2324,6 +2405,7 @@ class _HomePageState extends State<HomePage> {
         await store.fetchUserDetails();
         if (!mounted) return;
         if (store.userDetails != null) {
+          _clearSubmitFreeze();
           setState(() => _submitLoading = false);
           context.go('/${widget.company}/${widget.workflowName}/completed');
           return;
@@ -2331,6 +2413,8 @@ class _HomePageState extends State<HomePage> {
       }
     }
     if (mounted) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      _applyFreshStepAfterSuccessfulSubmit(store);
       final ctx = store.fieldsWithAuth as Map?;
       final pos =
           ctx?['context']?['position']?.toString().toLowerCase() ?? '';
@@ -2339,14 +2423,9 @@ class _HomePageState extends State<HomePage> {
         debugPrint(
             '[HomePage] email_otp: applied persisted email for UI: $_persistedEmailForOtp');
       }
-    }
-    // Small delay for smooth UI transition
-    if (mounted) {
-      await Future.delayed(const Duration(milliseconds: 300));
+      _clearSubmitFreeze();
       setState(() => _submitLoading = false);
-      // Check for redirect before navigating
       await _checkAndHandleRedirect(store);
-      // Context already refreshed via get-context — avoid context.go (prevents Start-screen flash).
     }
   }
 
@@ -2438,7 +2517,7 @@ class _HomePageState extends State<HomePage> {
     FocusScope.of(context).unfocus();
     debugPrint('[HomePage] _handleCommonSubmit START');
     setState(() {
-      _captureHeaderPositionForSubmit(store);
+      _beginSubmitTransition(store);
       _submitLoading = true;
     });
     try {
@@ -2447,7 +2526,10 @@ class _HomePageState extends State<HomePage> {
       final pathSegment = _getKycPostPathSegment(ctx);
       if (pathSegment.isEmpty) {
         Fluttertoast.showToast(msg: 'Invalid step. Please refresh.', gravity: ToastGravity.TOP);
-        if (mounted) setState(() => _submitLoading = false);
+        if (mounted) {
+          _clearSubmitFreeze();
+          setState(() => _submitLoading = false);
+        }
         return;
       }
       
@@ -2712,7 +2794,10 @@ class _HomePageState extends State<HomePage> {
         } else {
           final err2 = _errorMessageFromResponse(res2.statusCode, res2.body);
           Fluttertoast.showToast(msg: err2, gravity: ToastGravity.TOP);
-          if (mounted) setState(() => _submitLoading = false);
+          if (mounted) {
+            _clearSubmitFreeze();
+            setState(() => _submitLoading = false);
+          }
         }
       } else if (isPanStep &&
           isPanNumberAlreadyExistsResponse(body) &&
@@ -2733,11 +2818,17 @@ class _HomePageState extends State<HomePage> {
         } else {
           Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
         }
-        if (mounted) setState(() => _submitLoading = false);
+        if (mounted) {
+          _clearSubmitFreeze();
+          setState(() => _submitLoading = false);
+        }
       }
     } catch (e) {
       Fluttertoast.showToast(msg: 'Something went wrong. Please try again.', gravity: ToastGravity.TOP);
-      if (mounted) setState(() => _submitLoading = false);
+      if (mounted) {
+        _clearSubmitFreeze();
+        setState(() => _submitLoading = false);
+      }
     }
   }
 
@@ -3225,7 +3316,7 @@ class _HomePageState extends State<HomePage> {
       value: _formNotifier,
       child: Consumer2<AppStore, ConditionalFormNotifier>(
         builder: (context, store, form, _) {
-          final activeFields = _getActiveFields(store);
+          final activeFields = _activeFieldsForUi(store);
           final fieldList = (activeFields?['fields'] as List?) ?? [];
           final conditionalFlow = activeFields?['conditionalFlow'] as List?;
           final submitButton = activeFields?['submitButton'] as Map?;
@@ -3236,6 +3327,7 @@ class _HomePageState extends State<HomePage> {
               final isAuthenticated = snapshot.data ?? false;
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
+                if (_submitLoading && _submitFrozenPage != null) return;
                 _formNotifier.updateFields(
                   fieldList,
                   conditionalFlow,
@@ -4419,7 +4511,7 @@ class _HomePageState extends State<HomePage> {
   ) {
     // Check if this is segments screen / mobile screen
     final withAuth = store.fieldsWithAuth as Map?;
-    final ctx = withAuth?['context'] as Map?;
+    final ctx = _contextForUi(store) ?? withAuth?['context'] as Map?;
 
     String? position = ctx?['position']?.toString()?.toLowerCase();
     String? pageLabel = ctx?['page']?['data']?['label']?.toString()?.toLowerCase();
