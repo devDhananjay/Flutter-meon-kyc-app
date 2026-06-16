@@ -79,7 +79,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
           final unset = current == null ||
               (current is String && current.trim().isEmpty);
           final forceApiValueField =
-              name == 'add_nominee' ||
+              name == kAddNomineeField ||
               name == kAddSecondNomineeField ||
               name == kAddThirdNomineeField;
           if (!formData.containsKey(name) || unset || forceApiValueField) {
@@ -157,22 +157,22 @@ class ConditionalFormNotifier extends ChangeNotifier {
     // Refresh on same step can keep stale visibility when fields list is unchanged.
     // Re-evaluate add_nominee state so No keeps nominee block closed.
     if (!fieldsChanged && fields != null) {
-      final hasAddNomineeWatcher = watchedFields.contains('add_nominee');
-      if (hasAddNomineeWatcher && formData.containsKey('add_nominee')) {
+      final hasAddNomineeWatcher = watchedFields.contains(kAddNomineeField);
+      if (hasAddNomineeWatcher && formData.containsKey(kAddNomineeField)) {
         final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
         final stepPos = ctx?['position']?.toString() ?? '';
         final stepLbl = ctx?['page']?['data']?['label']?.toString() ?? '';
-        final addNomineeVal = formData['add_nominee']?.toString() ?? '';
+        final addNomineeVal = formData[kAddNomineeField]?.toString() ?? '';
         final refreshKey = '$stepPos|$stepLbl|$addNomineeVal';
         if (_lastStableAddNomineeRefreshKey == refreshKey) {
           return;
         }
         _lastStableAddNomineeRefreshKey = refreshKey;
-        _applyConditionalLogic('add_nominee');
+        _applyConditionalLogic(kAddNomineeField);
         _runNomineeRealtimeUiSync(
           position: stepPos,
           pageLabel: stepLbl,
-          changedFieldName: 'add_nominee',
+          changedFieldName: kAddNomineeField,
         );
         notifyListeners();
       }

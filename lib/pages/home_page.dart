@@ -21,6 +21,7 @@ import 'package:meon_kyc/components/kyc_layout.dart';
 import 'package:meon_kyc/components/kyc_stepper_bar.dart';
 import 'package:meon_kyc/components/kyc_note_box.dart';
 import 'package:meon_kyc/components/loader.dart';
+import 'package:meon_kyc/components/nominee_step_section.dart';
 import 'package:meon_kyc/components/otp_verify_section.dart';
 import 'package:meon_kyc/components/segments_selection.dart';
 import 'package:meon_kyc/components/brokerage_plan_dialog.dart';
@@ -1564,6 +1565,155 @@ class _HomePageState extends State<HomePage> {
     return s.isEmpty ? 'Submit' : s;
   }
 
+  bool _isNomineeSubmitDisabled(String? position, String? pageLabel) {
+    return isNomineeSubmitCtaDisabled(
+      formData: _formNotifier.formData,
+      position: position,
+      pageLabel: pageLabel,
+    );
+  }
+
+  Map<dynamic, dynamic>? _findFieldDefByName(
+    List<dynamic> fieldList,
+    String name,
+  ) {
+    for (final f in fieldList) {
+      if (f is Map && f['name']?.toString() == name) {
+        return f;
+      }
+    }
+    return null;
+  }
+
+  void _setAddNomineeSelection({
+    required List<dynamic> fieldList,
+    required bool yes,
+    required String? position,
+    required String? pageLabel,
+  }) {
+    final def = _findFieldDefByName(fieldList, kAddNomineeField);
+    if (def == null) return;
+    final values = def['values'] as List?;
+    final pick = resolveKycYesNoOptionValue(values, yes ? 'Yes' : 'No');
+    if (!yes) {
+      clearMainNomineeBlockFormData(
+        formData: _formNotifier.formData,
+        fields: fieldList,
+      );
+    }
+    _formNotifier.handleChange(
+      kAddNomineeField,
+      pick,
+      type: def['type']?.toString() ?? 'select',
+      validationType: def['validation']?.toString(),
+      validateWith: def['validateWith']?.toString(),
+    );
+    if (mounted) setState(() {});
+  }
+
+  List<Widget> _buildNomineeKycFormLayout({
+    required List<dynamic> visibleFieldsForDisplay,
+    required Map? otpField,
+    required String? otpFieldName,
+    required bool hasAadharImage,
+    required dynamic activeFields,
+    required AppStore store,
+    required List<dynamic> fieldList,
+    required String? position,
+    required String? pageLabel,
+    required Map? ctx,
+  }) {
+    final addingNominee = isAddNomineeSelectedYes(_formNotifier.formData);
+    final rows = <Widget>[
+      NomineeStepSection.primaryToggle(
+        addingNominee: addingNominee,
+        onAdd: () => _setAddNomineeSelection(
+          fieldList: fieldList,
+          yes: true,
+          position: position,
+          pageLabel: pageLabel,
+        ),
+        onRemove: () => _setAddNomineeSelection(
+          fieldList: fieldList,
+          yes: false,
+          position: position,
+          pageLabel: pageLabel,
+        ),
+      ),
+      NomineeStepSection.maxNomineesHint(),
+    ];
+
+    if (addingNominee) {
+      for (final raw in visibleFieldsForDisplay) {
+        if (raw is! Map) continue;
+        final fieldMap = Map<dynamic, dynamic>.from(raw);
+        final name = fieldMap['name']?.toString() ?? '';
+        if (!NomineeStepSection.isNomineeFormContentField(name)) continue;
+
+        if (NomineeStepSection.shouldRenderStyledAddCheckbox(
+          name: name,
+          formData: _formNotifier.formData,
+        )) {
+          rows.add(
+            NomineeStepSection.optionalAddCheckboxButton(
+              onTap: () {
+                _formNotifier.handleChange(
+                  name,
+                  true,
+                  type: fieldMap['type']?.toString() ?? 'checkbox',
+                  validationType: fieldMap['validation']?.toString(),
+                  validateWith: fieldMap['validateWith']?.toString(),
+                );
+                if (mounted) setState(() {});
+              },
+            ),
+          );
+          continue;
+        }
+
+        if (isNomineeStyledAddCheckboxField(name) &&
+            isCheckboxCheckedValue(_formNotifier.formData[name])) {
+          continue;
+        }
+
+        rows.add(
+          _buildFormFieldRow(
+            field: fieldMap,
+            otpField: otpField,
+            otpFieldName: otpFieldName,
+            hasAadharImage: hasAadharImage,
+            activeFields: activeFields,
+            store: store,
+            fieldList: fieldList,
+            position: position,
+            pageLabel: pageLabel,
+            ctx: ctx,
+          ),
+        );
+      }
+    } else {
+      final optOut = _findFieldDefByName(fieldList, kNomineeOptOutTermsField);
+      if (optOut != null) {
+        rows.add(
+          _buildFormFieldRow(
+            field: Map<dynamic, dynamic>.from(optOut),
+            otpField: otpField,
+            otpFieldName: otpFieldName,
+            hasAadharImage: hasAadharImage,
+            activeFields: activeFields,
+            store: store,
+            fieldList: fieldList,
+            position: position,
+            pageLabel: pageLabel,
+            ctx: ctx,
+          ),
+        );
+      }
+    }
+
+    return rows;
+  }
+
   /// One dynamic form row (shared by main list and Standing Instructions expansion).
   Widget _buildFormFieldRow({
     required Map<dynamic, dynamic> field,
@@ -1590,6 +1740,31 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.only(bottom: 20),
         child: _buildOtpVerifyCard(otpField, activeFields),
       );
+    }
+
+    if (isAdditionalNomineeKycStep(position, pageLabel) &&
+        NomineeStepSection.shouldRenderStyledAddCheckbox(
+          name: name,
+          formData: _formNotifier.formData,
+        )) {
+      return NomineeStepSection.optionalAddCheckboxButton(
+        onTap: () {
+          _formNotifier.handleChange(
+            name,
+            true,
+            type: type,
+            validationType: field['validation']?.toString(),
+            validateWith: field['validateWith']?.toString(),
+          );
+          if (mounted) setState(() {});
+        },
+      );
+    }
+
+    if (isAdditionalNomineeKycStep(position, pageLabel) &&
+        isNomineeStyledAddCheckboxField(name) &&
+        isCheckboxCheckedValue(_formNotifier.formData[name])) {
+      return const SizedBox.shrink();
     }
 
     final label = ctx?['page']?['data']?['label']?.toString()?.toLowerCase();
@@ -4800,9 +4975,16 @@ class _HomePageState extends State<HomePage> {
     // Agar OTP field hai (chahe kitni bhi aur fields ho), sirf OtpVerifySection ka "Verify OTP" button use hoga
     final showGenericSubmit = otpField == null;
     final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
+    final isNomineeStep = isNomineeKycStep(position, pageLabel);
+    final nomineeBlocksSubmit = _isNomineeSubmitDisabled(position, pageLabel);
     final fatcaBlocksSubmit = _isPersonalDetailsStep(position, pageLabel) &&
         (_fatcaTaxResidencyMustPickNo ||
             _fatcaTaxResidencyYesFields(fieldList).isNotEmpty);
+    final submitCtaDisabled = _submitLoading ||
+        _ssoInProgress ||
+        fatcaBlocksSubmit ||
+        _isSendOtpDisabled(position) ||
+        nomineeBlocksSubmit;
 
     return Container(
       // No outer margin so width matches "Documents to keep Handy" card
@@ -4905,6 +5087,19 @@ class _HomePageState extends State<HomePage> {
                     pageLabel: pageLabel,
                     ctx: ctx,
                   )
+                : isNomineeStep
+                    ? _buildNomineeKycFormLayout(
+                        visibleFieldsForDisplay: visibleFieldsForDisplay,
+                        otpField: otpField,
+                        otpFieldName: otpFieldName,
+                        hasAadharImage: hasAadharImage,
+                        activeFields: activeFields,
+                        store: store,
+                        fieldList: fieldList,
+                        position: position,
+                        pageLabel: pageLabel,
+                        ctx: ctx,
+                      )
                 : _buildSequencedFormRowsWithStandingExpansion(
                     visibleFieldsForDisplay: visibleFieldsForDisplay,
                     otpField: otpField,
@@ -5005,10 +5200,7 @@ class _HomePageState extends State<HomePage> {
             if (showGenericSubmit) const SizedBox(height: 24),
             if (showGenericSubmit)
             ElevatedButton(
-              onPressed: _submitLoading ||
-                  _ssoInProgress ||
-                  fatcaBlocksSubmit ||
-                  _isSendOtpDisabled(position)
+              onPressed: submitCtaDisabled
                   ? null
                   : () {
                       debugPrint('[HomePage] Submit button clicked! isAuth=$isAuth, position=$position');
@@ -5026,8 +5218,10 @@ class _HomePageState extends State<HomePage> {
                       }
                     },
               style: ElevatedButton.styleFrom(
-                backgroundColor: isMobileStep
-                    ? (_isSendOtpDisabled(position) ? KycTheme.buttonDisabledPurple : KycTheme.buttonEnabledPurple)
+                backgroundColor: (isMobileStep || isNomineeStep)
+                    ? (submitCtaDisabled
+                        ? KycTheme.buttonDisabledPurple
+                        : KycTheme.buttonEnabledPurple)
                     : KycTheme.primary,
                 foregroundColor: Colors.white,
                 minimumSize: Size(double.infinity, isMobileStep ? 52 : 48),

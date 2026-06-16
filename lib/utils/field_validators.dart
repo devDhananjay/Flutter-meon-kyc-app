@@ -280,15 +280,134 @@ bool isNomineeExtendedUiStep(String? position, String? pageLabel) {
       isAdditionalNomineeKycStep(position, pageLabel);
 }
 
-bool _addNomineeSelectedYes(Map<String, dynamic> formData) {
-  return _isKycYesNoValue(formData['add_nominee']);
-}
+/// Primary toggle — "Do you want to add nominee?" (web replaces dropdown with Add/Remove).
+const String kAddNomineeField = 'add_nominee';
+
+/// Consent when user opts out of adding nominees.
+const String kNomineeOptOutTermsField = 'opt_out_terms';
 
 /// Checkbox — adds nominee 2 block.
 const String kAddSecondNomineeField = 'add_2_nominee';
 
 /// Checkbox — adds nominee 3 block (web `AddNominee.jsx`).
 const String kAddThirdNomineeField = 'add_3_nominee';
+
+bool _addNomineeSelectedYes(Map<String, dynamic> formData) {
+  return _isKycYesNoValue(formData[kAddNomineeField]);
+}
+
+/// Public alias for UI / submit gating.
+bool isAddNomineeSelectedYes(Map<String, dynamic> formData) =>
+    _addNomineeSelectedYes(formData);
+
+bool isNomineeAddNomineeDropdownField(String name) =>
+    name == kAddNomineeField;
+
+bool isNomineeOptOutConsentField(String name) =>
+    name.toLowerCase() == kNomineeOptOutTermsField;
+
+/// `add_2_nominee` / `add_4_nominee` etc. — web styles these as "+ Add Nominee (optional)".
+bool isNomineeStyledAddCheckboxField(String name) {
+  return name == kAddSecondNomineeField ||
+      name == kAddThirdNomineeField ||
+      isAdditionalNomineeAddCheckbox(name);
+}
+
+/// Submit stays disabled when user has not added a nominee and has not ticked consent.
+bool isNomineeSubmitCtaDisabled({
+  required Map<String, dynamic> formData,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeKycStep(position, pageLabel)) return false;
+  if (_addNomineeSelectedYes(formData)) return false;
+  return !isCheckboxCheckedValue(formData[kNomineeOptOutTermsField]);
+}
+
+/// Resolves Yes/No option keys from API `values` list.
+String resolveKycYesNoOptionValue(List<dynamic>? values, String desired) {
+  if (values == null || values.isEmpty) return desired;
+  final want = desired.toLowerCase().trim();
+  for (final o in values) {
+    if (o is Map) {
+      final key = o['key']?.toString() ?? o['value']?.toString() ?? '';
+      final label = o['value']?.toString() ?? key;
+      if (key.toLowerCase().trim() == want ||
+          label.toLowerCase().trim() == want) {
+        return key.isNotEmpty ? key : label;
+      }
+    } else {
+      final s = o.toString();
+      if (s.toLowerCase().trim() == want) return s;
+    }
+  }
+  if (want == 'yes') {
+    for (final o in values) {
+      final s = o is Map
+          ? (o['key']?.toString() ?? o['value']?.toString() ?? '')
+          : o.toString();
+      if (s.toLowerCase().trim().startsWith('y')) return s;
+    }
+  }
+  if (want == 'no') {
+    for (final o in values) {
+      final s = o is Map
+          ? (o['key']?.toString() ?? o['value']?.toString() ?? '')
+          : o.toString();
+      if (s.toLowerCase().trim().startsWith('n')) return s;
+    }
+  }
+  return desired;
+}
+
+void clearMainNomineeBlockFormData({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+}) {
+  if (fields == null) return;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null) continue;
+    if (name == kAddNomineeField ||
+        name == kNomineeOptOutTermsField ||
+        isNomineeBackendOnlyField(name) ||
+        name == kTotalNomineePercentageField ||
+        name == kExtraNomineeField) {
+      continue;
+    }
+    final slot = nomineeSlotFromFieldName(name);
+    if (slot != null && slot <= 3) {
+      formData.remove(name);
+      continue;
+    }
+    if (isNomineeTier2DataField(name) ||
+        isNomineeTier3DataField(name) ||
+        isGuardian1Field(name) ||
+        isGuardian2Field(name) ||
+        isGuardian3Field(name)) {
+      formData.remove(name);
+      continue;
+    }
+    if (name == kAddSecondNomineeField || name == kAddThirdNomineeField) {
+      formData[name] = false;
+    }
+  }
+  formData[kNomineeOptOutTermsField] = false;
+}
+
+void _applyNomineeOptOutTermsVisibility({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  required Map<String, bool> runtimeFieldVisibility,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeKycStep(position, pageLabel)) return;
+  if (_findFieldDefByName(fields, kNomineeOptOutTermsField) == null) return;
+  runtimeFieldVisibility[kNomineeOptOutTermsField] =
+      !_addNomineeSelectedYes(formData);
+}
 
 /// API field: select "Do you want to add more nominee" (`fieldShow: false`, conditional).
 const String kExtraNomineeField = 'extra_nominee';
@@ -459,7 +578,7 @@ bool shouldSyncNomineePercentageField(String name) {
       name == kAddThirdNomineeField ||
       name == kExtraNomineeField ||
       isAdditionalNomineeAddCheckbox(name) ||
-      name == 'add_nominee';
+      name == kAddNomineeField;
 }
 
 /// Any nominee field that should trigger a full UI rules pass.
@@ -1464,6 +1583,8 @@ void _applyNomineeSupplementaryFieldsVisibility({
 
     if (isAdditionalNomineeField(name) && onMainNominee) {
       runtimeFieldVisibility[name] = extraYes;
+    } else if (name == kNomineeOptOutTermsField && onMainNominee) {
+      runtimeFieldVisibility[name] = !_addNomineeSelectedYes(formData);
     } else if (isNomineeStepAuxiliaryField(name)) {
       runtimeFieldVisibility[name] = false;
     } else if (isNomineePanOrAadharField(name)) {
@@ -1773,7 +1894,17 @@ void syncNomineePercentageSideEffects({
   String? position,
   String? pageLabel,
 }) {
-  if (!isNomineeKycStep(position, pageLabel) || !_addNomineeSelectedYes(formData)) {
+  if (!isNomineeKycStep(position, pageLabel)) return;
+
+  _applyNomineeOptOutTermsVisibility(
+    formData: formData,
+    fields: fields,
+    runtimeFieldVisibility: runtimeFieldVisibility,
+    position: position,
+    pageLabel: pageLabel,
+  );
+
+  if (!_addNomineeSelectedYes(formData)) {
     runtimeFieldVisibility.remove(kExtraNomineeField);
     fieldEditable.remove(kExtraNomineeField);
     return;
