@@ -79,7 +79,6 @@ class ConditionalFormNotifier extends ChangeNotifier {
           final unset = current == null ||
               (current is String && current.trim().isEmpty);
           final forceApiValueField =
-              name == kAddNomineeField ||
               name == kAddSecondNomineeField ||
               name == kAddThirdNomineeField;
           if (!formData.containsKey(name) || unset || forceApiValueField) {
@@ -106,6 +105,16 @@ class ConditionalFormNotifier extends ChangeNotifier {
 
       // Nominee address: only keep values when "same as my address" is checked.
       clearNomineeAddressesWhenUnchecked(formData, stepFields: fields);
+
+      final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
+      final stepPos = ctx?['position']?.toString();
+      final stepLbl = ctx?['page']?['data']?['label']?.toString();
+      seedAddNomineeFieldDefaultNo(
+        formData: formData,
+        fields: fields,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
       
       // Apply initial conditional flow for all fields with values
       // This ensures correct initial visibility based on pre-filled data
@@ -134,9 +143,6 @@ class ConditionalFormNotifier extends ChangeNotifier {
         }
       }
 
-      final ctx = (_fieldsWithAuthSnapshot as Map?)?['context'];
-      final stepPos = ctx?['position']?.toString();
-      final stepLbl = ctx?['page']?['data']?['label']?.toString();
       if (isAdditionalNomineeKycStep(stepPos, stepLbl)) {
         lockPriorNomineeAllocatedPercentForStep(
           fields,

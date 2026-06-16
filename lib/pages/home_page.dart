@@ -2523,11 +2523,11 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop('retake'),
-            child: const Text('Retake'),
+            child: const Text('Modify'),
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop('save'),
-            child: const Text('Save'),
+            child: const Text('Proceed'),
           ),
         ],
       ),

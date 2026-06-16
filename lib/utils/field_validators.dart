@@ -396,6 +396,49 @@ void clearMainNomineeBlockFormData({
   formData[kNomineeOptOutTermsField] = false;
 }
 
+/// Resume only when API/form already has nominee 1 data (dropoff).
+bool nomineeDropoffHasSlot1Data({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+}) {
+  if (fields == null) return false;
+  for (final f in fields) {
+    if (f is! Map) continue;
+    final name = f['name']?.toString();
+    if (name == null) continue;
+    if (nomineeSlotFromFieldName(name) != 1) continue;
+    if (isNomineeBackendOnlyField(name) ||
+        isNomineeAddNomineeDropdownField(name) ||
+        isNomineeOptOutConsentField(name) ||
+        isNomineeStyledAddCheckboxField(name)) {
+      continue;
+    }
+    final v = formData[name];
+    if (v != null && v.toString().trim().isNotEmpty) return true;
+  }
+  return false;
+}
+
+/// Landing default: `add_nominee` = No unless user already saved nominee 1 (dropoff).
+void seedAddNomineeFieldDefaultNo({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!isNomineeKycStep(position, pageLabel)) return;
+  final def = _findFieldDefByName(fields, kAddNomineeField);
+  if (def == null) return;
+
+  if (_addNomineeSelectedYes(formData) &&
+      nomineeDropoffHasSlot1Data(formData: formData, fields: fields)) {
+    return;
+  }
+
+  final values = def['values'] as List?;
+  formData[kAddNomineeField] = resolveKycYesNoOptionValue(values, 'No');
+}
+
 void _applyNomineeOptOutTermsVisibility({
   required Map<String, dynamic> formData,
   required List<dynamic>? fields,
