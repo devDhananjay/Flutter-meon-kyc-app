@@ -14,6 +14,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:meon_kyc/firebase_options.dart';
 import 'package:meon_kyc/api/api_client.dart';
 import 'package:meon_kyc/api/kyc_api.dart';
+import 'package:meon_kyc/api/leadsquared_api.dart';
 import 'package:meon_kyc/api/sso_api.dart';
 import 'package:meon_kyc/sso/sso_temp_credentials_gate.dart';
 import 'package:meon_kyc/components/form_field_widget.dart';
@@ -212,6 +213,61 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ------------------------------------------------
+  String _leadQueryParam(List<String> keys) {
+    final qp = widget.queryParams;
+    for (final key in keys) {
+      final direct = qp[key];
+      if (direct != null && direct.trim().isNotEmpty) return direct.trim();
+      final lower = key.toLowerCase();
+      for (final e in qp.entries) {
+        if (e.key.toLowerCase() == lower && e.value.trim().isNotEmpty) {
+          return e.value.trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  Future<void> _captureLeadSquaredAfterSso({
+    required String mobileNumber,
+    required String email,
+  }) async {
+    try {
+      await LeadSquaredAPI.captureLead(
+        mobileNumber: mobileNumber,
+        email: email,
+        firstName: _leadQueryParam(['firstname', 'first_name', 'FirstName']),
+        ageGroup: _leadQueryParam(['age_group', 'mx_Lead_Age_Group']),
+        utmSource: _leadQueryParam([
+          'mx_utmsource',
+          'utm_source',
+          'utmsource',
+          'mx_UTMSource',
+        ]),
+        sourceMedium: _leadQueryParam([
+          'source_medium',
+          'utm_medium',
+          'SourceMedium',
+        ]),
+        sourceCampaign: _leadQueryParam([
+          'source_campaign',
+          'utm_campaign',
+          'SourceCampaign',
+        ]),
+        adGroup: _leadQueryParam(['mx_adgroup', 'mx_Ad_Group', 'adgroup']),
+        commSource: _leadQueryParam(['mx_comsource', 'mx_CommSource']),
+        sourceContent: _leadQueryParam([
+          'sourcecontent',
+          'source_content',
+          'utm_content',
+          'SourceContent',
+        ]),
+      );
+    } catch (e, st) {
+      debugPrint('[HomePage] LeadSquared after SSO failed: $e\n$st');
+    }
+  }
+
   Future<bool> _trySsoLoginIfNeeded(
     BuildContext context,
     AppStore store,
@@ -257,6 +313,12 @@ class _HomePageState extends State<HomePage> {
 
       store.clearAuthError();
       debugPrint('[HomePage] SSO tokens stored successfully');
+
+      unawaited(_captureLeadSquaredAfterSso(
+        mobileNumber: mobileNumber,
+        email: email,
+      ));
+
       // Give backend a moment to persist session before first get-context (avoids intermittent 500).
       await Future.delayed(const Duration(milliseconds: 600));
       return true;
@@ -2494,6 +2556,68 @@ class _HomePageState extends State<HomePage> {
   /// Bank `kyc-post-v2` can return HTTP 200 with `success: false` and either:
   /// - `msg` containing "Penny Drop Verified" (confirm save), or
   /// - eKYC name-mismatch / retry flow with top-level `pennydrop` (e.g. unsuccessful message).
+  static bool _isBankKycPostStep(String position, String lowerPath) {
+    return lowerPath.startsWith('bank') ||
+        position == 'bank' ||
+        position == 'bank_details';
+  }
+
+  /// Bank step Proceed (penny drop confirm) — web parity payload.
+  static Map<String, dynamic> _buildBankProceedConfirmPayload(
+    Map<String, dynamic> formData,
+  ) {
+    const fieldKeys = <String>[
+      'ifsc',
+      'micr1',
+      'account_number',
+      'reenter_account_number',
+      'bank_add',
+      'account_type',
+    ];
+    final payload = <String, dynamic>{
+      'save': true,
+      'middlewareCall': false,
+    };
+    for (final key in fieldKeys) {
+      if (formData.containsKey(key) && formData[key] != null) {
+        payload[key] = formData[key];
+      }
+    }
+    return payload;
+  }
+
+  static const String _bank18LogTag = '[Bank18]';
+
+  static void _logBank18Api({
+    required String phase,
+    required String endpoint,
+    Map<String, dynamic>? payload,
+    int? statusCode,
+    String? responseBody,
+    Map<String, dynamic>? responseJson,
+  }) {
+    debugPrint('');
+    debugPrint('════ $_bank18LogTag $phase ════');
+    debugPrint('$_bank18LogTag URL: $endpoint');
+    if (payload != null) {
+      debugPrint('$_bank18LogTag PAYLOAD: ${jsonEncode(payload)}');
+    }
+    if (statusCode != null) {
+      debugPrint('$_bank18LogTag HTTP: $statusCode');
+      if (responseBody != null && responseBody.isNotEmpty) {
+        debugPrint('$_bank18LogTag RESPONSE: $responseBody');
+      } else if (responseJson != null) {
+        debugPrint(
+          '$_bank18LogTag RESPONSE: success=${responseJson['success']} '
+          'index=${(responseJson['context'] as Map?)?['index']} '
+          'position=${(responseJson['context'] as Map?)?['position']}',
+        );
+      }
+    }
+    debugPrint('════════════════════════════════');
+    debugPrint('');
+  }
+
   static bool _isPennyDropVerifiedAwaitingSaveOrRetake(Map? body) {
     if (body == null) return false;
     final msg = body['msg']?.toString().toLowerCase().trim() ?? '';
@@ -2511,14 +2635,43 @@ class _HomePageState extends State<HomePage> {
     return 'Penny drop failed';
   }
 
-  Future<String?> _showPennyDropVerifiedSaveRetakeDialog(String title) async {
+  static String _formatPennyDropApiMessage(String raw) {
+    return raw
+        .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .trim();
+  }
+
+  static String _pennyDropDialogMessage(Map body) {
+    final msg = body['msg']?.toString().trim() ?? '';
+    final pennydrop = body['pennydrop']?.toString().trim() ?? '';
+    final raw = msg.isNotEmpty ? msg : pennydrop;
+
+    if (raw.isEmpty) {
+      return 'Save these bank details, or retake penny drop verification.';
+    }
+
+    if (raw.toLowerCase().contains('penny drop verified')) {
+      return 'Save these bank details, or retake penny drop verification.';
+    }
+
+    return _formatPennyDropApiMessage(raw);
+  }
+
+  Future<String?> _showPennyDropVerifiedSaveRetakeDialog(
+    String title, {
+    required String message,
+  }) async {
     return showDialog<String>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => AlertDialog(
         title: Text(title),
-        content: const Text(
-          'Save these bank details, or retake penny drop verification.',
+        content: SingleChildScrollView(
+          child: Text(
+            message,
+            style: const TextStyle(fontSize: 14, height: 1.45),
+          ),
         ),
         actions: [
           TextButton(
@@ -2537,8 +2690,10 @@ class _HomePageState extends State<HomePage> {
   Future<void> _afterKycPostV2Success(
     AppStore store,
     Map<String, dynamic>? body,
-    Map<String, dynamic> submissionData,
-  ) async {
+    Map<String, dynamic> submissionData, {
+    Map<String, dynamic>? getContextPostBody,
+    bool logBank18GetContext = false,
+  }) async {
     StorageService.setUserStep(body?['step']?.toString() ?? '');
     // Persist email for OTP UI before any reset (payload + snapshot still valid here).
     final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
@@ -2556,7 +2711,32 @@ class _HomePageState extends State<HomePage> {
     }
     // Do not reset the form before get-context: the UI would show empty fields while the
     // request is in flight even though the save succeeded. Clear + rehydrate only after fresh context.
-    await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
+    final getContextPath =
+        '/api/get-context/${widget.company}/${widget.workflowName}';
+    final contextPayload = getContextPostBody ?? const <String, dynamic>{};
+    if (logBank18GetContext) {
+      _logBank18Api(
+        phase: 'STEP-3 → get-context REQUEST',
+        endpoint: getContextPath,
+        payload: contextPayload,
+      );
+    }
+    await store.fetchWorkflowFieldsWithAuth(
+      widget.company,
+      widget.workflowName,
+      '',
+      postBody: getContextPostBody,
+    );
+    if (logBank18GetContext) {
+      _logBank18Api(
+        phase: 'STEP-3 → get-context RESPONSE',
+        endpoint: getContextPath,
+        statusCode: 200,
+        responseJson: store.fieldsWithAuth is Map
+            ? Map<String, dynamic>.from(store.fieldsWithAuth as Map)
+            : null,
+      );
+    }
     if (mounted && store.errorWithAuth != null) {
       if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
         debugPrint(
@@ -2591,8 +2771,14 @@ class _HomePageState extends State<HomePage> {
       await Future.delayed(const Duration(milliseconds: 300));
       _applyFreshStepAfterSuccessfulSubmit(store);
       final ctx = store.fieldsWithAuth as Map?;
-      final pos =
-          ctx?['context']?['position']?.toString().toLowerCase() ?? '';
+      final contextMap = ctx?['context'] as Map?;
+      final pos = contextMap?['position']?.toString().toLowerCase() ?? '';
+      if (pos == 'bank' || pos == 'bank_details') {
+        _formNotifier.applyFullConditionalFlowEvaluation();
+        debugPrint(
+          '[Bank18] Still on bank — bank_upload path via conditional flow',
+        );
+      }
       if (pos == 'email_otp') {
         _applyPersistedEmailToForm();
         debugPrint(
@@ -2905,6 +3091,13 @@ class _HomePageState extends State<HomePage> {
             wireMultipartFields: wire,
           );
         }
+        if (_isBankKycPostStep(currentPosition, lowerPath)) {
+          _logBank18Api(
+            phase: 'STEP-1 → kyc-post-v2 REQUEST',
+            endpoint: endpoint,
+            payload: Map<String, dynamic>.from(data),
+          );
+        }
         res = await client.post(
           endpoint,
           body: data,
@@ -2916,6 +3109,15 @@ class _HomePageState extends State<HomePage> {
         body = jsonDecode(res.body) as Map<String, dynamic>?;
       } catch (_) {
         body = null;
+      }
+      if (_isBankKycPostStep(currentPosition, lowerPath)) {
+        _logBank18Api(
+          phase: 'STEP-1 → kyc-post-v2 RESPONSE',
+          endpoint: endpoint,
+          statusCode: res.statusCode,
+          responseBody: res.body,
+          responseJson: body,
+        );
       }
       final currentPageLabel =
           ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
@@ -2935,24 +3137,36 @@ class _HomePageState extends State<HomePage> {
           _isPennyDropVerifiedAwaitingSaveOrRetake(body)) {
         if (mounted) setState(() => _submitLoading = false);
         final dialogTitle = _pennyDropSaveRetakeDialogTitle(body!);
-        final choice =
-            await _showPennyDropVerifiedSaveRetakeDialog(dialogTitle);
+        final dialogMessage = _pennyDropDialogMessage(body);
+        final choice = await _showPennyDropVerifiedSaveRetakeDialog(
+          dialogTitle,
+          message: dialogMessage,
+        );
         if (!mounted) return;
         if (choice == null) return;
         setState(() => _submitLoading = true);
         final retryPayload = Map<String, dynamic>.from(data);
         retryPayload.remove('save');
         retryPayload.remove('retake');
+        retryPayload.remove('middlewareCall');
+
+        final Map<String, dynamic> postPayload;
         if (choice == 'save') {
-          retryPayload['save'] = true;
+          postPayload = _buildBankProceedConfirmPayload(data);
         } else {
           retryPayload['retake'] = true;
+          postPayload = retryPayload;
         }
-        debugPrint(
-            '[HomePage] Penny drop follow-up POST ($choice): $endpoint');
+        _logBank18Api(
+          phase: choice == 'save'
+              ? 'STEP-2 PROCEED → kyc-post-v2 REQUEST'
+              : 'STEP-2 MODIFY → kyc-post-v2 REQUEST',
+          endpoint: endpoint,
+          payload: postPayload,
+        );
         final res2 = await client.post(
           endpoint,
-          body: retryPayload,
+          body: postPayload,
           headers: {'Content-Type': 'application/json'},
         );
         Map<String, dynamic>? body2;
@@ -2961,13 +3175,31 @@ class _HomePageState extends State<HomePage> {
         } catch (_) {
           body2 = null;
         }
-        final ok2 = res2.statusCode >= 200 &&
-            res2.statusCode < 300 &&
-            body2?['success'] == true;
-        if (ok2) {
-          await _afterKycPostV2Success(store, body2, retryPayload);
+        _logBank18Api(
+          phase: choice == 'save'
+              ? 'STEP-2 PROCEED → kyc-post-v2 RESPONSE'
+              : 'STEP-2 MODIFY → kyc-post-v2 RESPONSE',
+          endpoint: endpoint,
+          statusCode: res2.statusCode,
+          responseBody: res2.body,
+          responseJson: body2,
+        );
+        final httpOk =
+            res2.statusCode >= 200 && res2.statusCode < 300;
+        if (choice == 'save' && httpOk) {
+          await _afterKycPostV2Success(
+            store,
+            body2 ?? <String, dynamic>{'success': true},
+            postPayload,
+            logBank18GetContext: true,
+          );
+        } else if (choice == 'retake' &&
+            httpOk &&
+            body2?['success'] == true) {
+          await _afterKycPostV2Success(store, body2, postPayload);
         } else {
-          final err2 = _errorMessageFromResponse(res2.statusCode, res2.body);
+          final err2 = _kycPostV2UserMessage(body2) ??
+              _errorMessageFromResponse(res2.statusCode, res2.body);
           Fluttertoast.showToast(msg: err2, gravity: ToastGravity.TOP);
           if (mounted) {
             _clearSubmitFreeze();

@@ -187,6 +187,32 @@ class ConditionalFormNotifier extends ChangeNotifier {
 
   List<String> get watchedFields => getWatchedFields(_conditionalFlow);
 
+  /// Re-run conditional flow for all watched fields (e.g. after penny drop failed proceed).
+  void reapplyInitialConditionalFlow() {
+    final fields = _fields;
+    if (fields == null) return;
+    debugPrint(
+      '[ConditionalForm] Reapplying conditional flow for ${watchedFields.length} watched fields',
+    );
+    for (final watchedField in watchedFields) {
+      if (isNomineeSameAsMyAddressCheckbox(watchedField)) continue;
+      final fieldValue = formData[watchedField];
+      if (formData.containsKey(watchedField) &&
+          (fieldValue != null || fieldValue == false || fieldValue == '')) {
+        _applyConditionalLogic(watchedField);
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Full conditional-flow pass (same as submit validation) — reveals bank_upload etc.
+  void applyFullConditionalFlowEvaluation() {
+    final state = evaluateConditionalFlow(_conditionalFlow, formData);
+    fieldVisibility.addAll(state.fieldVisibility);
+    fieldEditable.addAll(state.fieldEditable);
+    notifyListeners();
+  }
+
   void resetForm() {
     clearLockedPriorNomineeAllocatedPercent();
     formData = {};

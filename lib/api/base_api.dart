@@ -121,12 +121,10 @@ class BaseAPI {
             body: bodyStr ?? '{}',
           )
           .timeout(requestTimeout);
-      // For kyc-post-v2 debug flows, print full backend message/traceback.
-      final shouldLogFullBody = path.contains('/api/kyc-post-v2/');
       _log(
         'POST',
         'Response ${res.statusCode}: $path',
-        shouldLogFullBody ? res.body : _truncate(res.body),
+        _truncate(res.body),
       );
       
       // Extract and log Position from get-context API response

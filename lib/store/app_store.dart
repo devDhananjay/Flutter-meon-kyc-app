@@ -92,8 +92,9 @@ class AppStore extends ChangeNotifier {
   Future<void> fetchWorkflowFieldsWithAuth(
     String urlCompany,
     String urlWorkflowName,
-    String fullQueryString,
-  ) async {
+    String fullQueryString, {
+    Map<String, dynamic>? postBody,
+  }) async {
     // Normalize query string: remove any leading '?' and rebuild path correctly
     final cleanQuery = fullQueryString.startsWith('?') 
         ? fullQueryString.substring(1) 
@@ -105,7 +106,9 @@ class AppStore extends ChangeNotifier {
 
     // When `verify=digilocker` is on the URL, backend expects `save: true` in the POST body
     // (query string is unchanged; only JSON body is set).
-    final Map<String, dynamic> requestBody = {};
+    final Map<String, dynamic> requestBody = {
+      if (postBody != null) ...postBody,
+    };
     if (cleanQuery.isNotEmpty) {
       final qp = Uri.splitQueryString(cleanQuery);
       if (qp['verify'] == 'digilocker') {
