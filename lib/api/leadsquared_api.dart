@@ -2,21 +2,13 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:meon_kyc/api/base_api.dart';
 import 'package:meon_kyc/config/env_config.dart';
 
-/// LeadSquared `Lead.Capture` — called after SSO success.
+/// Meon LeadSquared proxy — called before SSO on app load.
 class LeadSquaredAPI {
-  static Uri _captureUri() {
-    return Uri.parse(EnvConfig.leadSquaredCaptureUrl).replace(
-      queryParameters: {
-        'accesskey': EnvConfig.leadSquaredAccessKey,
-        'secretKey': EnvConfig.leadSquaredSecretKey,
-      },
-    );
-  }
+  static const int _requestTimeoutSeconds = 120;
 
-  static List<Map<String, String>> _buildBody({
+  static List<Map<String, String>> _buildPayloadAttributes({
     required String mobileNumber,
     required String email,
     String firstName = '',
@@ -44,8 +36,40 @@ class LeadSquaredAPI {
     ];
   }
 
-  /// Returns `true` when LeadSquared accepts the lead (HTTP 2xx).
-  static Future<bool> captureLead({
+  static String? _extractLeadId(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return null;
+      final data = decoded['data'];
+      if (data is! Map) return null;
+      final message = data['Message'];
+      if (message is! Map) return null;
+      final id = message['Id']?.toString().trim();
+      return id == null || id.isEmpty ? null : id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _isSuccessResponse(int statusCode, String body) {
+    if (statusCode < 200 || statusCode >= 300) return false;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return true;
+      if (decoded['success'] == true) return true;
+      final data = decoded['data'];
+      if (data is Map && data['Status']?.toString().toLowerCase() == 'success') {
+        return true;
+      }
+      if (decoded['status_code'] == 200) return true;
+    } catch (_) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Captures lead and returns `data.Message.Id` for SSO `additional_info.kyc_lead`.
+  static Future<String?> captureLead({
     required String mobileNumber,
     required String email,
     String firstName = '',
@@ -57,44 +81,49 @@ class LeadSquaredAPI {
     String commSource = '',
     String sourceContent = '',
   }) async {
-    final body = _buildBody(
-      mobileNumber: mobileNumber,
-      email: email,
-      firstName: firstName,
-      ageGroup: ageGroup,
-      utmSource: utmSource,
-      sourceMedium: sourceMedium,
-      sourceCampaign: sourceCampaign,
-      adGroup: adGroup,
-      commSource: commSource,
-      sourceContent: sourceContent,
-    );
+    final url = EnvConfig.leadSquaredCaptureUrl;
+    final body = <String, dynamic>{
+      'payload': _buildPayloadAttributes(
+        mobileNumber: mobileNumber,
+        email: email,
+        firstName: firstName,
+        ageGroup: ageGroup,
+        utmSource: utmSource,
+        sourceMedium: sourceMedium,
+        sourceCampaign: sourceCampaign,
+        adGroup: adGroup,
+        commSource: commSource,
+        sourceContent: sourceContent,
+      ),
+      'timeout': _requestTimeoutSeconds,
+    };
 
-    debugPrint('[LeadSquared] Lead.Capture for phone=$mobileNumber email=$email');
+    debugPrint('[LeadSquared] POST $url phone=$mobileNumber email=$email');
 
     try {
       final res = await http
           .post(
-            _captureUri(),
+            Uri.parse(url),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode(body),
           )
-          .timeout(BaseAPI.requestTimeout);
+          .timeout(const Duration(seconds: _requestTimeoutSeconds));
 
       debugPrint('[LeadSquared] response status=${res.statusCode}');
 
-      if (res.statusCode < 200 || res.statusCode >= 300) {
+      if (!_isSuccessResponse(res.statusCode, res.body)) {
         debugPrint(
-          '[LeadSquared] failed: ${res.body.length > 400 ? res.body.substring(0, 400) + "..." : res.body}',
+          '[LeadSquared] failed: ${res.body.length > 400 ? '${res.body.substring(0, 400)}...' : res.body}',
         );
-        return false;
+        return null;
       }
 
-      debugPrint('[LeadSquared] lead captured successfully');
-      return true;
+      final leadId = _extractLeadId(res.body);
+      debugPrint('[LeadSquared] lead captured id=$leadId');
+      return leadId;
     } catch (e, st) {
       debugPrint('[LeadSquared] exception: $e\n$st');
-      return false;
+      return null;
     }
   }
 }

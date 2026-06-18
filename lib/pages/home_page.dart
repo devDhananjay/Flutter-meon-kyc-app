@@ -228,12 +228,12 @@ class _HomePageState extends State<HomePage> {
     return '';
   }
 
-  Future<void> _captureLeadSquaredAfterSso({
+  Future<String?> _fetchKycLeadIdBeforeSso({
     required String mobileNumber,
     required String email,
   }) async {
     try {
-      await LeadSquaredAPI.captureLead(
+      return await LeadSquaredAPI.captureLead(
         mobileNumber: mobileNumber,
         email: email,
         firstName: _leadQueryParam(['firstname', 'first_name', 'FirstName']),
@@ -264,7 +264,8 @@ class _HomePageState extends State<HomePage> {
         ]),
       );
     } catch (e, st) {
-      debugPrint('[HomePage] LeadSquared after SSO failed: $e\n$st');
+      debugPrint('[HomePage] LeadSquared before SSO failed: $e\n$st');
+      return null;
     }
   }
 
@@ -291,11 +292,21 @@ class _HomePageState extends State<HomePage> {
       final email = creds.email;
 
       debugPrint('[HomePage] No access token - attempting SSO login...');
+
+      final kycLeadId = await _fetchKycLeadIdBeforeSso(
+        mobileNumber: mobileNumber,
+        email: email,
+      );
+      if (kycLeadId != null && kycLeadId.isNotEmpty) {
+        debugPrint('[HomePage] LeadSquared kyc_lead for SSO: $kycLeadId');
+      }
+
       final tokens = await SsoAPI.getSsoRouteTokens(
         company: widget.company,
         workflowName: widget.workflowName,
         mobileNumber: mobileNumber,
         email: email,
+        kycLeadId: kycLeadId,
       );
 
       if (tokens == null) {
@@ -313,11 +324,6 @@ class _HomePageState extends State<HomePage> {
 
       store.clearAuthError();
       debugPrint('[HomePage] SSO tokens stored successfully');
-
-      unawaited(_captureLeadSquaredAfterSso(
-        mobileNumber: mobileNumber,
-        email: email,
-      ));
 
       // Give backend a moment to persist session before first get-context (avoids intermittent 500).
       await Future.delayed(const Duration(milliseconds: 600));
@@ -1601,8 +1607,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// PAN capture (`detailspan`) and PAN verify (`pan`): show DOB as **DD/MM/YYYY**.
+  /// PAN capture (`detailspan`), PAN verify (`pan`), and KRA details (`kradetails`): **DD/MM/YYYY**.
   bool _useDdMmYyyyPanDateStep(String? position, String? pageLabel) {
+    if (isKraDetailsStep(position, pageLabel)) return true;
     final p = (position ?? '').toLowerCase();
     final l = (pageLabel ?? '').toLowerCase();
     return p == 'pan' ||

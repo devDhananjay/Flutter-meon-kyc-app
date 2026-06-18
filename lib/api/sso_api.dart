@@ -90,6 +90,7 @@ class SsoAPI {
     required String workflowName,
     required String mobileNumber,
     required String email,
+    String? kycLeadId,
   }) async {
     final url = '$_ssoBaseUrl$_ssoRoutePath';
 
@@ -107,6 +108,7 @@ class SsoAPI {
       },
       'additional_info': <String, dynamic>{
         'email': email,
+        if (kycLeadId != null && kycLeadId.isNotEmpty) 'kyc_lead': kycLeadId,
       },
       'temp_data': <String, dynamic>{
         'is_sso': 'yes',

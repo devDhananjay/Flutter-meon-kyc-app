@@ -38,7 +38,7 @@ class FormFieldWidget extends StatefulWidget {
   final bool googleSignInLoading;
   /// Full field map from API — used for `date` [minDateType]/[maxDateValue] etc.
   final Map<dynamic, dynamic>? apiFieldMeta;
-  /// When true (PAN / detailspan steps), date fields show **DD/MM/YYYY** instead of MM/dd/yyyy.
+  /// When true (PAN / detailspan / kradetails steps), date fields show **DD/MM/YYYY** instead of MM/dd/yyyy.
   final bool useDdMmYyyyDateDisplay;
 
   const FormFieldWidget({
@@ -121,6 +121,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (value.length > 10) value = value.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         value = value.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isDobLikeField) {
+        value = _formatDdMmYyyyDisplayIfNeeded(value);
       }
       _textController = TextEditingController(text: value);
     } else if (widget.type == 'number') {
@@ -153,6 +155,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (textValue.length > 10) textValue = textValue.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isDobLikeField) {
+        textValue = _formatDdMmYyyyDisplayIfNeeded(newValue);
       }
       if (_textController!.text != textValue) {
         _setControllerTextAfterBuild(_textController!, textValue);
@@ -357,6 +361,24 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     return v == 'nospecialcharacter';
   }
 
+  bool get _isDobLikeField {
+    final n = widget.name.toLowerCase();
+    final dn = widget.displayName.toLowerCase();
+    return n.contains('dob') ||
+        n.contains('date_of_birth') ||
+        n.contains('birth_date') ||
+        dn.contains('date of birth') ||
+        dn.contains('dob');
+  }
+
+  String _formatDdMmYyyyDisplayIfNeeded(String raw) {
+    if (!widget.useDdMmYyyyDateDisplay || raw.trim().isEmpty) return raw;
+    if (widget.type != 'date' && !_isDobLikeField) return raw;
+    final d = parseKycDateValueAsDdMmYyyy(raw) ?? parseKycDateValue(raw);
+    if (d == null) return raw;
+    return DateFormat('dd/MM/yyyy').format(d);
+  }
+
   static final BorderRadius _fieldBorderRadius =
       BorderRadius.circular(KycTheme.radiusMd);
 
@@ -489,6 +511,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (raw.length > 10) raw = raw.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         raw = raw.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isDobLikeField) {
+        raw = _formatDdMmYyyyDisplayIfNeeded(raw);
       }
       _textController = TextEditingController(text: raw);
     }
