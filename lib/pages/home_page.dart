@@ -2655,11 +2655,11 @@ class _HomePageState extends State<HomePage> {
     final raw = msg.isNotEmpty ? msg : pennydrop;
 
     if (raw.isEmpty) {
-      return 'Save these bank details, or retake penny drop verification.';
+      return 'Proceed with These Bank Details or Modify Penny Drop Verification';
     }
 
     if (raw.toLowerCase().contains('penny drop verified')) {
-      return 'Save these bank details, or retake penny drop verification.';
+      return 'Proceed with These Bank Details or Modify Penny Drop Verification';
     }
 
     return _formatPennyDropApiMessage(raw);
