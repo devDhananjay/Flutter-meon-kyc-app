@@ -33,6 +33,7 @@ import 'package:meon_kyc/utils/api_error_message.dart';
 import 'package:meon_kyc/utils/field_validators.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
 import 'package:meon_kyc/services/storage_service.dart';
+import 'package:meon_kyc/services/connectivity_controller.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
@@ -121,15 +122,68 @@ class _HomePageState extends State<HomePage> {
   /// Set when user picks Yes on tax residency; cleared only after they select No.
   bool _fatcaTaxResidencyMustPickNo = false;
 
+  ConnectivityController? _connectivity;
+  int _lastReconnectToken = 0;
+
   @override
   void initState() {
     super.initState();
     _formNotifier = ConditionalFormNotifier(fields: [], conditionalFlow: []);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadWorkflow());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _connectivity = context.read<ConnectivityController>();
+      _lastReconnectToken = _connectivity!.reconnectToken;
+      _connectivity!.addListener(_onInternetRestored);
+      _loadWorkflow();
+    });
+  }
+
+  void _onInternetRestored() {
+    final connectivity = _connectivity;
+    if (connectivity == null || !mounted) return;
+    if (connectivity.reconnectToken == _lastReconnectToken) return;
+    _lastReconnectToken = connectivity.reconnectToken;
+    if (!connectivity.isConnected) return;
+    debugPrint('[HomePage] Internet restored — refreshing workflow');
+    unawaited(_refreshAfterInternetRestored());
+  }
+
+  Future<void> _refreshAfterInternetRestored() async {
+    if (!mounted) return;
+    final queryString = widget.queryParams.isEmpty
+        ? ''
+        : '?${widget.queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
+    final store = context.read<AppStore>();
+    final hasToken = await StorageService.hasAccessToken();
+    if (!hasToken) {
+      _loadWorkflow();
+      return;
+    }
+    final ok = await _fetchContextAndRecoverIfNeeded(store, queryString);
+    if (!mounted || !ok) return;
+    final response = store.fieldsWithAuth;
+    if (response is Map) {
+      final ctx = response['context'] as Map<String, dynamic>?;
+      final designTemplate = ctx?['design_template']?.toString();
+      if (designTemplate != null && designTemplate.contains('-')) {
+        final parts = designTemplate.split('-');
+        if (parts.length >= 2) {
+          await store.fetchStepperWorkflow(widget.workflowName, parts[1]);
+        }
+      }
+    }
+    final activeFields = _getActiveFields(store);
+    final fieldList = (activeFields?['fields'] as List?) ?? [];
+    _formNotifier.updateFields(
+      fieldList,
+      activeFields?['conditionalFlow'] as List?,
+      fieldsWithAuth: store.fieldsWithAuth,
+    );
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _connectivity?.removeListener(_onInternetRestored);
     _returnFlowWatchdogTimer?.cancel();
     _returnFlowPollingTimer?.cancel();
     super.dispose();
@@ -269,11 +323,53 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<bool> _recoverInvalidSessionViaSso(AppStore store) async {
+    if (!store.invalidUserSession) return false;
+    debugPrint('[HomePage] Invalid session — clearing token and opening SSO');
+    await StorageService.clearAuthTokens();
+    store.clearAuthError();
+    _clearAuthenticatedStepCache();
+    _ssoAttempted = false;
+    _ssoInProgress = false;
+    StorageService.setSsoAutoLoginEnabled(true);
+    if (!mounted) return false;
+    return _trySsoLoginIfNeeded(context, store);
+  }
+
+  Future<bool> _fetchContextAndRecoverIfNeeded(
+    AppStore store,
+    String queryString,
+  ) async {
+    await store.fetchWorkflowFieldsWithAuth(
+      widget.company,
+      widget.workflowName,
+      queryString,
+    );
+    if (!mounted) return false;
+    if (store.invalidUserSession) {
+      final ssoOk = await _recoverInvalidSessionViaSso(store);
+      if (!ssoOk || !mounted) return false;
+      await store.fetchWorkflowFieldsWithAuth(
+        widget.company,
+        widget.workflowName,
+        queryString,
+      );
+      return mounted && !store.invalidUserSession;
+    }
+    return store.fieldsWithAuth is Map;
+  }
+
   Future<bool> _trySsoLoginIfNeeded(
     BuildContext context,
     AppStore store,
   ) async {
     if (_ssoAttempted || _ssoInProgress) return _ssoAttempted;
+
+    if (await StorageService.hasAccessToken()) {
+      debugPrint('[HomePage] SSO skipped — access token already present');
+      _ssoAttempted = true;
+      return true;
+    }
 
     if (mounted) {
       setState(() => _ssoInProgress = true);
@@ -371,12 +467,11 @@ class _HomePageState extends State<HomePage> {
       bool hasToken = await StorageService.hasAccessToken();
       debugPrint('[HomePage] _loadWorkflow hasToken=$hasToken');
 
-      // Auto-SSO only on fresh app journey.
-      // Do NOT auto-SSO when returning from WebView (keep current token),
-      // and do NOT auto-SSO after explicit logout (user should continue with get-user flow).
+      // Auto-SSO only on fresh app journey when there is no saved token.
       final shouldTrySso = !_ssoAttempted &&
           StorageService.ssoAutoLoginEnabled &&
-          !store.isReturningFromWebView;
+          !store.isReturningFromWebView &&
+          !hasToken;
       if (shouldTrySso) {
         debugPrint('[HomePage] First-load: forcing SSO attempt (hasToken=$hasToken)');
         // Do not set _submitLoading — SSO dialog is separate; avoids Processing under modal.
@@ -395,12 +490,8 @@ class _HomePageState extends State<HomePage> {
         final queryString = widget.queryParams.isEmpty
             ? ''
             : '?${widget.queryParams.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&')}';
-        
-        await store.fetchWorkflowFieldsWithAuth(
-          widget.company,
-          widget.workflowName,
-          queryString,
-        );
+
+        await _fetchContextAndRecoverIfNeeded(store, queryString);
         
         // Extract workflowId from design_template (format: "company-workflowId-number")
         // Example: "mandotsecurities-2321998632-76" -> workflowId = "2321998632"
@@ -2637,7 +2728,7 @@ class _HomePageState extends State<HomePage> {
   static String _pennyDropSaveRetakeDialogTitle(Map body) {
     final msg = body['msg']?.toString().toLowerCase().trim() ?? '';
     if (msg.contains('penny drop verified')) {
-      return 'Penny drop verification';
+      return 'Penny drop verification successful';
     }
     return 'Penny drop failed';
   }
@@ -2649,7 +2740,36 @@ class _HomePageState extends State<HomePage> {
         .trim();
   }
 
-  static String _pennyDropDialogMessage(Map body) {
+  String _pennyDropVerifiedDialogMessage(Map body) {
+    final data = body['data'];
+    final pennyRaw = data is Map
+        ? data['pennydrop_accountholder_name']?.toString().trim() ?? ''
+        : '';
+    final panRaw = (_formNotifier.formData['name'] ??
+            _formNotifier.formData['full_name'] ??
+            _formNotifier.formData['pan_name'])
+        ?.toString()
+        .trim() ??
+        '';
+
+    final pennyName = pennyRaw.toUpperCase();
+    final panName = panRaw.toUpperCase();
+
+    if (pennyName.isEmpty && panName.isEmpty) {
+      return 'Proceed with These Bank Details or Modify Penny Drop Verification';
+    }
+
+    final bankHolder = pennyName.isNotEmpty ? pennyName : panName;
+    final panPageName = panName.isNotEmpty ? panName : bankHolder;
+
+    return 'Your Pennydrop name\n'
+        '"$bankHolder"\n'
+        'and the name on PAN\n'
+        'page "$panPageName" are verified.\n\n'
+        'Penny Drop Verified';
+  }
+
+  String _pennyDropDialogMessage(Map body) {
     final msg = body['msg']?.toString().trim() ?? '';
     final pennydrop = body['pennydrop']?.toString().trim() ?? '';
     final raw = msg.isNotEmpty ? msg : pennydrop;
@@ -2659,24 +2779,35 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (raw.toLowerCase().contains('penny drop verified')) {
-      return 'Proceed with These Bank Details or Modify Penny Drop Verification';
+      return _pennyDropVerifiedDialogMessage(body);
     }
 
-    return _formatPennyDropApiMessage(raw);
+    final formatted = _formatPennyDropApiMessage(raw);
+    if (formatted.toLowerCase() == 'error') {
+      return 'Your penny drop verification has failed, Modify and try again';
+    }
+
+    return formatted;
   }
 
   Future<String?> _showPennyDropVerifiedSaveRetakeDialog(
     String title, {
     required String message,
   }) async {
+    final centerVerifiedMessage =
+        message.toLowerCase().contains('penny drop verified');
     return showDialog<String>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
         title: Text(title),
         content: SingleChildScrollView(
           child: Text(
             message,
+            textAlign:
+                centerVerifiedMessage ? TextAlign.center : TextAlign.start,
             style: const TextStyle(fontSize: 14, height: 1.45),
           ),
         ),
@@ -3885,6 +4016,16 @@ class _HomePageState extends State<HomePage> {
                   store: store,
                   message: store.errorWithAuth!,
                   isAuthenticated: isAuthenticated,
+                  onRetry: () async {
+                    if (store.invalidUserSession) {
+                      final ssoOk = await _recoverInvalidSessionViaSso(store);
+                      if (ssoOk && mounted) {
+                        await _loadWorkflow();
+                      }
+                    } else {
+                      await _loadWorkflow();
+                    }
+                  },
                 );
               }
 

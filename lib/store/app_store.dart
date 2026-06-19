@@ -70,6 +70,8 @@ class AppStore extends ChangeNotifier {
   dynamic _fieldsWithAuth;
   bool _loadingWithAuth = false;
   String? _errorWithAuth;
+  int? _lastGetContextStatusCode;
+  String? _lastGetContextRawBody;
   // Set true in WebViewPage before context.go() back to HomePage so the
   // build method can show a full-screen loader through the entire return flow
   // (covers first-frame flash AND the gap between sequential API calls).
@@ -78,6 +80,16 @@ class AppStore extends ChangeNotifier {
   bool get loadingWithAuth => _loadingWithAuth;
   String? get errorWithAuth => _errorWithAuth;
   bool get isReturningFromWebView => _isReturningFromWebView;
+
+  /// True when saved token is rejected (e.g. get-context 404 User not found).
+  bool get invalidUserSession {
+    final body = (_lastGetContextRawBody ?? '').toLowerCase();
+    final code = _lastGetContextStatusCode;
+    if (code == 401 || code == 403) return true;
+    if (code == 404 && body.contains('user not found')) return true;
+    if (body.contains('user not found')) return true;
+    return false;
+  }
 
   void setReturningFromWebView(bool value) {
     _isReturningFromWebView = value;
@@ -119,6 +131,8 @@ class AppStore extends ChangeNotifier {
     debugPrint('[AppStore] fetchWorkflowFieldsWithAuth START: $fullPath');
     _loadingWithAuth = true;
     _errorWithAuth = null;
+    _lastGetContextStatusCode = null;
+    _lastGetContextRawBody = null;
     notifyListeners();
     try {
       final client = ApiClient();
@@ -162,6 +176,8 @@ class AppStore extends ChangeNotifier {
           
           debugPrint('[AppStore] fetchWorkflowFieldsWithAuth OK');
         } else {
+          _lastGetContextStatusCode = res.statusCode;
+          _lastGetContextRawBody = res.body;
           // Extract error message from nested error object first, then fallback to top-level msg
           String? errorMsg;
           if (data is Map) {
@@ -181,6 +197,8 @@ class AppStore extends ChangeNotifier {
           debugPrint('[AppStore] fetchWorkflowFieldsWithAuth ERROR (success: false): $_errorWithAuth');
         }
       } else {
+        _lastGetContextStatusCode = res.statusCode;
+        _lastGetContextRawBody = res.body;
         _errorWithAuth = friendlyApiErrorMessage(
           res.body,
           statusCode: res.statusCode,

@@ -55,6 +55,12 @@ class StorageService {
     await prefs.clear();
   }
 
+  static Future<void> clearAuthTokens() async {
+    await _storage.delete(key: _keyAccessToken);
+    await _storage.delete(key: _keyRefreshToken);
+    await _storage.delete(key: _keyAuthSuccess);
+  }
+
   static Future<bool> hasAccessToken() async {
     final token = await getAccessToken();
     return token != null && token.isNotEmpty;

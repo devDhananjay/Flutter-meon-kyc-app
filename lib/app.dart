@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
+import 'package:meon_kyc/components/app_connectivity_gate.dart';
 import 'package:meon_kyc/config/env_config.dart';
 import 'package:meon_kyc/pages/home_page.dart';
 import 'package:meon_kyc/pages/kyc_completed_page.dart';
@@ -17,6 +18,9 @@ class MeonKycApp extends StatelessWidget {
       title: 'Meon KYC',
       debugShowCheckedModeBanner: false,
       theme: KycTheme.theme,
+      builder: (context, child) {
+        return AppConnectivityGate(child: child ?? const SizedBox.shrink());
+      },
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
