@@ -30,6 +30,7 @@ dependencies:
   flutter_inappwebview: ^6.1.5
   permission_handler: ^11.3.1
   path_provider: ^2.1.5
+  pdfx: ^2.9.1
   internet_connection_checker_plus: ^3.1.0
 
 dev_dependencies:
@@ -41,3 +42,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/pdf/bpwealth_tariff_plan.pdf

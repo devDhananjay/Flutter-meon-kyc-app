@@ -37,10 +37,9 @@ import 'package:meon_kyc/services/connectivity_controller.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pdfx/pdfx.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 
 class HomePage extends StatefulWidget {
   final String company;
@@ -4883,22 +4882,16 @@ class _HomePageState extends State<HomePage> {
     return 8000 + name.hashCode.remainder(1000);
   }
 
-  static const String _kBpWealthTariffPdfUrl =
-      'https://ekyc.stoxbox.in/static/static_upload_files/bpwealth/organized%20(19).pdf';
+  static const String _kBpWealthTariffPdfAsset =
+      'assets/pdf/bpwealth_tariff_plan.pdf';
 
-  /// Download PDF while user is on personal_details so View opens instantly.
-  Future<File>? _bpWealthTariffPdfCacheFuture;
   bool _bpWealthTariffPdfModalOpen = false;
-
-  void _ensureBpWealthTariffPdfCached() {
-    _bpWealthTariffPdfCacheFuture ??= _downloadBpWealthTariffPdfToCache();
-  }
 
   Future<void> _openBpWealthTariffPdf() async {
     _showBpWealthTariffPdfModal();
   }
 
-  Future<File> _downloadBpWealthTariffPdfToCache() async {
+  Future<File> _prepareBpWealthTariffPdfFromAsset() async {
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/bpwealth_tariff_plan.pdf');
     try {
@@ -4907,27 +4900,30 @@ class _HomePageState extends State<HomePage> {
         if (len > 0) return file;
       }
     } catch (_) {}
-    final res = await http
-        .get(Uri.parse(_kBpWealthTariffPdfUrl))
-        .timeout(const Duration(seconds: 60));
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw HttpException('Tariff PDF download failed (${res.statusCode})');
-    }
-    await file.writeAsBytes(res.bodyBytes, flush: true);
+    final bytes = await rootBundle.load(_kBpWealthTariffPdfAsset);
+    await file.writeAsBytes(
+      bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+      flush: true,
+    );
     return file;
   }
 
   Future<void> _openBpWealthTariffPdfExternally() async {
-    final uri = Uri.parse(_kBpWealthTariffPdfUrl);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      final file = await _prepareBpWealthTariffPdfFromAsset();
+      final uri = Uri.file(file.path);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return;
+      }
+    } catch (e) {
+      debugPrint('[HomePage] Tariff PDF external open failed: $e');
     }
   }
 
   void _showBpWealthTariffPdfModal() {
     if (_bpWealthTariffPdfModalOpen) return;
     _bpWealthTariffPdfModalOpen = true;
-    _ensureBpWealthTariffPdfCached();
     final mq = MediaQuery.of(context);
     final h = mq.size.height * 0.85;
     final w = mq.size.width - 24;
@@ -4935,8 +4931,7 @@ class _HomePageState extends State<HomePage> {
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BpWealthTariffPdfDialog(
-        pdfUrl: _kBpWealthTariffPdfUrl,
-        localPdfFuture: _bpWealthTariffPdfCacheFuture!,
+        assetPath: _kBpWealthTariffPdfAsset,
         width: w,
         height: h,
         onOpenExternal: _openBpWealthTariffPdfExternally,
@@ -4960,8 +4955,6 @@ class _HomePageState extends State<HomePage> {
     required String? pageLabel,
     required Map? ctx,
   }) {
-    _ensureBpWealthTariffPdfCached();
-
     final maps = visibleFieldsForDisplay
         .whereType<Map>()
         .map((e) => Map<dynamic, dynamic>.from(e))
@@ -6497,128 +6490,42 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// BP Wealth personal details — tariff PDF inside modal (iOS: cached file, Android: Google embed).
+/// BP Wealth personal details — tariff PDF inside modal (native pdfx viewer).
 class _BpWealthTariffPdfDialog extends StatefulWidget {
-  final String pdfUrl;
-  final Future<File> localPdfFuture;
+  final String assetPath;
   final double width;
   final double height;
   final Future<void> Function() onOpenExternal;
 
   const _BpWealthTariffPdfDialog({
-    required this.pdfUrl,
-    required this.localPdfFuture,
+    required this.assetPath,
     required this.width,
     required this.height,
     required this.onOpenExternal,
   });
 
   @override
-  State<_BpWealthTariffPdfDialog> createState() => _BpWealthTariffPdfDialogState();
+  State<_BpWealthTariffPdfDialog> createState() =>
+      _BpWealthTariffPdfDialogState();
 }
 
 class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
-  WebViewController? _iosWebController;
+  late final PdfControllerPinch _pdfController;
   bool _loading = true;
-  Timer? _maxWait;
-  Timer? _hideDebounce;
-  int _androidLoadSeq = 0;
-
-  static String _googleViewerEmbedUrl(String pdfUrl) {
-    return 'https://docs.google.com/viewer?url=${Uri.encodeComponent(pdfUrl)}&embedded=true';
-  }
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _maxWait = Timer(const Duration(seconds: 60), () {
-      if (mounted && _loading) setState(() => _loading = false);
-    });
-    if (Platform.isIOS) {
-      _loadIosPdf();
-    }
-  }
-
-  Future<void> _loadIosPdf() async {
-    final controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.white)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (_) => _scheduleHideLoader(),
-          onWebResourceError: (_) => _scheduleHideLoader(),
-        ),
-      );
-    try {
-      final file = await widget.localPdfFuture;
-      if (!mounted) return;
-      if (await file.exists() && await file.length() > 0) {
-        await controller.loadFile(file.path);
-      } else {
-        await controller.loadRequest(Uri.parse(widget.pdfUrl));
-      }
-    } catch (e) {
-      debugPrint('[HomePage] iOS tariff PDF load failed: $e');
-      await controller.loadRequest(Uri.parse(widget.pdfUrl));
-    }
-    if (!mounted) return;
-    setState(() => _iosWebController = controller);
-  }
-
-  void _scheduleHideLoader() {
-    _hideDebounce?.cancel();
-    final delay = Platform.isAndroid
-        ? const Duration(milliseconds: 1200)
-        : const Duration(milliseconds: 300);
-    _hideDebounce = Timer(delay, () {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    });
+    _pdfController = PdfControllerPinch(
+      document: PdfDocument.openAsset(widget.assetPath),
+    );
   }
 
   @override
   void dispose() {
-    _hideDebounce?.cancel();
-    _maxWait?.cancel();
+    _pdfController.dispose();
     super.dispose();
-  }
-
-  Widget _buildAndroidPdfInModal() {
-    final viewerUrl = _googleViewerEmbedUrl(widget.pdfUrl);
-    return InAppWebView(
-      key: const ValueKey('bpwealth_tariff_pdf_android'),
-      initialUrlRequest: URLRequest(url: WebUri(viewerUrl)),
-      initialSettings: InAppWebViewSettings(
-        javaScriptEnabled: true,
-        useOnDownloadStart: false,
-        supportZoom: true,
-        builtInZoomControls: true,
-        displayZoomControls: false,
-        useWideViewPort: true,
-        loadWithOverviewMode: true,
-        domStorageEnabled: true,
-        databaseEnabled: true,
-      ),
-      onLoadStop: (controller, url) {
-        final u = url?.toString() ?? '';
-        debugPrint('[HomePage] Android tariff PDF onLoadStop: $u');
-        if (!u.contains('docs.google.com/viewer')) return;
-        final seq = ++_androidLoadSeq;
-        Future<void>.delayed(const Duration(milliseconds: 600), () {
-          if (!mounted || seq != _androidLoadSeq) return;
-          _scheduleHideLoader();
-        });
-      },
-      onReceivedError: (controller, request, error) {
-        if (request.isForMainFrame != true) return;
-        debugPrint(
-            '[HomePage] Android tariff PDF main error: ${error.description} url=${request.url}');
-        _scheduleHideLoader();
-      },
-      onDownloadStartRequest: (controller, request) {
-        debugPrint('[HomePage] Android tariff PDF download blocked (stay in modal)');
-      },
-    );
   }
 
   @override
@@ -6659,10 +6566,22 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  if (Platform.isIOS && _iosWebController != null)
-                    WebViewWidget(controller: _iosWebController!)
-                  else if (Platform.isAndroid)
-                    _buildAndroidPdfInModal(),
+                  PdfViewPinch(
+                    controller: _pdfController,
+                    padding: 8,
+                    onDocumentLoaded: (_) {
+                      if (!mounted) return;
+                      setState(() => _loading = false);
+                    },
+                    onDocumentError: (error) {
+                      debugPrint('[HomePage] Tariff PDF load failed: $error');
+                      if (!mounted) return;
+                      setState(() {
+                        _loading = false;
+                        _error = error.toString();
+                      });
+                    },
+                  ),
                   if (_loading)
                     ColoredBox(
                       color: Colors.white,
@@ -6688,6 +6607,23 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
                               ),
                             ),
                           ],
+                        ),
+                      ),
+                    ),
+                  if (_error != null)
+                    ColoredBox(
+                      color: Colors.white,
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            'Unable to load PDF.\nPlease use "Open PDF in browser".',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
                         ),
                       ),
                     ),
