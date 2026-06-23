@@ -525,6 +525,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           enabled: !widget.disable,
           readOnly: widget.disable,
           showCursor: !widget.disable,
+          scrollPhysics: const NeverScrollableScrollPhysics(),
           style: _kFieldTextStyle,
           keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
           textCapitalization:

@@ -18,6 +18,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:meon_kyc/services/storage_service.dart';
 import 'package:meon_kyc/services/connectivity_controller.dart';
+import 'package:meon_kyc/api/kyc_api.dart';
 
 /// Set true only when debugging WebView navigation noise.
 const bool _kWebViewVerboseLogs = false;
@@ -354,6 +355,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _esignScrollAdjusted = false;
   // Track if we already handled RPD success (to avoid double-close)
   bool _rpdSuccessHandled = false;
+  bool _rpdBackLoading = false;
 
   // Reverse Penny Drop: only reload after we see signing-complete text,
   // to avoid refresh loops while user is entering UPI details.
@@ -2068,25 +2070,86 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     await _injectDigilockerFreezeJs(controller);
   }
 
+  Future<void> _handleBackPressed() async {
+    if (_rpdBackLoading) return;
+
+    if (!_isReversePennyDropFlow) {
+      if (mounted) {
+        context.go('/${widget.company}/${widget.workflowName}');
+      }
+      return;
+    }
+
+    setState(() => _rpdBackLoading = true);
+    final store = context.read<AppStore>();
+    store.setRpdReturn(true);
+    store.setReturningFromWebView(true);
+
+    try {
+      debugPrint('[WebView] RPD back — calling position-update (position=11)');
+      final posRes = await KycAPI.positionUpdate('11');
+      debugPrint('[WebView] position-update response: ${posRes.statusCode}');
+
+      store.setParams(company: widget.company, workflowName: widget.workflowName);
+      await store.fetchWorkflowFieldsWithAuth(
+        widget.company,
+        widget.workflowName,
+        '',
+        postBody: const {'rpd_return': true},
+      );
+
+      if (!mounted) return;
+      if (store.errorWithAuth != null) {
+        Fluttertoast.showToast(
+          msg: store.errorWithAuth ?? 'Error loading data',
+          gravity: ToastGravity.TOP,
+        );
+      }
+      context.go('/${widget.company}/${widget.workflowName}');
+    } catch (e, st) {
+      debugPrint('[WebView] RPD back flow error: $e\n$st');
+      if (mounted) {
+        Fluttertoast.showToast(
+          msg: 'Error navigating back',
+          gravity: ToastGravity.TOP,
+        );
+        context.go('/${widget.company}/${widget.workflowName}');
+      }
+    } finally {
+      if (mounted) setState(() => _rpdBackLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // iOS: shrink scaffold for keyboard on OTP flows (CAMS, Digio). DigiLocker keeps a fixed
     // WebView height to avoid resize + scrollIntoView fighting (Aadhaar/PIN jump).
     return ScaffoldMessenger(
       key: _scaffoldMessengerKey,
-      child: Scaffold(
+      child: PopScope(
+        canPop: !_isReversePennyDropFlow,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          unawaited(_handleBackPressed());
+        },
+        child: Scaffold(
       backgroundColor: Colors.white,
       resizeToAvoidBottomInset: _shouldResizeForKeyboard(),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
-          onPressed: () {
-            if (mounted) {
-              context.go('/${widget.company}/${widget.workflowName}');
-            }
-          },
+          icon: _rpdBackLoading
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: KycTheme.primary,
+                  ),
+                )
+              : const Icon(Icons.arrow_back, color: KycTheme.textPrimary),
+          onPressed: _rpdBackLoading ? null : () => unawaited(_handleBackPressed()),
         ),
         title: Text(
           widget.title,
@@ -2965,6 +3028,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
               ),
           ],
         ),
+      ),
       ),
       ),
     );

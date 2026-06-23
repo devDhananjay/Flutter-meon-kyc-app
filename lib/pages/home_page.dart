@@ -124,6 +124,8 @@ class _HomePageState extends State<HomePage> {
 
   ConnectivityController? _connectivity;
   int _lastReconnectToken = 0;
+  /// Prevents post-frame form sync from re-running on every rebuild (same step).
+  String? _activeFieldsSyncKey;
 
   @override
   void initState() {
@@ -782,6 +784,16 @@ class _HomePageState extends State<HomePage> {
       final alreadyHasVerifyParam = widget.queryParams.containsKey('verify') || 
                                      widget.queryParams.containsKey('verifyCompleted');
 
+      // User pressed back on Reverse Penny Drop — do not reopen RPD WebView.
+      if (store.rpdReturn &&
+          shouldRedirect &&
+          redirectUrl != null &&
+          _isRpdRedirectUrl(redirectUrl)) {
+        debugPrint(
+            '[HomePage] Skipping RPD WebView redirect — rpd_return is true');
+        return;
+      }
+
       // DigiLocker just completed — get-context already ran with verify=digilocker + save.
       if (shouldRedirect &&
           widget.queryParams['verify'] == 'digilocker' &&
@@ -989,6 +1001,12 @@ class _HomePageState extends State<HomePage> {
 
   /// RPD/reverse_pennydrop sometimes returns `http://...` URLs.
   /// Force `https://...` before opening the WebView.
+  bool _isRpdRedirectUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('reverse_pennydrop') ||
+        lower.contains('reversepennydrop');
+  }
+
   String _forceHttpsForRpd(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) {
@@ -1256,6 +1274,7 @@ class _HomePageState extends State<HomePage> {
       replaceFormData: true,
     );
     _runPersonalDetailsBpWealthPipeline(store, listAfter);
+    _applyRpdReturnFieldIfNeeded(store, listAfter);
     final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
     _syncDigilockerAadharImage(
       store,
@@ -1409,6 +1428,73 @@ class _HomePageState extends State<HomePage> {
         (pageLabel ?? '') == 'personal_details';
   }
 
+  /// When user returns from RPD via back, backend expects `rpd_return: true` on personal_details submit.
+  void _applyRpdReturnFieldIfNeeded(
+    AppStore store,
+    List<dynamic> fieldList,
+  ) {
+    final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+    final position = ctx?['position']?.toString().toLowerCase() ?? '';
+    final pageLabel =
+        ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+    if (!_isPersonalDetailsStep(position, pageLabel)) return;
+
+    if (!store.rpdReturn) {
+      final stale = _formNotifier.formData['rpd_return'];
+      if (stale == true ||
+          (stale is String && stale.toLowerCase() == 'true')) {
+        _formNotifier.formData.remove('rpd_return');
+        _activeFieldsSyncKey = null;
+        debugPrint(
+            '[HomePage] personal_details: removed stale rpd_return form value');
+      }
+      return;
+    }
+
+    final existing = _formNotifier.formData['rpd_return'];
+    if (existing == true ||
+        (existing is String && existing.toLowerCase() == 'true')) {
+      return;
+    }
+
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      if (f['name']?.toString() != 'rpd_return') continue;
+      final type = f['type']?.toString() ?? 'hidden';
+      _formNotifier.handleChange(
+        'rpd_return',
+        true,
+        type: type,
+        validationType: f['validation']?.toString(),
+      );
+      debugPrint('[HomePage] personal_details: rpd_return form field set to true');
+      return;
+    }
+  }
+
+  bool _submissionIncludedRpdReturn(
+    AppStore store,
+    Map<String, dynamic> submissionData, {
+    required String? position,
+    required String? pageLabel,
+  }) {
+    if (!_isPersonalDetailsStep(position, pageLabel)) return false;
+    if (store.rpdReturn) return true;
+    final v = submissionData['rpd_return'];
+    return v == true || v?.toString().toLowerCase() == 'true';
+  }
+
+  /// After personal_details submit with RPD return — stop passing `rpd_return` on later steps.
+  void _clearRpdReturnState(AppStore store) {
+    final hadGlobal = store.rpdReturn;
+    final hadForm = _formNotifier.formData.containsKey('rpd_return');
+    if (!hadGlobal && !hadForm) return;
+    store.setRpdReturn(false);
+    _formNotifier.formData.remove('rpd_return');
+    _activeFieldsSyncKey = null;
+    debugPrint('[HomePage] rpd_return cleared after personal_details submit');
+  }
+
   /// Personal details fields currently set to Yes for tax residency outside India.
   List<Map<dynamic, dynamic>> _fatcaTaxResidencyYesFields(List<dynamic> fieldList) {
     final out = <Map<dynamic, dynamic>>[];
@@ -1473,6 +1559,7 @@ class _HomePageState extends State<HomePage> {
         fieldsWithAuth: store.fieldsWithAuth,
       );
       _runPersonalDetailsBpWealthPipeline(store, list);
+      _applyRpdReturnFieldIfNeeded(store, list);
       _clearFatcaTaxResidencySubmitBlockIfFormAllows(list);
       if (mounted) setState(() {});
     } finally {
@@ -1976,6 +2063,7 @@ class _HomePageState extends State<HomePage> {
             value: _coalesceFormFieldValue(
               _displayFormValue(name),
               field['value'],
+              type: type,
             ),
             onGoogleSignIn: _handleGoogleSignIn,
             googleSignInLoading: _googleSignInLoading,
@@ -2034,6 +2122,16 @@ class _HomePageState extends State<HomePage> {
                 validationType: f?['validation']?.toString(),
                 validateWith: f?['validateWith']?.toString(),
               );
+              if (n == 'sebi_3years' || n == 'sebi_3year') {
+                final pastVal = _formNotifier.formData['past_action'];
+                if (pastVal is bool) {
+                  _formNotifier.handleChange(
+                    'past_action',
+                    '',
+                    type: 'text',
+                  );
+                }
+              }
               if (isDdpiYesOnPersonalDetails) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (!mounted) return;
@@ -2224,6 +2322,11 @@ class _HomePageState extends State<HomePage> {
         position: nomineePos,
         pageLabel: nomineeLbl,
       );
+    }
+
+    if (store.rpdReturn &&
+        _isPersonalDetailsStep(nomineePos, nomineeLbl)) {
+      data['rpd_return'] = true;
     }
 
     if (activeFields == null) return data;
@@ -2466,6 +2569,17 @@ class _HomePageState extends State<HomePage> {
     }
     try {
       if (res.statusCode >= 200 && res.statusCode < 300 && body?['success'] == true) {
+        final ctxBeforeRefresh =
+            (store.fieldsWithAuth as Map?)?['context'] as Map?;
+        final submitPosition =
+            ctxBeforeRefresh?['position']?.toString().toLowerCase() ?? '';
+        final submitLabel = ctxBeforeRefresh?['page']?['data']?['label']
+                ?.toString()
+                .toLowerCase() ??
+            '';
+        final submittedPersonalDetailsWithRpdReturn = store.rpdReturn &&
+            _isPersonalDetailsStep(submitPosition, submitLabel);
+
         final token = body?['access_token'] as String?;
         final refresh = body?['refresh_token'] as String?;
         if (token != null) StorageService.setAccessToken(token);
@@ -2481,6 +2595,9 @@ class _HomePageState extends State<HomePage> {
         final emailBeforeReset = _resolveEmailForOtpUi(formSnapshot);
         if (emailBeforeReset.contains('@')) {
           _persistedEmailForOtp = emailBeforeReset;
+        }
+        if (submittedPersonalDetailsWithRpdReturn) {
+          _clearRpdReturnState(store);
         }
         // Keep filled values visible until get-context returns; then clear and apply new step.
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
@@ -2762,11 +2879,7 @@ class _HomePageState extends State<HomePage> {
     final bankHolder = pennyName.isNotEmpty ? pennyName : panName;
     final panPageName = panName.isNotEmpty ? panName : bankHolder;
 
-    return 'Your Pennydrop name\n'
-        '"$bankHolder"\n'
-        'and the name on PAN\n'
-        'page "$panPageName" are verified.\n\n'
-        'Penny Drop Verified';
+    return 'Your Pennydrop name "$bankHolder" and the name on PAN page "$panPageName" are verified.\n\nPenny Drop Verified';
   }
 
   String _pennyDropDialogMessage(Map body) {
@@ -2784,7 +2897,7 @@ class _HomePageState extends State<HomePage> {
 
     final formatted = _formatPennyDropApiMessage(raw);
     if (formatted.toLowerCase() == 'error') {
-      return 'Your penny drop verification has failed, Modify and try again';
+      return 'Bank Penny Drop Verification failed. Please upload valid bank proof to proceed';
     }
 
     return formatted;
@@ -2794,26 +2907,35 @@ class _HomePageState extends State<HomePage> {
     String title, {
     required String message,
   }) async {
-    final centerVerifiedMessage =
-        message.toLowerCase().contains('penny drop verified');
+    final isVerifiedSuccess =
+        title.toLowerCase().contains('verification successful');
     return showDialog<String>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
+        contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
         title: Text(title),
-        content: SingleChildScrollView(
-          child: Text(
-            message,
-            textAlign:
-                centerVerifiedMessage ? TextAlign.center : TextAlign.start,
-            style: const TextStyle(fontSize: 14, height: 1.45),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Text(
+              message,
+              textAlign: TextAlign.start,
+              style: const TextStyle(
+                fontSize: 14,
+                height: 1.5,
+                color: KycTheme.textPrimary,
+              ),
+            ),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop('retake'),
+            onPressed: isVerifiedSuccess
+                ? null
+                : () => Navigator.of(ctx).pop('retake'),
             child: const Text('Modify'),
           ),
           FilledButton(
@@ -2832,6 +2954,23 @@ class _HomePageState extends State<HomePage> {
     Map<String, dynamic>? getContextPostBody,
     bool logBank18GetContext = false,
   }) async {
+    final ctxBeforeRefresh =
+        (store.fieldsWithAuth as Map?)?['context'] as Map?;
+    final submitPosition =
+        ctxBeforeRefresh?['position']?.toString().toLowerCase() ?? '';
+    final submitLabel = ctxBeforeRefresh?['page']?['data']?['label']
+            ?.toString()
+            .toLowerCase() ??
+        '';
+    if (_submissionIncludedRpdReturn(
+      store,
+      submissionData,
+      position: submitPosition,
+      pageLabel: submitLabel,
+    )) {
+      _clearRpdReturnState(store);
+    }
+
     StorageService.setUserStep(body?['step']?.toString() ?? '');
     // Persist email for OTP UI before any reset (payload + snapshot still valid here).
     final formSnapshot = Map<String, dynamic>.from(_formNotifier.formData);
@@ -3416,6 +3555,17 @@ class _HomePageState extends State<HomePage> {
         debugPrint('[HomePage] Bank details response: $data');
         
         if (data != null && mounted) {
+          final bankName = data['bank_name']?.toString().trim() ?? '';
+          if (bankName.isEmpty) {
+            debugPrint(
+                '[HomePage] IFSC lookup returned empty bank_name — invalid IFSC');
+            Fluttertoast.showToast(
+              msg: 'Invalid IFSC code',
+              gravity: ToastGravity.TOP,
+            );
+            return;
+          }
+
           // Ensure we are on a bank / bank_details screen before auto-fill
           final store = context.read<AppStore>();
           final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
@@ -3864,6 +4014,15 @@ class _HomePageState extends State<HomePage> {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
                 if (_submitLoading && _submitFrozenPage != null) return;
+                final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+                final syncKey = [
+                  ctx?['position']?.toString() ?? '',
+                  ctx?['page']?['id']?.toString() ?? '',
+                  store.rpdReturn,
+                  fieldList.length,
+                ].join('|');
+                if (_activeFieldsSyncKey == syncKey) return;
+                _activeFieldsSyncKey = syncKey;
                 _formNotifier.updateFields(
                   fieldList,
                   conditionalFlow,
@@ -3871,7 +4030,7 @@ class _HomePageState extends State<HomePage> {
                 );
                 // Must run in same callback *after* updateFields so API `value` is in formData first.
                 _runPersonalDetailsBpWealthPipeline(store, fieldList);
-                final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+                _applyRpdReturnFieldIfNeeded(store, fieldList);
                 _syncDigilockerAadharImage(
                   store,
                   fieldList,
@@ -4296,7 +4455,19 @@ class _HomePageState extends State<HomePage> {
 
   /// Prefer in-memory value; if unset (`null` / missing), use workflow `field['value']` (dropoff).
   /// Blank string means the user cleared the field — do **not** substitute API prepopulate again.
-  dynamic _coalesceFormFieldValue(dynamic formValue, dynamic fieldValue) {
+  dynamic _coalesceFormFieldValue(
+    dynamic formValue,
+    dynamic fieldValue, {
+    String? type,
+  }) {
+    final fieldType = (type ?? '').toLowerCase();
+    if (formValue is bool &&
+        (fieldType == 'text' ||
+            fieldType == 'textarea' ||
+            fieldType == 'number' ||
+            fieldType == 'password')) {
+      formValue = '';
+    }
     if (formValue == null) return fieldValue;
     if (formValue is String && formValue.trim().isEmpty) return formValue;
     return formValue;
@@ -4469,6 +4640,15 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
+    String? _pickQuarterly(List? values) {
+      if (values == null) return null;
+      for (final o in values) {
+        final s = o.toString();
+        if (s.toLowerCase().contains('quarter')) return s;
+      }
+      return _matchRadioOption(values, 'Quarterly');
+    }
+
     void applyStatementFrequencyByDisplayName() {
       for (final f in fieldList) {
         if (f is! Map) continue;
@@ -4480,6 +4660,28 @@ class _HomePageState extends State<HomePage> {
         if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
         final values = f['values'] as List?;
         final raw = _pickSebiRegulations(values);
+        if (raw == null) continue;
+        final normalized = _normalizeRadioToOptions(raw, values);
+        _formNotifier.handleChange(
+          name,
+          normalized,
+          type: type,
+          validationType: f['validation']?.toString(),
+        );
+      }
+    }
+
+    void applyDisBookletFrequencyDefault() {
+      for (final f in fieldList) {
+        if (f is! Map) continue;
+        if (!bpWealthPersonalDetailsDisBookletFrequencyField(f)) continue;
+        final name = f['name']?.toString();
+        if (name == null || name.isEmpty) continue;
+        final type = f['type']?.toString() ?? '';
+        if (type != 'radio' && type != 'select') continue;
+        if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
+        final values = f['values'] as List?;
+        final raw = _pickQuarterly(values);
         if (raw == null) continue;
         final normalized = _normalizeRadioToOptions(raw, values);
         _formNotifier.handleChange(
@@ -4506,6 +4708,7 @@ class _HomePageState extends State<HomePage> {
     applyYesNo('dis', 'No');
     applyYesNo('delivery_instruction_slip', 'No');
     applyYesNo('dis_slip', 'No');
+    applyDisBookletFrequencyDefault();
   }
 
   /// Personal details step: defaults when API/dropoff did not pre-fill.
@@ -4611,6 +4814,8 @@ class _HomePageState extends State<HomePage> {
       'gender',
       'marital_status',
       'maritalstatus',
+      'spouse_name',
+      'spouse',
       'education',
       'annual_income',
       'income',
@@ -4640,13 +4845,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   int _bpWealthStandingSortKey(Map<dynamic, dynamic> f) {
+    if (bpWealthPersonalDetailsPastActionField(f)) {
+      return 1;
+    }
     if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) {
       return 8;
+    }
+    if (bpWealthPersonalDetailsDisBookletFrequencyField(f)) {
+      return 14;
     }
     final name = f['name']?.toString();
     if (name == null) return 99999;
     const order = <String>[
       'sebi_3years',
+      'past_action',
+      'past_actions',
       'directly_bank_account',
       'credit_account',
       'rta',
@@ -4769,11 +4982,8 @@ class _HomePageState extends State<HomePage> {
       if (bpWealthPersonalDetailsStandingSectionField(f)) {
         standing.add(f);
       } else {
-        final n = f['name']?.toString();
-        if (n != null &&
-            kBpWealthPersonalDetailsMainScreenFieldNames.contains(n)) {
-          main.add(f);
-        }
+        // Main grid: whitelisted fields + conditionally revealed rows (e.g. spouse_name).
+        main.add(f);
       }
     }
 
@@ -4822,7 +5032,7 @@ class _HomePageState extends State<HomePage> {
           child: Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
             child: ExpansionTile(
-              key: const PageStorageKey<String>('bpwealth_standing_instructions'),
+              key: const ValueKey<String>('bpwealth_standing_instructions'),
               initiallyExpanded: false,
               tilePadding:
                   const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -4853,20 +5063,30 @@ class _HomePageState extends State<HomePage> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                   child: Column(
+                    key: ValueKey<String>(
+                      standing
+                          .map((g) => g['name']?.toString() ?? '')
+                          .join('|'),
+                    ),
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: standing
                         .map(
-                          (g) => _buildFormFieldRow(
-                            field: g,
-                            otpField: otpField,
-                            otpFieldName: otpFieldName,
-                            hasAadharImage: hasAadharImage,
-                            activeFields: activeFields,
-                            store: store,
-                            fieldList: fieldList,
-                            position: position,
-                            pageLabel: pageLabel,
-                            ctx: ctx,
+                          (g) => KeyedSubtree(
+                            key: ValueKey<String>(
+                              'bp-standing-${g['name']?.toString() ?? ''}',
+                            ),
+                            child: _buildFormFieldRow(
+                              field: g,
+                              otpField: otpField,
+                              otpFieldName: otpFieldName,
+                              hasAadharImage: hasAadharImage,
+                              activeFields: activeFields,
+                              store: store,
+                              fieldList: fieldList,
+                              position: position,
+                              pageLabel: pageLabel,
+                              ctx: ctx,
+                            ),
                           ),
                         )
                         .toList(),
@@ -4972,7 +5192,7 @@ class _HomePageState extends State<HomePage> {
                 dividerColor: Colors.transparent,
               ),
               child: ExpansionTile(
-                key: const PageStorageKey<String>('bpwealth_standing_instructions'),
+                key: const ValueKey<String>('bpwealth_standing_instructions'),
                 initiallyExpanded: false,
                 tilePadding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -5003,20 +5223,30 @@ class _HomePageState extends State<HomePage> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                     child: Column(
+                      key: ValueKey<String>(
+                        group
+                            .map((g) => g['name']?.toString() ?? '')
+                            .join('|'),
+                      ),
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: group
                           .map(
-                            (g) => _buildFormFieldRow(
-                              field: g,
-                              otpField: otpField,
-                              otpFieldName: otpFieldName,
-                              hasAadharImage: hasAadharImage,
-                              activeFields: activeFields,
-                              store: store,
-                              fieldList: fieldList,
-                              position: position,
-                              pageLabel: pageLabel,
-                              ctx: ctx,
+                            (g) => KeyedSubtree(
+                              key: ValueKey<String>(
+                                'bp-standing-${g['name']?.toString() ?? ''}',
+                              ),
+                              child: _buildFormFieldRow(
+                                field: g,
+                                otpField: otpField,
+                                otpFieldName: otpFieldName,
+                                hasAadharImage: hasAadharImage,
+                                activeFields: activeFields,
+                                store: store,
+                                fieldList: fieldList,
+                                position: position,
+                                pageLabel: pageLabel,
+                                ctx: ctx,
+                              ),
                             ),
                           )
                           .toList(),

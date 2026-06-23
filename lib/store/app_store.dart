@@ -76,10 +76,12 @@ class AppStore extends ChangeNotifier {
   // build method can show a full-screen loader through the entire return flow
   // (covers first-frame flash AND the gap between sequential API calls).
   bool _isReturningFromWebView = false;
+  bool _rpdReturn = false;
   dynamic get fieldsWithAuth => _fieldsWithAuth;
   bool get loadingWithAuth => _loadingWithAuth;
   String? get errorWithAuth => _errorWithAuth;
   bool get isReturningFromWebView => _isReturningFromWebView;
+  bool get rpdReturn => _rpdReturn;
 
   /// True when saved token is rejected (e.g. get-context 404 User not found).
   bool get invalidUserSession {
@@ -93,6 +95,11 @@ class AppStore extends ChangeNotifier {
 
   void setReturningFromWebView(bool value) {
     _isReturningFromWebView = value;
+    notifyListeners();
+  }
+
+  void setRpdReturn(bool value) {
+    _rpdReturn = value;
     notifyListeners();
   }
 
@@ -120,6 +127,7 @@ class AppStore extends ChangeNotifier {
     // (query string is unchanged; only JSON body is set).
     final Map<String, dynamic> requestBody = {
       if (postBody != null) ...postBody,
+      if (_rpdReturn) 'rpd_return': true,
     };
     if (cleanQuery.isNotEmpty) {
       final qp = Uri.splitQueryString(cleanQuery);
@@ -437,6 +445,7 @@ class AppStore extends ChangeNotifier {
     _errorUserDetails = null;
     _errorStepperWorkflow = null;
     _isReturningFromWebView = false;
+    _rpdReturn = false;
     notifyListeners();
     debugPrint('[AppStore] State reset');
   }

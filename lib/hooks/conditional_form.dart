@@ -454,6 +454,24 @@ class ConditionalFormNotifier extends ChangeNotifier {
     );
   }
 
+  /// Conditional `true`/`false` actions must not write booleans into text fields.
+  dynamic _sanitizeConditionalFormValue(String fieldName, dynamic value) {
+    if (value is! bool) return value;
+    final field = _fields?.cast<Map<String, dynamic>?>().firstWhere(
+          (f) => f?['name']?.toString() == fieldName,
+          orElse: () => null,
+        );
+    if (field == null) return value;
+    final type = (field['type']?.toString() ?? '').toLowerCase();
+    if (type == 'text' ||
+        type == 'textarea' ||
+        type == 'number' ||
+        type == 'password') {
+      return '';
+    }
+    return value;
+  }
+
   void _applyConditionalLogic(String fieldName) {
     if (!watchedFields.contains(fieldName)) return;
 
@@ -503,7 +521,7 @@ class ConditionalFormNotifier extends ChangeNotifier {
         continue;
       }
       debugPrint('[ConditionalForm] Action updated field: ${e.key} = ${e.value}');
-      formData[e.key] = e.value;
+      formData[e.key] = _sanitizeConditionalFormValue(e.key, e.value);
     }
 
     if (onNominee) {

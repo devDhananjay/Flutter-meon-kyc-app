@@ -86,6 +86,10 @@ class KycAPI {
     return _client.post('/api/user-details', body: {});
   }
 
+  static Future<http.Response> positionUpdate(String position) async {
+    return _client.post('/api/position-update', body: {'position': position});
+  }
+
   static Future<http.Response> getStepperWorkflow(String company, String workflowId) async {
     // Admin stepper workflow API (used only for step labels)
     // Backend route (from curl): /kycadmin_getWorkflow/{workflowName}/{workflowId}

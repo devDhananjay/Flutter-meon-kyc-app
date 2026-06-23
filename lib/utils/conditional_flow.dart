@@ -1327,6 +1327,51 @@ bool bpWealthPersonalDetailsHoldingStatementFrequencyField(
   return false;
 }
 
+/// DIS booklet delivery frequency — dropdown with Quarterly / Monthly (label varies).
+bool bpWealthPersonalDetailsDisBookletFrequencyField(
+  Map<dynamic, dynamic> f,
+) {
+  if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) return false;
+  final values = f['values'] as List?;
+  if (values == null || values.length < 2) return false;
+  final lowered = values.map((o) => o.toString().toLowerCase()).toList();
+  final hasQuarter = lowered.any((s) => s.contains('quarter'));
+  final hasMonth = lowered.any((s) => s.contains('month'));
+  if (!hasQuarter || !hasMonth) return false;
+
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (dn.contains('delivery instruction') ||
+      dn.contains('dis booklet') ||
+      dn.contains('dis slip') ||
+      (dn.contains('dis') && dn.contains('booklet')) ||
+      nl.contains('dis_book') ||
+      nl.contains('delivery_instruction') ||
+      nl == 'dis' ||
+      nl.contains('dis_slip')) {
+    return true;
+  }
+  return false;
+}
+
+/// Text input when user answers Yes on SEBI past-actions question (`sebi_3years`).
+bool bpWealthPersonalDetailsPastActionField(Map<dynamic, dynamic> f) {
+  final name = f['name']?.toString();
+  if (name == 'past_action' || name == 'past_actions') return true;
+  final nl = (name ?? '').toLowerCase();
+  if (nl == 'past_action' ||
+      nl == 'past_actions' ||
+      nl.contains('past_action')) {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  if (dn.contains('past action') &&
+      (dn.contains('sebi') || dn.contains('exchange'))) {
+    return true;
+  }
+  return false;
+}
+
 /// Fields rendered **inside** the Standing Instructions expandable only (not tariff consent).
 bool bpWealthPersonalDetailsStandingSectionField(Map<dynamic, dynamic> f) {
   final name = f['name']?.toString();
@@ -1334,7 +1379,9 @@ bool bpWealthPersonalDetailsStandingSectionField(Map<dynamic, dynamic> f) {
       kBpWealthPersonalDetailsStandingFieldNames.contains(name)) {
     return true;
   }
-  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f);
+  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f) ||
+      bpWealthPersonalDetailsDisBookletFrequencyField(f) ||
+      bpWealthPersonalDetailsPastActionField(f);
 }
 
 bool bpWealthPersonalDetailsHideDobField(
@@ -1389,7 +1436,9 @@ bool bpWealthPersonalDetailsForceShowStandingMap(
       kBpWealthPersonalDetailsStandingFieldNames.contains(name)) {
     return true;
   }
-  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f);
+  return bpWealthPersonalDetailsHoldingStatementFrequencyField(f) ||
+      bpWealthPersonalDetailsDisBookletFrequencyField(f) ||
+      bpWealthPersonalDetailsPastActionField(f);
 }
 
 /// API visibility plus BP Wealth personal-details standing override (fieldShow false).
@@ -1408,6 +1457,15 @@ bool kycFieldVisibleForFormStep(
       return true;
     }
     if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) {
+      return kycApiFieldInitiallyVisible(f) ||
+          bpWealthPersonalDetailsForceShowStandingMap(
+            company,
+            position,
+            pageLabel,
+            f,
+          );
+    }
+    if (bpWealthPersonalDetailsDisBookletFrequencyField(f)) {
       return kycApiFieldInitiallyVisible(f) ||
           bpWealthPersonalDetailsForceShowStandingMap(
             company,
@@ -1514,7 +1572,11 @@ List<dynamic> getVisibleFields(
       pageLabel: pageLabel,
     );
     if (name == null) {
-      if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) return false;
+      if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f) &&
+          !bpWealthPersonalDetailsDisBookletFrequencyField(f) &&
+          !bpWealthPersonalDetailsPastActionField(f)) {
+        return false;
+      }
       return show;
     }
     // Match home_page: conditional flow override wins over fieldShow.
