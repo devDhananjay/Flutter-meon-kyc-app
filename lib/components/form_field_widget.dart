@@ -87,6 +87,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   TextEditingController? _numberController;
   TextEditingController? _textareaController;
   TextEditingController? _passwordController;
+  TextEditingController? _dateController;
+  FocusNode? _ddMmYyyyFocusNode;
+  bool _applyingDdMmYyyyMask = false;
 
   static const Locale _ddMmYyyyPickerLocale = Locale('en', 'IN');
 
@@ -107,6 +110,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   @override
   void initState() {
     super.initState();
+    if (widget.useDdMmYyyyDateDisplay) {
+      _ddMmYyyyFocusNode = FocusNode();
+      _ddMmYyyyFocusNode!.addListener(_handleDdMmYyyyFocusChange);
+    }
     _initializeControllers();
   }
 
@@ -121,16 +128,24 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (value.length > 10) value = value.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         value = value.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
-      } else if (_isDobLikeField) {
+      } else if (_usesDdMmYyyyManualEntry) {
         value = _formatDdMmYyyyDisplayIfNeeded(value);
       }
       _textController = TextEditingController(text: value);
     } else if (widget.type == 'number') {
-      _numberController = TextEditingController(text: value);
+      if (_usesDdMmYyyyManualEntry) {
+        value = _formatDdMmYyyyDisplayIfNeeded(value);
+        _dateController = TextEditingController(text: value);
+      } else {
+        _numberController = TextEditingController(text: value);
+      }
     } else if (widget.type == 'textarea') {
       _textareaController = TextEditingController(text: value);
     } else if (widget.type == 'password') {
       _passwordController = TextEditingController(text: value);
+    } else if (widget.type == 'date' && widget.useDdMmYyyyDateDisplay) {
+      value = _formatDdMmYyyyDisplayIfNeeded(value);
+      _dateController = TextEditingController(text: value);
     }
   }
 
@@ -144,6 +159,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   }
 
   void _syncControllersFromWidgetValue() {
+    if (widget.useDdMmYyyyDateDisplay &&
+        _ddMmYyyyFocusNode?.hasFocus == true) {
+      return;
+    }
     final newValue = widget.value?.toString() ?? '';
     if (widget.type == 'text' && _textController != null) {
       var textValue = newValue;
@@ -155,7 +174,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (textValue.length > 10) textValue = textValue.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
-      } else if (_isDobLikeField) {
+      } else if (_usesDdMmYyyyManualEntry) {
         textValue = _formatDdMmYyyyDisplayIfNeeded(newValue);
       }
       if (_textController!.text != textValue) {
@@ -170,6 +189,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       if (_numberController!.text != textValue) {
         _setControllerTextAfterBuild(_numberController!, textValue);
       }
+    } else if (widget.type == 'number' &&
+        _usesDdMmYyyyManualEntry &&
+        _dateController != null) {
+      var dateValue = _formatDdMmYyyyDisplayIfNeeded(newValue);
+      if (_dateController!.text != dateValue) {
+        _setControllerTextAfterBuild(_dateController!, dateValue);
+      }
     } else if (widget.type == 'textarea' && _textareaController != null) {
       if (_textareaController!.text != newValue) {
         _setControllerTextAfterBuild(_textareaController!, newValue);
@@ -177,6 +203,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     } else if (widget.type == 'password' && _passwordController != null) {
       if (_passwordController!.text != newValue) {
         _setControllerTextAfterBuild(_passwordController!, newValue);
+      }
+    } else if (widget.type == 'date' &&
+        widget.useDdMmYyyyDateDisplay &&
+        _dateController != null) {
+      var dateValue = _formatDdMmYyyyDisplayIfNeeded(newValue);
+      if (_dateController!.text != dateValue) {
+        _setControllerTextAfterBuild(_dateController!, dateValue);
       }
     }
   }
@@ -205,6 +238,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     _numberController?.dispose();
     _textareaController?.dispose();
     _passwordController?.dispose();
+    _dateController?.dispose();
+    _ddMmYyyyFocusNode?.removeListener(_handleDdMmYyyyFocusChange);
+    _ddMmYyyyFocusNode?.dispose();
     super.dispose();
   }
 
@@ -371,11 +407,104 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         dn.contains('dob');
   }
 
+  bool get _isDateLikeField {
+    if (widget.type == 'date') return true;
+    final n = widget.name.toLowerCase();
+    final dn = widget.displayName.toLowerCase();
+    final v = widget.validation?.toString().toLowerCase() ?? '';
+    return n.contains('date') || dn.contains('date') || v == 'date' || v == 'dob';
+  }
+
+  bool get _usesDdMmYyyyManualEntry {
+    if (!widget.useDdMmYyyyDateDisplay) return false;
+    if (widget.type == 'date') return true;
+    return _isDobLikeField || _isDateLikeField;
+  }
+
+  TextEditingController? get _activeDdMmYyyyController =>
+      _dateController ?? _textController;
+
+  void _onDdMmYyyyChanged(String value) {
+    if (_applyingDdMmYyyyMask) return;
+    final controller = _activeDdMmYyyyController;
+    if (controller == null) return;
+    final formatted = formatDdMmYyyyTyping(value);
+    if (formatted == controller.text) return;
+    _applyingDdMmYyyyMask = true;
+    controller.value = TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+    _applyingDdMmYyyyMask = false;
+  }
+
+  /// UI shows `dd/MM/yyyy`; form/API keeps ISO `yyyy-MM-dd` (same as before).
+  void _handleDdMmYyyyFocusChange() {
+    if (!mounted || _ddMmYyyyFocusNode?.hasFocus != false) return;
+    _commitDdMmYyyyToFormData();
+  }
+
+  void _commitDdMmYyyyToFormData() {
+    final controller = _dateController ?? _textController;
+    if (controller == null) return;
+    final raw = controller.text.trim();
+    if (raw.isEmpty) {
+      widget.onChange(widget.name, '');
+    } else {
+      final d = parseKycDateValueAsDdMmYyyy(raw) ?? parseKycDateValue(raw);
+      if (d != null) {
+        final iso =
+            '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+        widget.onChange(widget.name, iso);
+        final display = DateFormat('dd/MM/yyyy').format(d);
+        if (controller.text != display) {
+          _setControllerTextAfterBuild(controller, display);
+        }
+      } else {
+        widget.onChange(widget.name, raw);
+      }
+    }
+    widget.onBlur?.call(widget.name);
+  }
+
+  Future<void> _pickDdMmYyyyDate() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final bounds = widget.apiFieldMeta != null
+        ? kycDobPickerBoundsFromField(widget.apiFieldMeta!)
+        : null;
+    final first = bounds?.first ?? DateTime(1900, 1, 1);
+    final last = bounds?.last ?? today;
+    final existing = parseKycDateValueAsDdMmYyyy(widget.value) ??
+        parseKycDateValue(widget.value);
+    var initial = existing ?? last;
+    if (initial.isAfter(last)) initial = last;
+    if (initial.isBefore(first)) initial = first;
+    final d = await showDdMmYyyyDatePickerDialog(
+      context: context,
+      initial: initial,
+      first: first,
+      last: last,
+      title: widget.displayName,
+      fieldMeta: widget.apiFieldMeta,
+    );
+    if (d == null || !mounted) return;
+    final iso =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    final display = DateFormat('dd/MM/yyyy').format(d);
+    widget.onChange(widget.name, iso);
+    final controller = _dateController ?? _textController;
+    if (controller != null) {
+      _setControllerTextAfterBuild(controller, display);
+    }
+    widget.onBlur?.call(widget.name);
+  }
+
   String _formatDdMmYyyyDisplayIfNeeded(String raw) {
     if (!widget.useDdMmYyyyDateDisplay || raw.trim().isEmpty) return raw;
-    if (widget.type != 'date' && !_isDobLikeField) return raw;
+    if (!_usesDdMmYyyyManualEntry) return raw;
     final d = parseKycDateValueAsDdMmYyyy(raw) ?? parseKycDateValue(raw);
-    if (d == null) return raw;
+    if (d == null) return formatDdMmYyyyTyping(raw);
     return DateFormat('dd/MM/yyyy').format(d);
   }
 
@@ -511,10 +640,13 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (raw.length > 10) raw = raw.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         raw = raw.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
-      } else if (_isDobLikeField) {
+      } else if (_usesDdMmYyyyManualEntry) {
         raw = _formatDdMmYyyyDisplayIfNeeded(raw);
       }
       _textController = TextEditingController(text: raw);
+    }
+    if (_usesDdMmYyyyManualEntry) {
+      return _buildDdMmYyyyManualField(_textController!);
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -576,6 +708,14 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   }
 
   Widget _buildNumber() {
+    if (_usesDdMmYyyyManualEntry) {
+      if (_dateController == null) {
+        var raw = widget.value?.toString() ?? '';
+        raw = _formatDdMmYyyyDisplayIfNeeded(raw);
+        _dateController = TextEditingController(text: raw);
+      }
+      return _buildDdMmYyyyManualField(_dateController!);
+    }
     if (_numberController == null) {
       String raw = widget.value?.toString() ?? '';
       if (_isMobileField) {
@@ -784,6 +924,14 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   }
 
   Widget _buildDate() {
+    if (widget.useDdMmYyyyDateDisplay) {
+      if (_dateController == null) {
+        var raw = widget.value?.toString() ?? '';
+        raw = _formatDdMmYyyyDisplayIfNeeded(raw);
+        _dateController = TextEditingController(text: raw);
+      }
+      return _buildDdMmYyyyManualField(_dateController!);
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -838,6 +986,43 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                 fontSize: 16,
               ),
             ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDdMmYyyyManualField(TextEditingController controller) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildLabel(widget.displayName),
+        TextFormField(
+          controller: controller,
+          focusNode: _ddMmYyyyFocusNode,
+          enabled: !widget.disable,
+          readOnly: widget.disable,
+          showCursor: !widget.disable,
+          scrollPhysics: const NeverScrollableScrollPhysics(),
+          style: _kFieldTextStyle,
+          keyboardType: TextInputType.text,
+          inputFormatters: ddMmYyyyKeyboardFormatters,
+          onChanged: _onDdMmYyyyChanged,
+          onEditingComplete: _commitDdMmYyyyToFormData,
+          onTapOutside: (_) => _commitDdMmYyyyToFormData(),
+          decoration: _fieldInputDecoration(
+            hintText: 'DD/MM/YYYY',
+            prefixIcon: _getFieldIcon(),
+            suffixIcon: widget.disable
+                ? null
+                : IconButton(
+                    icon: const Icon(
+                      Icons.calendar_today_outlined,
+                      color: KycTheme.textSecondary,
+                    ),
+                    onPressed: _pickDdMmYyyyDate,
+                  ),
+            counterText: '',
           ),
         ),
       ],
@@ -1357,4 +1542,237 @@ class _SignaturePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SignaturePainter oldDelegate) =>
       oldDelegate.points != points;
+}
+
+/// Calendar-icon modal for DD/MM/YYYY steps — normal keyboard + auto `/` (UI only).
+Future<DateTime?> showDdMmYyyyDatePickerDialog({
+  required BuildContext context,
+  required DateTime initial,
+  required DateTime first,
+  required DateTime last,
+  required String title,
+  Map<dynamic, dynamic>? fieldMeta,
+}) {
+  return showDialog<DateTime>(
+    context: context,
+    barrierDismissible: true,
+    builder: (ctx) => _DdMmYyyyDatePickerDialog(
+      initial: initial,
+      first: first,
+      last: last,
+      title: title,
+      fieldMeta: fieldMeta,
+    ),
+  );
+}
+
+class _DdMmYyyyDatePickerDialog extends StatefulWidget {
+  final DateTime initial;
+  final DateTime first;
+  final DateTime last;
+  final String title;
+  final Map<dynamic, dynamic>? fieldMeta;
+
+  const _DdMmYyyyDatePickerDialog({
+    required this.initial,
+    required this.first,
+    required this.last,
+    required this.title,
+    this.fieldMeta,
+  });
+
+  @override
+  State<_DdMmYyyyDatePickerDialog> createState() =>
+      _DdMmYyyyDatePickerDialogState();
+}
+
+class _DdMmYyyyDatePickerDialogState extends State<_DdMmYyyyDatePickerDialog> {
+  static const Locale _pickerLocale = Locale('en', 'IN');
+
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+  late DateTime _selectedDate;
+  bool _applyingMask = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = widget.initial;
+    _controller = TextEditingController(
+      text: DateFormat('dd/MM/yyyy').format(widget.initial),
+    );
+    _focusNode = FocusNode();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _onTextChanged(String value) {
+    if (_applyingMask) return;
+    final formatted = formatDdMmYyyyTyping(value);
+    if (formatted != _controller.text) {
+      _applyingMask = true;
+      _controller.value = TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+      _applyingMask = false;
+    }
+    DateTime? parsed;
+    final d = parseKycDateValueAsDdMmYyyy(formatted) ?? parseKycDateValue(formatted);
+    if (d != null) {
+      parsed = DateTime(d.year, d.month, d.day);
+    }
+    setState(() {
+      _error = null;
+      if (parsed != null &&
+          !parsed.isBefore(widget.first) &&
+          !parsed.isAfter(widget.last)) {
+        _selectedDate = parsed;
+      }
+    });
+  }
+
+  void _onCalendarDateChanged(DateTime picked) {
+    setState(() {
+      _selectedDate = picked;
+      _controller.text = DateFormat('dd/MM/yyyy').format(picked);
+      _error = null;
+    });
+  }
+
+  void _confirm() {
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) {
+      setState(() => _error = 'Please enter a date');
+      return;
+    }
+    final d = parseKycDateValueAsDdMmYyyy(raw) ?? parseKycDateValue(raw);
+    if (d == null) {
+      setState(() => _error = 'Enter date as DD/MM/YYYY');
+      return;
+    }
+    final picked = DateTime(d.year, d.month, d.day);
+    if (picked.isBefore(widget.first) || picked.isAfter(widget.last)) {
+      final meta = widget.fieldMeta;
+      if (meta != null) {
+        final msg = validateDobAgainstFieldBounds(meta, raw);
+        if (msg != null) {
+          setState(() => _error = msg);
+          return;
+        }
+      }
+      setState(
+        () => _error =
+            'Date must be between ${DateFormat('dd/MM/yyyy').format(widget.first)} and '
+            '${DateFormat('dd/MM/yyyy').format(widget.last)}',
+      );
+      return;
+    }
+    Navigator.of(context).pop(picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dialogWidth = MediaQuery.sizeOf(context).width * 0.92;
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(KycTheme.radiusMd),
+      ),
+      title: Text(
+        widget.title,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+          color: KycTheme.textPrimary,
+        ),
+      ),
+      content: SizedBox(
+        width: dialogWidth.clamp(280.0, 400.0),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _controller,
+                focusNode: _focusNode,
+                keyboardType: TextInputType.text,
+                inputFormatters: ddMmYyyyKeyboardFormatters,
+                onChanged: _onTextChanged,
+                onFieldSubmitted: (_) => _confirm(),
+                style: const TextStyle(
+                  fontSize: 16,
+                  color: KycTheme.textPrimary,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'DD/MM/YYYY',
+                  prefixIcon: const Icon(
+                    Icons.edit_calendar_outlined,
+                    color: KycTheme.textSecondary,
+                  ),
+                  errorText: _error,
+                  filled: true,
+                  fillColor: KycTheme.surface,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(KycTheme.radiusMd),
+                    borderSide: const BorderSide(color: KycTheme.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(KycTheme.radiusMd),
+                    borderSide: const BorderSide(color: KycTheme.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(KycTheme.radiusMd),
+                    borderSide:
+                        const BorderSide(color: KycTheme.primary, width: 2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Localizations.override(
+                context: context,
+                locale: _pickerLocale,
+                child: Theme(
+                  data: Theme.of(context).copyWith(
+                    colorScheme: Theme.of(context).colorScheme.copyWith(
+                          primary: KycTheme.primary,
+                          onPrimary: Colors.white,
+                        ),
+                  ),
+                  child: CalendarDatePicker(
+                    key: ValueKey<String>(
+                      '${_selectedDate.year}-${_selectedDate.month}-${_selectedDate.day}',
+                    ),
+                    initialDate: _selectedDate,
+                    firstDate: widget.first,
+                    lastDate: widget.last,
+                    onDateChanged: _onCalendarDateChanged,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _confirm,
+          style: FilledButton.styleFrom(
+            backgroundColor: KycTheme.primary,
+          ),
+          child: const Text('OK'),
+        ),
+      ],
+    );
+  }
 }

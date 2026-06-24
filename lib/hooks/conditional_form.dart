@@ -115,6 +115,14 @@ class ConditionalFormNotifier extends ChangeNotifier {
         position: stepPos,
         pageLabel: stepLbl,
       );
+      final company = (ctx is Map ? ctx['company'] : null)?.toString();
+      seedBpWealthPersonalDetailsPepAndTaxDefaultsNo(
+        formData: formData,
+        fields: fields,
+        company: company,
+        position: stepPos,
+        pageLabel: stepLbl,
+      );
       
       // Apply initial conditional flow for all fields with values
       // This ensures correct initial visibility based on pre-filled data

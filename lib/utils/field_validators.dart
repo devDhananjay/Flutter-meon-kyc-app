@@ -439,6 +439,43 @@ void seedAddNomineeFieldDefaultNo({
   formData[kAddNomineeField] = resolveKycYesNoOptionValue(values, 'No');
 }
 
+bool _isUnsetPersonalDetailsDefaultValue(dynamic existing) {
+  if (existing == null) return true;
+  if (existing is String && existing.trim().isEmpty) return true;
+  return false;
+}
+
+/// BP Wealth personal_details: PEP + tax residency outside India default to **No**.
+void seedBpWealthPersonalDetailsPepAndTaxDefaultsNo({
+  required Map<String, dynamic> formData,
+  required List<dynamic>? fields,
+  String? company,
+  String? position,
+  String? pageLabel,
+}) {
+  if (!bpWealthPersonalDetailsStep(company, position, pageLabel)) return;
+  if (fields == null) return;
+
+  for (final raw in fields) {
+    if (raw is! Map) continue;
+    final f = Map<dynamic, dynamic>.from(raw);
+    final name = f['name']?.toString();
+    if (name == null || name.isEmpty) continue;
+    final type = f['type']?.toString() ?? '';
+    if (type != 'radio' && type != 'select') continue;
+
+    final isPep = bpWealthPersonalDetailsPoliticallyExposedField(f);
+    final isTax = isTaxResidencyOutsideIndiaField(f);
+    if (!isPep && !isTax) continue;
+    if (!_isUnsetPersonalDetailsDefaultValue(formData[name])) continue;
+
+    final values = f['values'] as List?;
+    final no = resolveKycYesNoOptionValue(values, 'No');
+    if (no.trim().isEmpty) continue;
+    formData[name] = no;
+  }
+}
+
 void _applyNomineeOptOutTermsVisibility({
   required Map<String, dynamic> formData,
   required List<dynamic>? fields,

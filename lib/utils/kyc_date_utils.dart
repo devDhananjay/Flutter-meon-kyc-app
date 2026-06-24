@@ -1,5 +1,62 @@
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
+
+/// Formats up to 8 digits as `DD/MM/YYYY` while the user types.
+String formatDdMmYyyyTyping(String raw) {
+  final digits = raw.replaceAll(RegExp(r'\D'), '');
+  final clipped = digits.length > 8 ? digits.substring(0, 8) : digits;
+  final buffer = StringBuffer();
+  for (var i = 0; i < clipped.length; i++) {
+    if (i == 2 || i == 4) buffer.write('/');
+    buffer.write(clipped[i]);
+  }
+  return buffer.toString();
+}
+
+/// Auto-inserts `/` after day and month while typing `DD/MM/YYYY`.
+class DdMmYyyyInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final oldDigits = oldValue.text.replaceAll(RegExp(r'\D'), '');
+    final newDigits = newValue.text.replaceAll(RegExp(r'\D'), '');
+    final clipped =
+        newDigits.length > 8 ? newDigits.substring(0, 8) : newDigits;
+    final formatted = formatDdMmYyyyTyping(clipped);
+
+    var cursor = formatted.length;
+    if (newDigits.length < oldDigits.length) {
+      final rawCursor = newValue.selection.baseOffset.clamp(0, newValue.text.length);
+      final digitsBeforeCursor = newValue.text
+          .substring(0, rawCursor)
+          .replaceAll(RegExp(r'\D'), '')
+          .length;
+      var pos = 0;
+      var seenDigits = 0;
+      while (pos < formatted.length && seenDigits < digitsBeforeCursor) {
+        if (RegExp(r'\d').hasMatch(formatted[pos])) seenDigits++;
+        pos++;
+      }
+      cursor = pos.clamp(0, formatted.length);
+    }
+
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: cursor),
+    );
+  }
+}
+
+/// Allows digits and `/` for manual DOB entry on the normal keyboard.
+final ddMmYyyyKeyboardFormatters = <TextInputFormatter>[
+  FilteringTextInputFormatter.allow(RegExp(r'[0-9/]')),
+  DdMmYyyyInputFormatter(),
+  LengthLimitingTextInputFormatter(10),
+];
+
 /// Stored value is often ISO `yyyy-MM-dd` or `MM/dd/yyyy`-style.
 DateTime? parseKycDateValue(dynamic value) {
   if (value == null) return null;

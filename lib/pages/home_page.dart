@@ -4480,6 +4480,13 @@ class _HomePageState extends State<HomePage> {
     return false;
   }
 
+  /// Personal-details defaults (PEP, tax residency): apply when null or still empty.
+  bool _shouldApplyPersonalDetailsDefault(dynamic existing) {
+    if (existing == null) return true;
+    if (existing is String && existing.trim().isEmpty) return true;
+    return false;
+  }
+
   /// Push `field['value']` from get-context (incl. dropoff) into [formData] so radios/checkboxes
   /// match option strings and submit payload is correct. Skips when user already has a value.
   void _mergePersonalDetailsFromFieldDefinitions(List<dynamic> fieldList) {
@@ -4692,6 +4699,30 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
+    void applyRunningAccountAuthorizationDefault() {
+      for (final f in fieldList) {
+        if (f is! Map) continue;
+        if (!bpWealthPersonalDetailsRunningAccountAuthorizationField(f)) {
+          continue;
+        }
+        final name = f['name']?.toString();
+        if (name == null || name.isEmpty) continue;
+        final type = f['type']?.toString() ?? '';
+        if (type != 'radio' && type != 'select') continue;
+        if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
+        final values = f['values'] as List?;
+        final raw = _pickQuarterly(values);
+        if (raw == null) continue;
+        final normalized = _normalizeRadioToOptions(raw, values);
+        _formNotifier.handleChange(
+          name,
+          normalized,
+          type: type,
+          validationType: f['validation']?.toString(),
+        );
+      }
+    }
+
     applyYesNo('sebi_3years', 'No');
     applyYesNo('directly_bank_account', 'Yes');
     applyYesNo('credit_account', 'Yes');
@@ -4708,6 +4739,36 @@ class _HomePageState extends State<HomePage> {
     applyYesNo('delivery_instruction_slip', 'No');
     applyYesNo('dis_slip', 'No');
     applyDisBookletFrequencyDefault();
+    applyRunningAccountAuthorizationDefault();
+    _applyBpWealthPersonalDetailsPepAndTaxDefaults(fieldList);
+  }
+
+  void _applyBpWealthPersonalDetailsPepAndTaxDefaults(List<dynamic> fieldList) {
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      final map = Map<dynamic, dynamic>.from(f);
+      final name = map['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+      final isPep = bpWealthPersonalDetailsPoliticallyExposedField(map);
+      final isTax = isTaxResidencyOutsideIndiaField(map);
+      if (!isPep && !isTax) continue;
+
+      final type = map['type']?.toString() ?? '';
+      if (type != 'radio' && type != 'select') continue;
+      if (!_shouldApplyPersonalDetailsDefault(_formNotifier.formData[name])) {
+        continue;
+      }
+
+      final values = map['values'] as List?;
+      final pick = _matchRadioOption(values, 'No');
+      if (pick == null) continue;
+      _formNotifier.handleChange(
+        name,
+        pick,
+        type: type,
+        validationType: map['validation']?.toString(),
+      );
+    }
   }
 
   /// Personal details step: defaults when API/dropoff did not pre-fill.
@@ -4716,8 +4777,11 @@ class _HomePageState extends State<HomePage> {
       if (f is! Map) continue;
       final name = f['name']?.toString();
       if (name == null || name.isEmpty) continue;
-      if (!_shouldMergeFromApi(_formNotifier.formData[name])) continue;
+      if (!_shouldApplyPersonalDetailsDefault(_formNotifier.formData[name])) {
+        continue;
+      }
 
+      final map = Map<dynamic, dynamic>.from(f);
       final dn = (f['displayName']?.toString() ?? '').toLowerCase();
       final nl = name.toLowerCase();
       final type = f['type']?.toString() ?? '';
@@ -4728,14 +4792,7 @@ class _HomePageState extends State<HomePage> {
         final vYes = _matchRadioOption(values, 'Yes');
         final vNo = _matchRadioOption(values, 'No');
 
-        final politicallyExposed = nl.contains('pep') ||
-            (dn.contains('political') &&
-                (dn.contains('expos') ||
-                    dn.contains('pep') ||
-                    dn.contains('person'))) ||
-            (nl.contains('political') && nl.contains('expos')) ||
-            dn.contains('politically');
-        if (politicallyExposed && vNo != null) {
+        if (bpWealthPersonalDetailsPoliticallyExposedField(map) && vNo != null) {
           _formNotifier.handleChange(name, vNo,
               type: type, validationType: validation);
           continue;
@@ -4750,12 +4807,7 @@ class _HomePageState extends State<HomePage> {
           continue;
         }
 
-        final taxResidencyOutside = (dn.contains('tax') && dn.contains('residen')) ||
-            (nl.contains('tax') && nl.contains('residen')) ||
-            (dn.contains('residen') && dn.contains('outside')) ||
-            nl.contains('tax_resid') ||
-            nl.contains('tax_residency');
-        if (taxResidencyOutside && vNo != null) {
+        if (isTaxResidencyOutsideIndiaField(map) && vNo != null) {
           _formNotifier.handleChange(name, vNo,
               type: type, validationType: validation);
           continue;
@@ -4853,6 +4905,9 @@ class _HomePageState extends State<HomePage> {
     if (bpWealthPersonalDetailsDisBookletFrequencyField(f)) {
       return 14;
     }
+    if (bpWealthPersonalDetailsRunningAccountAuthorizationField(f)) {
+      return 13;
+    }
     final name = f['name']?.toString();
     if (name == null) return 99999;
     const order = <String>[
@@ -4871,6 +4926,10 @@ class _HomePageState extends State<HomePage> {
       'transaction_statement_frequency',
       'cum_holding_statement',
       'debitbalance',
+      'running_account_authorization',
+      'running_account',
+      'running_ac_authorization',
+      'raa',
       'dis_booklet',
       'dis_book',
       'dis',

@@ -1077,6 +1077,10 @@ const Set<String> kBpWealthPersonalDetailsStandingFieldNames = {
   'dis',
   'delivery_instruction_slip',
   'dis_slip',
+  'running_account_authorization',
+  'running_account',
+  'running_ac_authorization',
+  'raa',
 };
 
 /// BP Wealth personal_details — fields in the **main** block (web 2nd screenshot only).
@@ -1161,6 +1165,21 @@ bool isAffirmativeYesValue(dynamic value) {
 
 /// User selected Yes / affirmative for DDPI (radio, select, or checkbox).
 bool isDdpiAffirmativeValue(dynamic value) => isAffirmativeYesValue(value);
+
+/// Personal details — politically exposed person (PEP).
+bool bpWealthPersonalDetailsPoliticallyExposedField(Map<dynamic, dynamic> f) {
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (nl.contains('pep') ||
+      nl == 'politically_exposed' ||
+      nl == 'political_exposed' ||
+      (nl.contains('political') && nl.contains('expos'))) {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  return dn.contains('politically') ||
+      (dn.contains('political') &&
+          (dn.contains('expos') || dn.contains('pep') || dn.contains('person')));
+}
 
 /// Personal details — tax residency outside India (FATCA).
 bool isTaxResidencyOutsideIndiaField(Map<dynamic, dynamic> f) {
@@ -1354,6 +1373,29 @@ bool bpWealthPersonalDetailsDisBookletFrequencyField(
   return false;
 }
 
+/// Running Account Authorization — Quarterly / Monthly (standing instructions).
+bool bpWealthPersonalDetailsRunningAccountAuthorizationField(
+  Map<dynamic, dynamic> f,
+) {
+  if (bpWealthPersonalDetailsHoldingStatementFrequencyField(f)) return false;
+  if (bpWealthPersonalDetailsDisBookletFrequencyField(f)) return false;
+  final values = f['values'] as List?;
+  if (values == null || values.length < 2) return false;
+  final lowered = values.map((o) => o.toString().toLowerCase()).toList();
+  final hasQuarter = lowered.any((s) => s.contains('quarter'));
+  final hasMonth = lowered.any((s) => s.contains('month'));
+  if (!hasQuarter || !hasMonth) return false;
+
+  final nl = (f['name']?.toString() ?? '').toLowerCase();
+  if (nl.contains('running_account') ||
+      nl.contains('running_ac') ||
+      nl == 'raa') {
+    return true;
+  }
+  final dn = bpWealthFieldUserFacingTextLower(f);
+  return dn.contains('running account') && dn.contains('author');
+}
+
 /// Text input when user answers Yes on SEBI past-actions question (`sebi_3years`).
 bool bpWealthPersonalDetailsPastActionField(Map<dynamic, dynamic> f) {
   final name = f['name']?.toString();
@@ -1381,6 +1423,7 @@ bool bpWealthPersonalDetailsStandingSectionField(Map<dynamic, dynamic> f) {
   }
   return bpWealthPersonalDetailsHoldingStatementFrequencyField(f) ||
       bpWealthPersonalDetailsDisBookletFrequencyField(f) ||
+      bpWealthPersonalDetailsRunningAccountAuthorizationField(f) ||
       bpWealthPersonalDetailsPastActionField(f);
 }
 
@@ -1438,6 +1481,7 @@ bool bpWealthPersonalDetailsForceShowStandingMap(
   }
   return bpWealthPersonalDetailsHoldingStatementFrequencyField(f) ||
       bpWealthPersonalDetailsDisBookletFrequencyField(f) ||
+      bpWealthPersonalDetailsRunningAccountAuthorizationField(f) ||
       bpWealthPersonalDetailsPastActionField(f);
 }
 
@@ -1466,6 +1510,15 @@ bool kycFieldVisibleForFormStep(
           );
     }
     if (bpWealthPersonalDetailsDisBookletFrequencyField(f)) {
+      return kycApiFieldInitiallyVisible(f) ||
+          bpWealthPersonalDetailsForceShowStandingMap(
+            company,
+            position,
+            pageLabel,
+            f,
+          );
+    }
+    if (bpWealthPersonalDetailsRunningAccountAuthorizationField(f)) {
       return kycApiFieldInitiallyVisible(f) ||
           bpWealthPersonalDetailsForceShowStandingMap(
             company,
@@ -1574,6 +1627,7 @@ List<dynamic> getVisibleFields(
     if (name == null) {
       if (!bpWealthPersonalDetailsHoldingStatementFrequencyField(f) &&
           !bpWealthPersonalDetailsDisBookletFrequencyField(f) &&
+          !bpWealthPersonalDetailsRunningAccountAuthorizationField(f) &&
           !bpWealthPersonalDetailsPastActionField(f)) {
         return false;
       }
