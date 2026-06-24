@@ -82,6 +82,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   String _pdfVerificationError = '';
   File? _encryptedPdfFile;
   String? _fileError;
+  bool _showInlineSignaturePad = false;
+  final List<Offset?> _signaturePoints = [];
+  bool _signatureSubmitting = false;
+  String? _signaturePadError;
   String? _previewPath;
   TextEditingController? _textController;
   TextEditingController? _numberController;
@@ -1148,267 +1152,248 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     return n.contains('signature') || d.contains('signature');
   }
 
-  Future<File?> _showDigitalSignatureDialog() async {
-    final points = <Offset?>[];
-    bool submitting = false;
-    String? localError;
-    const canvasSize = Size(860, 360);
-    Size drawAreaSize = const Size(860, 360);
+  static const double _signatureCanvasHeight = 260;
+  Size _signatureDrawSize = Size.zero;
 
-    Future<File?> buildSignatureFile() async {
-      if (!points.any((p) => p != null)) return null;
+  Offset _clampSignaturePoint(Offset point, Size drawSize) {
+    return Offset(
+      point.dx.clamp(0.0, drawSize.width),
+      point.dy.clamp(0.0, drawSize.height),
+    );
+  }
 
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      final bgPaint = Paint()..color = Colors.white;
-      canvas.drawRect(Offset.zero & canvasSize, bgPaint);
+  Future<File?> _buildSignatureFileFromPoints(Size drawSize) async {
+    if (!drawSize.width.isFinite ||
+        !drawSize.height.isFinite ||
+        drawSize.width <= 0 ||
+        drawSize.height <= 0) {
+      return null;
+    }
+    if (!_signaturePoints.any((p) => p != null)) return null;
 
-      final strokePaint = Paint()
-        ..color = Colors.black
-        ..strokeWidth = 4
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawRect(
+      Offset.zero & drawSize,
+      Paint()..color = Colors.white,
+    );
 
-      for (var i = 0; i < points.length - 1; i++) {
-        final p1 = points[i];
-        final p2 = points[i + 1];
-        if (p1 != null && p2 != null) {
-          final safeWidth = drawAreaSize.width <= 0 ? canvasSize.width : drawAreaSize.width;
-          final safeHeight = drawAreaSize.height <= 0 ? canvasSize.height : drawAreaSize.height;
-          final scaleX = canvasSize.width / safeWidth;
-          final scaleY = canvasSize.height / safeHeight;
-          final sp1 = Offset(p1.dx * scaleX, p1.dy * scaleY);
-          final sp2 = Offset(p2.dx * scaleX, p2.dy * scaleY);
-          canvas.drawLine(sp1, sp2, strokePaint);
-        }
+    final strokePaint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    for (var i = 0; i < _signaturePoints.length - 1; i++) {
+      final p1 = _signaturePoints[i];
+      final p2 = _signaturePoints[i + 1];
+      if (p1 != null && p2 != null) {
+        canvas.drawLine(p1, p2, strokePaint);
       }
-
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(
-        canvasSize.width.toInt(),
-        canvasSize.height.toInt(),
-      );
-      final pngBytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (pngBytes == null) return null;
-
-      final file = File(
-        '${Directory.systemTemp.path}/digital_signature_${DateTime.now().millisecondsSinceEpoch}.png',
-      );
-      await file.writeAsBytes(pngBytes.buffer.asUint8List(), flush: true);
-      return file;
     }
 
-    return showDialog<File?>(
-      context: context,
-      barrierDismissible: !submitting,
-      builder: (dialogCtx) {
-        final media = MediaQuery.of(dialogCtx);
-        final isMobile = media.size.width < 600;
-        final horizontalPadding = isMobile ? 12.0 : 24.0;
-        final dialogMaxWidth = isMobile ? media.size.width - 24 : 760.0;
-        final pad = isMobile ? 12.0 : 20.0;
-        final canvasHeight = isMobile ? 220.0 : 360.0;
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(
+      drawSize.width.ceil(),
+      drawSize.height.ceil(),
+    );
+    final pngBytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (pngBytes == null) return null;
 
-        return StatefulBuilder(
-          builder: (dialogCtx, setLocalState) {
-            return Dialog(
-              insetPadding: EdgeInsets.symmetric(
-                horizontal: horizontalPadding,
-                vertical: isMobile ? 18 : 24,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: dialogMaxWidth),
-                child: SingleChildScrollView(
-                  child: Padding(
-                    padding: EdgeInsets.all(pad),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            IconButton(
-                              onPressed: submitting
-                                  ? null
-                                  : () => Navigator.of(dialogCtx).pop(),
-                              icon: const Icon(Icons.close, size: 28),
-                            ),
-                          ],
-                        ),
-                        Container(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF4F7FB),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFFD8E1EA)),
-                          ),
-                          padding: EdgeInsets.symmetric(
-                            horizontal: isMobile ? 12 : 18,
-                            vertical: isMobile ? 10 : 14,
-                          ),
-                          child: const Text(
-                            'Digital Signature',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 34,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF09184A),
-                            ),
-                          ),
-                        ),
-                        Container(
-                          height: 3,
-                          color: const Color(0xFF1DB7B9),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Please sign on screen, this will be captured as your authorized signature',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: isMobile ? 13 : 16,
-                            color: const Color(0xFF1F1F1F),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Container(
-                          width: double.infinity,
-                          height: canvasHeight,
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: const Color(0xFFC9CDD3)),
-                          ),
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              drawAreaSize = Size(
-                                constraints.maxWidth,
-                                constraints.maxHeight,
-                              );
-                              return GestureDetector(
-                                onPanStart: (details) {
-                                  final p = details.localPosition;
-                                  setLocalState(() => points.add(p));
-                                },
-                                onPanUpdate: (details) {
-                                  final p = details.localPosition;
-                                  setLocalState(() => points.add(p));
-                                },
-                                onPanEnd: (_) {
-                                  setLocalState(() => points.add(null));
-                                },
-                                child: CustomPaint(
-                                  painter: _SignaturePainter(points: points),
-                                  size: Size(
-                                    constraints.maxWidth,
-                                    constraints.maxHeight,
+    final file = File(
+      '${Directory.systemTemp.path}/digital_signature_${DateTime.now().millisecondsSinceEpoch}.png',
+    );
+    await file.writeAsBytes(pngBytes.buffer.asUint8List(), flush: true);
+    return file;
+  }
+
+  Widget _buildInlineSignaturePad() {
+    return SizedBox(
+      width: double.infinity,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: _fileError != null ? Colors.red : Colors.grey.shade400,
+            width: 2,
+            strokeAlign: BorderSide.strokeAlignInside,
+          ),
+          borderRadius: BorderRadius.circular(12),
+          color: Colors.grey.shade50,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Draw your signature in the box below.',
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: _signatureCanvasHeight,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final drawSize = Size(
+                        constraints.maxWidth,
+                        constraints.maxHeight,
+                      );
+                      _signatureDrawSize = drawSize;
+                      return GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanStart: widget.disable
+                            ? null
+                            : (details) {
+                                setState(() {
+                                  _signaturePadError = null;
+                                  _signaturePoints.add(
+                                    _clampSignaturePoint(
+                                      details.localPosition,
+                                      drawSize,
+                                    ),
+                                  );
+                                });
+                              },
+                        onPanUpdate: widget.disable
+                            ? null
+                            : (details) {
+                                setState(() {
+                                  _signaturePoints.add(
+                                    _clampSignaturePoint(
+                                      details.localPosition,
+                                      drawSize,
+                                    ),
+                                  );
+                                });
+                              },
+                        onPanEnd: widget.disable
+                            ? null
+                            : (_) {
+                                setState(() => _signaturePoints.add(null));
+                              },
+                        child: CustomPaint(
+                          painter: _SignaturePainter(points: _signaturePoints),
+                          size: drawSize,
+                          child: _signaturePoints.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    'Sign here',
+                                    style: TextStyle(
+                                      color: Colors.grey.shade500,
+                                      fontSize: 16,
+                                    ),
                                   ),
-                                ),
-                              );
-                            },
-                          ),
+                                )
+                              : null,
                         ),
-                        if (localError != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            localError!,
-                            style: TextStyle(
-                              color: Colors.red.shade700,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: submitting
-                                    ? null
-                                    : () {
-                                        setLocalState(() {
-                                          points.clear();
-                                          localError = null;
-                                        });
-                                      },
-                                style: OutlinedButton.styleFrom(
-                                  minimumSize: Size(0, isMobile ? 48 : 52),
-                                  side: const BorderSide(
-                                    color: Color(0xFF6A5ACD),
-                                  ),
-                                  foregroundColor: const Color(0xFF6A5ACD),
-                                  textStyle: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                child: const Text('Clear'),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton(
-                                onPressed: submitting
-                                    ? null
-                                    : () async {
-                                        if (!points.any((p) => p != null)) {
-                                          setLocalState(() {
-                                            localError =
-                                                'Please draw your signature first.';
-                                          });
-                                          return;
-                                        }
-                                        setLocalState(() {
-                                          submitting = true;
-                                          localError = null;
-                                        });
-                                        final file = await buildSignatureFile();
-                                        if (!dialogCtx.mounted) return;
-                                        if (file == null) {
-                                          setLocalState(() {
-                                            submitting = false;
-                                            localError =
-                                                'Unable to capture signature. Please try again.';
-                                          });
-                                          return;
-                                        }
-                                        Navigator.of(dialogCtx).pop(file);
-                                      },
-                                style: ElevatedButton.styleFrom(
-                                  minimumSize: Size(0, isMobile ? 48 : 52),
-                                  backgroundColor: const Color(0xFF6A5ACD),
-                                  foregroundColor: Colors.white,
-                                  textStyle: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                child: submitting
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                    : const Text('Confirm'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
                 ),
               ),
-            );
-          },
-        );
-      },
+            ),
+            if (_signaturePadError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _signaturePadError!,
+                style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                TextButton(
+                  onPressed: widget.disable || _signatureSubmitting
+                      ? null
+                      : () {
+                          setState(() {
+                            _showInlineSignaturePad = false;
+                            _signaturePoints.clear();
+                            _signaturePadError = null;
+                          });
+                        },
+                  child: const Text('Cancel'),
+                ),
+                const Spacer(),
+                OutlinedButton(
+                  onPressed: widget.disable || _signatureSubmitting
+                      ? null
+                      : () {
+                          setState(() {
+                            _signaturePoints.clear();
+                            _signaturePadError = null;
+                          });
+                        },
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: KycTheme.primary),
+                    foregroundColor: KycTheme.primary,
+                  ),
+                  child: const Text('Clear'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: widget.disable || _signatureSubmitting
+                      ? null
+                      : () async {
+                          if (!_signaturePoints.any((p) => p != null)) {
+                            setState(() {
+                              _signaturePadError =
+                                  'Please draw your signature first.';
+                            });
+                            return;
+                          }
+                          setState(() {
+                            _signatureSubmitting = true;
+                            _signaturePadError = null;
+                          });
+                          final file = await _buildSignatureFileFromPoints(
+                            _signatureDrawSize,
+                          );
+                          if (!mounted) return;
+                          if (file == null) {
+                            setState(() {
+                              _signatureSubmitting = false;
+                              _signaturePadError =
+                                  'Unable to capture signature. Please try again.';
+                            });
+                            return;
+                          }
+                          setState(() {
+                            _showInlineSignaturePad = false;
+                            _signatureSubmitting = false;
+                            _signaturePoints.clear();
+                          });
+                          await _handleFileSelection(file);
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: KycTheme.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: _signatureSubmitting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Confirm'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1426,65 +1411,84 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
           ),
-        InkWell(
-          onTap: widget.disable ? null : () async {
-              final result = await FilePicker.platform.pickFiles(type: FileType.any);
-              if (result != null && result.files.single.path != null) {
-                await _handleFileSelection(File(result.files.single.path!));
-              }
-            },
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _fileError != null ? Colors.red : Colors.grey.shade400,
-                width: 2,
-                strokeAlign: BorderSide.strokeAlignInside,
+        if (_isSignatureField && _showInlineSignaturePad)
+          _buildInlineSignaturePad()
+        else
+          InkWell(
+            onTap: widget.disable
+                ? null
+                : () async {
+                    final result = await FilePicker.platform.pickFiles(
+                      type: FileType.any,
+                    );
+                    if (result != null && result.files.single.path != null) {
+                      await _handleFileSelection(
+                        File(result.files.single.path!),
+                      );
+                    }
+                  },
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: _fileError != null ? Colors.red : Colors.grey.shade400,
+                  width: 2,
+                  strokeAlign: BorderSide.strokeAlignInside,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.grey.shade50,
               ),
-              borderRadius: BorderRadius.circular(12),
-              color: Colors.grey.shade50,
+              child: hasFile
+                  ? Column(
+                      children: [
+                        Icon(Icons.insert_drive_file,
+                            size: 48, color: Colors.blue.shade600),
+                        const SizedBox(height: 8),
+                        Text(
+                          (widget.value as File).path.split('/').last,
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            setState(() => _showInlineSignaturePad = false);
+                            widget.onChange(widget.name, null);
+                          },
+                          child: const Text('Remove'),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        Icon(Icons.cloud_upload,
+                            size: 48, color: Colors.grey.shade600),
+                        const SizedBox(height: 8),
+                        const Text('Tap to browse or drop file'),
+                      ],
+                    ),
             ),
-            child: hasFile
-                ? Column(
-                    children: [
-                      Icon(Icons.insert_drive_file, size: 48, color: Colors.blue.shade600),
-                      const SizedBox(height: 8),
-                      Text(
-                        (widget.value as File).path.split('/').last,
-                        style: const TextStyle(fontWeight: FontWeight.w500),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      TextButton(
-                        onPressed: () => widget.onChange(widget.name, null),
-                        child: const Text('Remove'),
-                      ),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Icon(Icons.cloud_upload, size: 48, color: Colors.grey.shade600),
-                      const SizedBox(height: 8),
-                      const Text('Tap to browse or drop file'),
-                    ],
-                  ),
           ),
-        ),
         if (_fileError != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Text(_fileError!, style: TextStyle(color: Colors.red.shade700, fontSize: 12)),
           ),
-        if (_isSignatureField) ...[
+        if (_isSignatureField && !_showInlineSignaturePad) ...[
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
               onPressed: widget.disable
                   ? null
-                  : () async {
-                      final generatedFile = await _showDigitalSignatureDialog();
-                      if (generatedFile == null) return;
-                      await _handleFileSelection(generatedFile);
+                  : () {
+                      if (hasFile) {
+                        widget.onChange(widget.name, null);
+                      }
+                      setState(() {
+                        _showInlineSignaturePad = true;
+                        _signaturePoints.clear();
+                        _signaturePadError = null;
+                      });
                     },
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 12),
