@@ -37,7 +37,6 @@ import 'package:meon_kyc/services/connectivity_controller.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -4950,50 +4949,14 @@ class _HomePageState extends State<HomePage> {
     _showBpWealthTariffPdfModal();
   }
 
-  Future<File> _prepareBpWealthTariffPdfFromAsset() async {
-    final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/bpwealth_tariff_plan.pdf');
-    try {
-      if (await file.exists()) {
-        final len = await file.length();
-        if (len > 0) return file;
-      }
-    } catch (_) {}
-    final bytes = await rootBundle.load(_kBpWealthTariffPdfAsset);
-    await file.writeAsBytes(
-      bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
-      flush: true,
-    );
-    return file;
-  }
-
-  Future<void> _openBpWealthTariffPdfExternally() async {
-    try {
-      final file = await _prepareBpWealthTariffPdfFromAsset();
-      final uri = Uri.file(file.path);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        return;
-      }
-    } catch (e) {
-      debugPrint('[HomePage] Tariff PDF external open failed: $e');
-    }
-  }
-
   void _showBpWealthTariffPdfModal() {
     if (_bpWealthTariffPdfModalOpen) return;
     _bpWealthTariffPdfModalOpen = true;
-    final mq = MediaQuery.of(context);
-    final h = mq.size.height * 0.85;
-    final w = mq.size.width - 24;
     showDialog<void>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BpWealthTariffPdfDialog(
         assetPath: _kBpWealthTariffPdfAsset,
-        width: w,
-        height: h,
-        onOpenExternal: _openBpWealthTariffPdfExternally,
       ),
     ).whenComplete(() {
       _bpWealthTariffPdfModalOpen = false;
@@ -6552,15 +6515,9 @@ class _HomePageState extends State<HomePage> {
 /// BP Wealth personal details — tariff PDF inside modal (native pdfx viewer).
 class _BpWealthTariffPdfDialog extends StatefulWidget {
   final String assetPath;
-  final double width;
-  final double height;
-  final Future<void> Function() onOpenExternal;
 
   const _BpWealthTariffPdfDialog({
     required this.assetPath,
-    required this.width,
-    required this.height,
-    required this.onOpenExternal,
   });
 
   @override
@@ -6569,6 +6526,10 @@ class _BpWealthTariffPdfDialog extends StatefulWidget {
 }
 
 class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
+  static const double _dialogRadius = 12;
+  static const EdgeInsets _dialogInsetPadding =
+      EdgeInsets.symmetric(horizontal: 16, vertical: 20);
+
   late final PdfControllerPinch _pdfController;
   bool _loading = true;
   String? _error;
@@ -6589,117 +6550,131 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final inset = _dialogInsetPadding;
+    final maxWidth = mq.size.width - inset.horizontal;
+    final maxHeight = mq.size.height -
+        mq.viewPadding.vertical -
+        inset.vertical;
+    final dialogWidth = maxWidth.clamp(280.0, mq.size.width);
+    final dialogHeight = (maxHeight * 0.88).clamp(320.0, maxHeight);
+
     return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
-      child: SizedBox(
-        width: widget.width,
-        height: widget.height,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ColoredBox(
-              color: KycTheme.primary,
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
-                      child: Text(
-                        'DP Standing Instructions & Tariff',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  PdfViewPinch(
-                    controller: _pdfController,
-                    padding: 8,
-                    onDocumentLoaded: (_) {
-                      if (!mounted) return;
-                      setState(() => _loading = false);
-                    },
-                    onDocumentError: (error) {
-                      debugPrint('[HomePage] Tariff PDF load failed: $error');
-                      if (!mounted) return;
-                      setState(() {
-                        _loading = false;
-                        _error = error.toString();
-                      });
-                    },
-                  ),
-                  if (_loading)
-                    ColoredBox(
-                      color: Colors.white,
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const SizedBox(
-                              width: 36,
-                              height: 36,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 3,
-                                color: KycTheme.primary,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Loading document…',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.grey.shade600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  if (_error != null)
-                    ColoredBox(
-                      color: Colors.white,
-                      child: Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Text(
-                            'Unable to load PDF.\nPlease use "Open PDF in browser".',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey.shade700,
-                            ),
+      insetPadding: inset,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(_dialogRadius),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(_dialogRadius),
+        child: SizedBox(
+          width: dialogWidth,
+          height: dialogHeight,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ColoredBox(
+                color: KycTheme.primary,
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
+                        child: Text(
+                          'DP Standing Instructions & Tariff',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16,
                           ),
                         ),
                       ),
                     ),
-                ],
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: TextButton.icon(
-                onPressed: () async {
-                  await widget.onOpenExternal();
-                },
-                icon: const Icon(Icons.open_in_browser, size: 20),
-                label: const Text('Open PDF in browser'),
+              Expanded(
+                child: ClipRect(
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      clipBehavior: Clip.hardEdge,
+                      children: [
+                        PdfViewPinch(
+                          controller: _pdfController,
+                          padding: 0,
+                          onDocumentLoaded: (_) {
+                            if (!mounted) return;
+                            setState(() => _loading = false);
+                          },
+                          onDocumentError: (error) {
+                            debugPrint(
+                              '[HomePage] Tariff PDF load failed: $error',
+                            );
+                            if (!mounted) return;
+                            setState(() {
+                              _loading = false;
+                              _error = error.toString();
+                            });
+                          },
+                        ),
+                        if (_loading)
+                          ColoredBox(
+                            color: Colors.white,
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(
+                                    width: 36,
+                                    height: 36,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 3,
+                                      color: KycTheme.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'Loading document…',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (_error != null)
+                          ColoredBox(
+                            color: Colors.white,
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Text(
+                                  'Unable to load PDF.\nPlease try again later.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
