@@ -132,6 +132,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (value.length > 10) value = value.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         value = value.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isTradingExperienceField) {
+        value = _normalizeTradingExperienceInput(value);
       } else if (_usesDdMmYyyyManualEntry) {
         value = _formatDdMmYyyyDisplayIfNeeded(value);
       }
@@ -141,6 +143,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         value = _formatDdMmYyyyDisplayIfNeeded(value);
         _dateController = TextEditingController(text: value);
       } else {
+        if (_isTradingExperienceField) {
+          value = _normalizeTradingExperienceInput(value);
+        }
         _numberController = TextEditingController(text: value);
       }
     } else if (widget.type == 'textarea') {
@@ -178,6 +183,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (textValue.length > 10) textValue = textValue.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         textValue = newValue.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isTradingExperienceField) {
+        textValue = _normalizeTradingExperienceInput(newValue);
       } else if (_usesDdMmYyyyManualEntry) {
         textValue = _formatDdMmYyyyDisplayIfNeeded(newValue);
       }
@@ -189,6 +196,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       if (_isMobileField) {
         final digits = newValue.replaceAll(RegExp(r'\D'), '');
         textValue = digits.length > 10 ? digits.substring(0, 10) : digits;
+      } else if (_isTradingExperienceField) {
+        textValue = _normalizeTradingExperienceInput(newValue);
       }
       if (_numberController!.text != textValue) {
         _setControllerTextAfterBuild(_numberController!, textValue);
@@ -394,6 +403,18 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     if (v == 'pan') return true;
     final n = widget.name.toLowerCase();
     return n == 'pan_number' || n == 'temp_pan_no' || n == 'pan_no';
+  }
+
+  bool get _isTradingExperienceField {
+    final n = widget.name.toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
+    final dn = widget.displayName.toLowerCase();
+    return n.contains('tradingexperience') ||
+        (dn.contains('trading') && dn.contains('experience'));
+  }
+
+  String _normalizeTradingExperienceInput(String raw) {
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    return digits.length > 2 ? digits.substring(0, 2) : digits;
   }
 
   bool get _isNoSpecialCharacterField {
@@ -644,6 +665,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         if (raw.length > 10) raw = raw.substring(0, 10);
       } else if (_isNoSpecialCharacterField) {
         raw = raw.replaceAll(RegExp(r"[^a-zA-Z\s'\-]"), '');
+      } else if (_isTradingExperienceField) {
+        raw = _normalizeTradingExperienceInput(raw);
       } else if (_usesDdMmYyyyManualEntry) {
         raw = _formatDdMmYyyyDisplayIfNeeded(raw);
       }
@@ -663,10 +686,16 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           showCursor: !widget.disable,
           scrollPhysics: const NeverScrollableScrollPhysics(),
           style: _kFieldTextStyle,
-          keyboardType: _isMobileField ? TextInputType.number : TextInputType.text,
+          keyboardType: _isMobileField || _isTradingExperienceField
+              ? TextInputType.number
+              : TextInputType.text,
           textCapitalization:
               _isPanField ? TextCapitalization.characters : TextCapitalization.none,
-          maxLength: _isMobileField ? 10 : (_isPanField ? 10 : null),
+          maxLength: _isMobileField
+              ? 10
+              : (_isPanField
+                  ? 10
+                  : (_isTradingExperienceField ? 2 : null)),
           inputFormatters: _isMobileField
               ? [
                   FilteringTextInputFormatter.digitsOnly,
@@ -677,6 +706,11 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                       FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
                       LengthLimitingTextInputFormatter(10),
                     ]
+                  : _isTradingExperienceField
+                      ? [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(2),
+                        ]
                   : _isNoSpecialCharacterField
                       ? [
                           FilteringTextInputFormatter.allow(
@@ -701,10 +735,12 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                     ),
                   )
                 : null,
-            counterText:
-                (_isMobileField || _isPanField || _isNoSpecialCharacterField)
-                    ? ''
-                    : null,
+            counterText: (_isMobileField ||
+                    _isPanField ||
+                    _isNoSpecialCharacterField ||
+                    _isTradingExperienceField)
+                ? ''
+                : null,
           ),
         ),
       ],
@@ -725,6 +761,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
       if (_isMobileField) {
         final digits = raw.replaceAll(RegExp(r'\D'), '');
         raw = digits.length > 10 ? digits.substring(0, 10) : digits;
+      } else if (_isTradingExperienceField) {
+        raw = _normalizeTradingExperienceInput(raw);
       }
       _numberController = TextEditingController(text: raw);
     }
@@ -738,19 +776,26 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           readOnly: widget.disable,
           showCursor: !widget.disable,
           style: _kFieldTextStyle,
-          keyboardType: _isMobileField ? TextInputType.number : TextInputType.number,
-          maxLength: _isMobileField ? 10 : null,
+          keyboardType: TextInputType.number,
+          maxLength: _isMobileField
+              ? 10
+              : (_isTradingExperienceField ? 2 : null),
           inputFormatters: _isMobileField
               ? [
                   FilteringTextInputFormatter.digitsOnly,
                   LengthLimitingTextInputFormatter(10),
                 ]
-              : null,
+              : _isTradingExperienceField
+                  ? [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(2),
+                    ]
+                  : null,
           onChanged: (v) => widget.onChange(widget.name, v),
           decoration: _fieldInputDecoration(
             hintText: _isMobileField ? 'Enter Mobile number *' : '${widget.displayName}',
             prefixIcon: _getFieldIcon(),
-            counterText: _isMobileField ? '' : null,
+            counterText: (_isMobileField || _isTradingExperienceField) ? '' : null,
           ),
         ),
       ],
