@@ -6530,22 +6530,156 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
   static const EdgeInsets _dialogInsetPadding =
       EdgeInsets.symmetric(horizontal: 16, vertical: 20);
 
-  late final PdfControllerPinch _pdfController;
+  PdfDocument? _document;
+  List<PdfPageImage> _pageImages = [];
   bool _loading = true;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _pdfController = PdfControllerPinch(
-      document: PdfDocument.openAsset(widget.assetPath),
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => _preloadAllPages());
+  }
+
+  Future<void> _preloadAllPages() async {
+    try {
+      final doc = await PdfDocument.openAsset(widget.assetPath);
+      if (!mounted) {
+        await doc.close();
+        return;
+      }
+
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      final scale = (dpr * 2).clamp(2.0, 3.0);
+      final pageCount = doc.pagesCount;
+      final loaded = <PdfPageImage>[];
+
+      // Android pdfx must render pages one-by-one on the same document.
+      for (var pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+        final image = await _renderPage(doc, pageNumber, scale);
+        if (image != null) loaded.add(image);
+      }
+
+      if (!mounted) {
+        await doc.close();
+        return;
+      }
+
+      if (loaded.isEmpty) {
+        await doc.close();
+        throw Exception('No PDF pages could be rendered');
+      }
+
+      setState(() {
+        _document = doc;
+        _pageImages = loaded;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('[HomePage] Tariff PDF preload failed: $e');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<PdfPageImage?> _renderPage(
+    PdfDocument doc,
+    int pageNumber,
+    double scale,
+  ) async {
+    final page = await doc.getPage(pageNumber);
+    try {
+      return await page.render(
+        width: page.width * scale,
+        height: page.height * scale,
+        format: PdfPageImageFormat.png,
+        backgroundColor: '#ffffff',
+      );
+    } finally {
+      await page.close();
+    }
   }
 
   @override
   void dispose() {
-    _pdfController.dispose();
+    _document?.close();
     super.dispose();
+  }
+
+  Widget _buildLoadingIndicator() {
+    return SizedBox.expand(
+      child: ColoredBox(
+        color: Colors.white,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 36,
+                height: 36,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: KycTheme.primary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Loading document…',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPdfContent() {
+    if (_error != null) {
+      return ColoredBox(
+        color: Colors.white,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'Unable to load PDF.\nPlease try again later.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey.shade700,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      physics: const ClampingScrollPhysics(),
+      itemCount: _pageImages.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final image = _pageImages[index];
+        return ColoredBox(
+          color: Colors.white,
+          child: Image.memory(
+            image.bytes,
+            width: double.infinity,
+            fit: BoxFit.fitWidth,
+            filterQuality: FilterQuality.high,
+            gaplessPlayback: true,
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -6603,71 +6737,9 @@ class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
                     color: Colors.white,
                     child: Stack(
                       fit: StackFit.expand,
-                      clipBehavior: Clip.hardEdge,
                       children: [
-                        PdfViewPinch(
-                          controller: _pdfController,
-                          padding: 0,
-                          onDocumentLoaded: (_) {
-                            if (!mounted) return;
-                            setState(() => _loading = false);
-                          },
-                          onDocumentError: (error) {
-                            debugPrint(
-                              '[HomePage] Tariff PDF load failed: $error',
-                            );
-                            if (!mounted) return;
-                            setState(() {
-                              _loading = false;
-                              _error = error.toString();
-                            });
-                          },
-                        ),
-                        if (_loading)
-                          ColoredBox(
-                            color: Colors.white,
-                            child: Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const SizedBox(
-                                    width: 36,
-                                    height: 36,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 3,
-                                      color: KycTheme.primary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'Loading document…',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w500,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (_error != null)
-                          ColoredBox(
-                            color: Colors.white,
-                            child: Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(24),
-                                child: Text(
-                                  'Unable to load PDF.\nPlease try again later.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.grey.shade700,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
+                        if (!_loading) _buildPdfContent(),
+                        if (_loading) _buildLoadingIndicator(),
                       ],
                     ),
                   ),
