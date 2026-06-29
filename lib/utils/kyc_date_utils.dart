@@ -109,12 +109,37 @@ bool isPanVerifyKycPostStep(String? position, String pathSegment) {
   return p == 'pan' || path.startsWith('pan');
 }
 
+/// PAN capture step (`detailspan`) before verify/KRA.
+bool isDetailspanKycStep(String? position, String? pageLabel) {
+  final p = (position ?? '').toLowerCase();
+  final l = (pageLabel ?? '').toLowerCase();
+  return p == 'detailspan' ||
+      l == 'detailspan' ||
+      p.startsWith('detailspan') ||
+      l.startsWith('detailspan');
+}
+
+const String kDetailspanPanDuplicateUserMessage =
+    'This PAN is already registered. Please use a different PAN';
+
+bool isPanNumberAlreadyExistsApiMessage(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return false;
+  final lower = raw.toLowerCase().trim();
+  return lower.contains('pan number already exist') ||
+      lower.contains('pan already exist');
+}
+
+String? detailspanPanDuplicateFriendlyMessage(String? apiMsg) {
+  if (!isPanNumberAlreadyExistsApiMessage(apiMsg)) return null;
+  return kDetailspanPanDuplicateUserMessage;
+}
+
 /// HTTP 200 + `success: false` when PAN was already saved on this journey.
 bool isPanNumberAlreadyExistsResponse(Map<String, dynamic>? body) {
   if (body == null) return false;
-  final msg = (body['msg'] ?? body['message'] ?? '').toString().toLowerCase();
-  return msg.contains('pan number already exists') ||
-      msg.contains('pan already exists');
+  return isPanNumberAlreadyExistsApiMessage(
+    (body['msg'] ?? body['message'])?.toString(),
+  );
 }
 
 /// Same PAN already on file for this user (user-details) — safe to advance like web.

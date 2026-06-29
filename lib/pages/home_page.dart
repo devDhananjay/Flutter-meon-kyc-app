@@ -2650,8 +2650,25 @@ class _HomePageState extends State<HomePage> {
           await _checkAndHandleRedirect(store);
         }
       } else {
-        final errMsg = _errorMessageFromResponse(res.statusCode, res.body);
-        Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
+        final ctx = (store.fieldsWithAuth as Map?)?['context'] as Map?;
+        final position =
+            ctx?['position']?.toString().toLowerCase() ?? '';
+        final pageLabel =
+            ctx?['page']?['data']?['label']?.toString().toLowerCase() ?? '';
+        final pathSegment = _getKycPostPathSegment(ctx).toLowerCase();
+        final errMsg = _resolveSubmitErrorMessage(
+          position: position,
+          pageLabel: pageLabel,
+          pathSegment: pathSegment,
+          statusCode: res.statusCode,
+          bodyStr: res.body,
+          body: body,
+        );
+        if (_isPanKycStep(position, pageLabel)) {
+          _showPanStepKycPostFeedback(errMsg, isError: true);
+        } else {
+          Fluttertoast.showToast(msg: errMsg, gravity: ToastGravity.TOP);
+        }
         if (mounted) {
           _clearSubmitFreeze();
           setState(() => _submitLoading = false);
@@ -2678,6 +2695,24 @@ class _HomePageState extends State<HomePage> {
       if (v is String && v.trim().isNotEmpty) return v.trim();
     }
     return null;
+  }
+
+  String _resolveSubmitErrorMessage({
+    required String position,
+    required String pageLabel,
+    required String pathSegment,
+    required int statusCode,
+    required String bodyStr,
+    Map<String, dynamic>? body,
+  }) {
+    final errMsg = _kycPostV2UserMessage(body) ??
+        _errorMessageFromResponse(statusCode, bodyStr);
+    if (isDetailspanKycStep(position, pageLabel) ||
+        pathSegment.toLowerCase().startsWith('detailspan')) {
+      return detailspanPanDuplicateFriendlyMessage(_kycPostV2UserMessage(body)) ??
+          errMsg;
+    }
+    return errMsg;
   }
 
   /// PAN already saved on this session — refresh workflow and continue (web parity).
@@ -3493,8 +3528,14 @@ class _HomePageState extends State<HomePage> {
           data,
         );
       } else {
-        final errMsg = _kycPostV2UserMessage(body) ??
-            _errorMessageFromResponse(res.statusCode, res.body);
+        final errMsg = _resolveSubmitErrorMessage(
+          position: currentPosition,
+          pageLabel: currentPageLabel,
+          pathSegment: lowerPath,
+          statusCode: res.statusCode,
+          bodyStr: res.body,
+          body: body,
+        );
         if (isPanStep) {
           _showPanStepKycPostFeedback(errMsg, isError: true);
         } else {
