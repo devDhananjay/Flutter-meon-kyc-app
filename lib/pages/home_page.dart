@@ -284,38 +284,12 @@ class _HomePageState extends State<HomePage> {
 
   Future<String?> _fetchKycLeadIdBeforeSso({
     required String mobileNumber,
-    required String email,
   }) async {
     try {
       return await LeadSquaredAPI.captureLead(
         mobileNumber: mobileNumber,
-        email: email,
         firstName: _leadQueryParam(['firstname', 'first_name', 'FirstName']),
         ageGroup: _leadQueryParam(['age_group', 'mx_Lead_Age_Group']),
-        utmSource: _leadQueryParam([
-          'mx_utmsource',
-          'utm_source',
-          'utmsource',
-          'mx_UTMSource',
-        ]),
-        sourceMedium: _leadQueryParam([
-          'source_medium',
-          'utm_medium',
-          'SourceMedium',
-        ]),
-        sourceCampaign: _leadQueryParam([
-          'source_campaign',
-          'utm_campaign',
-          'SourceCampaign',
-        ]),
-        adGroup: _leadQueryParam(['mx_adgroup', 'mx_Ad_Group', 'adgroup']),
-        commSource: _leadQueryParam(['mx_comsource', 'mx_CommSource']),
-        sourceContent: _leadQueryParam([
-          'sourcecontent',
-          'source_content',
-          'utm_content',
-          'SourceContent',
-        ]),
       );
     } catch (e, st) {
       debugPrint('[HomePage] LeadSquared before SSO failed: $e\n$st');
@@ -391,7 +365,6 @@ class _HomePageState extends State<HomePage> {
 
       final kycLeadId = await _fetchKycLeadIdBeforeSso(
         mobileNumber: mobileNumber,
-        email: email,
       );
       if (kycLeadId != null && kycLeadId.isNotEmpty) {
         debugPrint('[HomePage] LeadSquared kyc_lead for SSO: $kycLeadId');
