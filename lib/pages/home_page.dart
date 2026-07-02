@@ -351,15 +351,13 @@ class _HomePageState extends State<HomePage> {
       _ssoInProgress = true;
     }
     try {
-      if (!context.mounted) return false;
-      final creds = await resolveSsoCredentialsForSsoApi(context);
-      if (!context.mounted) return false;
-      if (creds == null) {
-        debugPrint('[HomePage] SSO skipped — no credentials (dialog dismissed?)');
-        return false;
-      }
+      final creds = resolveSsoCredentials();
       final mobileNumber = creds.mobileNumber;
       final email = creds.email;
+
+      debugPrint(
+        '[HomePage] SSO credentials mobile=$mobileNumber email=$email',
+      );
 
       debugPrint('[HomePage] No access token - attempting SSO login...');
 
