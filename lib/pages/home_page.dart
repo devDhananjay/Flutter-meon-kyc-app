@@ -2781,6 +2781,110 @@ class _HomePageState extends State<HomePage> {
         position == 'bank_details';
   }
 
+  static bool _isSignUploadKycPostStep(String position, String lowerPath) {
+    return lowerPath.startsWith('sign_upload') || position == 'sign_upload';
+  }
+
+  static bool _isPanUploadKycPostStep(String position, String lowerPath) {
+    return lowerPath.startsWith('pan_upload') || position == 'pan_upload';
+  }
+
+  static const Set<String> _forcedBlankRejectionFields = {
+    'reject_reason_pan_upload',
+    'rejected_by_pan_upload',
+    'reject_reason_signature_upload',
+    'rejected_by_signature_upload',
+  };
+
+  static bool _isSaveFilesApiDocumentUploadStep(String position, String lowerPath) {
+    return _isSignUploadKycPostStep(position, lowerPath) ||
+        _isPanUploadKycPostStep(position, lowerPath);
+  }
+
+  static const String _signUploadBoidValue = 'CDSL';
+
+  static List<String> _signUploadPrepopulateSourceKeys(dynamic prepopulateValue) {
+    if (prepopulateValue == null) return const [];
+    if (prepopulateValue is String) {
+      final s = prepopulateValue.trim();
+      return s.isEmpty ? const [] : [s];
+    }
+    if (prepopulateValue is List) {
+      final keys = <String>[];
+      for (final item in prepopulateValue) {
+        if (item is Map) {
+          final v = item['value']?.toString().trim() ??
+              item['label']?.toString().trim();
+          if (v != null && v.isNotEmpty) keys.add(v);
+        } else if (item != null && item.toString().trim().isNotEmpty) {
+          keys.add(item.toString().trim());
+        }
+      }
+      return keys;
+    }
+    return const [];
+  }
+
+  String _resolveSignUploadFieldValue(
+    Map<dynamic, dynamic> field,
+    Map<String, dynamic> formData,
+  ) {
+    final name = field['name']?.toString() ?? '';
+    final formValue = formData[name];
+    if (formValue != null && formValue.toString().trim().isNotEmpty) {
+      return formValue.toString();
+    }
+
+    final fieldValue = field['value'];
+    if (fieldValue != null && fieldValue.toString().trim().isNotEmpty) {
+      return fieldValue.toString();
+    }
+
+    if (field['isPrepopulate'] == true) {
+      for (final source in _signUploadPrepopulateSourceKeys(
+        field['prepopulateValue'],
+      )) {
+        final v = formData[source];
+        if (v != null && v.toString().trim().isNotEmpty) {
+          return v.toString();
+        }
+      }
+    }
+
+    return '';
+  }
+
+  Map<String, dynamic> _buildSignUploadKycPostBody({
+    required List<dynamic> fieldList,
+    required Map<String, dynamic> formData,
+  }) {
+    final payload = <String, dynamic>{};
+
+    for (final raw in fieldList) {
+      if (raw is! Map) continue;
+      final field = Map<dynamic, dynamic>.from(raw);
+      final name = field['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+
+      final type = (field['type']?.toString() ?? '').toLowerCase();
+      if (type == 'file' || type == 'button' || type == 'hidden') continue;
+
+      if (name == 'boid') {
+        payload[name] = _signUploadBoidValue;
+        continue;
+      }
+
+      if (_forcedBlankRejectionFields.contains(name)) {
+        payload[name] = '';
+        continue;
+      }
+
+      payload[name] = _resolveSignUploadFieldValue(field, formData);
+    }
+
+    return payload;
+  }
+
   /// Bank step Proceed (penny drop confirm) — web parity payload.
   static Map<String, dynamic> _buildBankProceedConfirmPayload(
     Map<String, dynamic> formData,
@@ -3321,7 +3425,18 @@ class _HomePageState extends State<HomePage> {
         }
         debugPrint('[HomePage] Files uploaded successfully, continuing with form submission');
       }
-      
+
+      if (_isSaveFilesApiDocumentUploadStep(currentPosition, lowerPath)) {
+        final documentUploadBody = _buildSignUploadKycPostBody(
+          fieldList: fieldList,
+          formData: Map<String, dynamic>.from(_formNotifier.formData),
+        );
+        data
+          ..clear()
+          ..addAll(documentUploadBody);
+        debugPrint('[HomePage] document upload step payload: $data');
+      }
+
       final http.Response res;
       if (hasFile && !saveFilesAPI) {
         // Use multipart/form-data for file uploads (existing flow when saveFilesAPI=false)

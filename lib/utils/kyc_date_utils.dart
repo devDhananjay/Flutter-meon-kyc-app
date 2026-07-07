@@ -106,6 +106,8 @@ bool isPanVerifyKycPostStep(String? position, String pathSegment) {
   final p = (position ?? '').toLowerCase();
   final path = pathSegment.toLowerCase();
   if (p == 'detailspan' || path.startsWith('detailspan')) return false;
+  // Document upload step — must not run PAN verify body logic (drops file from payload).
+  if (p == 'pan_upload' || path.startsWith('pan_upload')) return false;
   return p == 'pan' || path.startsWith('pan');
 }
 

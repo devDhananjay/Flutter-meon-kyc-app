@@ -1442,6 +1442,42 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
     );
   }
 
+  bool _isImageFile(File file) {
+    final ext = file.path.split('.').last.toLowerCase();
+    return ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif' || ext == 'webp';
+  }
+
+  Widget _buildSelectedFilePreview(File file) {
+    if (_isImageFile(file)) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.file(
+          file,
+          height: 180,
+          width: double.infinity,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Icon(
+            Icons.broken_image_outlined,
+            size: 48,
+            color: Colors.grey.shade600,
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Icon(Icons.insert_drive_file, size: 48, color: Colors.blue.shade600),
+        const SizedBox(height: 8),
+        Text(
+          file.path.split('/').last,
+          style: const TextStyle(fontWeight: FontWeight.w500),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+
   Widget _buildFile() {
     final hasFile = widget.value != null && widget.value is File;
     return Column(
@@ -1486,14 +1522,8 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
               child: hasFile
                   ? Column(
                       children: [
-                        Icon(Icons.insert_drive_file,
-                            size: 48, color: Colors.blue.shade600),
+                        _buildSelectedFilePreview(widget.value as File),
                         const SizedBox(height: 8),
-                        Text(
-                          (widget.value as File).path.split('/').last,
-                          style: const TextStyle(fontWeight: FontWeight.w500),
-                          overflow: TextOverflow.ellipsis,
-                        ),
                         TextButton(
                           onPressed: () {
                             setState(() => _showInlineSignaturePad = false);
