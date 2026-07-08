@@ -1987,6 +1987,20 @@ void syncNomineePercentageSideEffects({
   if (!_addNomineeSelectedYes(formData)) {
     runtimeFieldVisibility.remove(kExtraNomineeField);
     fieldEditable.remove(kExtraNomineeField);
+    // UI hides the nominee block on "No" — keep runtime visibility in sync so
+    // required/mandatory validation does not run on those hidden fields.
+    if (fields != null) {
+      for (final f in fields) {
+        if (f is! Map) continue;
+        final name = f['name']?.toString();
+        if (name == null || name.isEmpty) continue;
+        if (isNomineeAddNomineeDropdownField(name) ||
+            isNomineeOptOutConsentField(name)) {
+          continue;
+        }
+        runtimeFieldVisibility[name] = false;
+      }
+    }
     return;
   }
 
@@ -2479,10 +2493,20 @@ Map<String, String> validateFormWithConditions(
     pageLabel: pageLabel,
   );
 
+  final nomineeOptedOut = isNomineeKycStep(position, pageLabel) &&
+      !_addNomineeSelectedYes(formData);
+
   for (final f in visibleFields) {
     if (f is! Map) continue;
     final name = f['name']?.toString();
     if (name == null) continue;
+    // Nominee = No: only the opt-out consent (and add_nominee toggle) may validate.
+    // Skip required checks on all nominee form content fields the user is not filling.
+    if (nomineeOptedOut &&
+        !isNomineeAddNomineeDropdownField(name) &&
+        !isNomineeOptOutConsentField(name)) {
+      continue;
+    }
     final fieldErrors = validateFieldWithConditions(
       Map<String, dynamic>.from(f as Map),
       formData[name],
