@@ -98,6 +98,7 @@ class _HomePageState extends State<HomePage> {
   // don't retry on rebuild.
   bool _ssoAttempted = false;
   bool _ssoInProgress = false;
+  bool _navigatingToKycCompleted = false;
 
   /// Kept when rehydrating after get-context (see `_handleSubmitResponse`): `mobile_otp`
   /// resend + header text still know the number (get-context fields often omit it).
@@ -124,6 +125,44 @@ class _HomePageState extends State<HomePage> {
   int _lastReconnectToken = 0;
   /// Prevents post-frame form sync from re-running on every rebuild (same step).
   String? _activeFieldsSyncKey;
+
+  bool _responseIndicatesKycCompleted(dynamic response) {
+    return response is Map && response['is_admin'] == true;
+  }
+
+  Future<void> _navigateToKycCompletedIfNeeded(AppStore store) async {
+    if (!mounted || !_responseIndicatesKycCompleted(store.fieldsWithAuth)) {
+      return;
+    }
+    if (_navigatingToKycCompleted) return;
+
+    _navigatingToKycCompleted = true;
+    if (mounted) setState(() {});
+
+    debugPrint('[HomePage] Navigating to KYC completed page (is_admin=true)');
+    try {
+      await store.fetchUserDetails();
+      if (!mounted) return;
+      if (store.userDetails != null) {
+        context.go('/${widget.company}/${widget.workflowName}/completed');
+        return;
+      }
+      debugPrint(
+        '[HomePage] KYC completed but user details missing: ${store.errorUserDetails}',
+      );
+      if (mounted) {
+        Fluttertoast.showToast(
+          msg: 'Error loading completion details',
+          gravity: ToastGravity.TOP,
+        );
+      }
+    } finally {
+      if (mounted && store.userDetails == null) {
+        _navigatingToKycCompleted = false;
+        setState(() {});
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -160,6 +199,10 @@ class _HomePageState extends State<HomePage> {
     }
     final ok = await _fetchContextAndRecoverIfNeeded(store, queryString);
     if (!mounted || !ok) return;
+    if (_responseIndicatesKycCompleted(store.fieldsWithAuth)) {
+      await _navigateToKycCompletedIfNeeded(store);
+      return;
+    }
     final response = store.fieldsWithAuth;
     if (response is Map) {
       final ctx = response['context'] as Map<String, dynamic>?;
@@ -492,19 +535,10 @@ class _HomePageState extends State<HomePage> {
         }
         
         // Check if KYC is completed (is_admin: true)
-        if (response is Map && response['is_admin'] == true) {
-          debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
-          await store.fetchUserDetails();
-          if (mounted && store.userDetails != null) {
-            // Stepper workflow already fetched above (if workflowId was available)
-            // Navigate to KYC Completed page
-            navigatingAway = true;
-            context.go('/${widget.company}/${widget.workflowName}/completed');
-            return;
-          } else if (mounted && store.errorUserDetails != null) {
-            debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
-            Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
-          }
+        if (_responseIndicatesKycCompleted(response)) {
+          navigatingAway = true;
+          await _navigateToKycCompletedIfNeeded(store);
+          return;
         }
         
         // Check for redirect after get-context
@@ -596,23 +630,10 @@ class _HomePageState extends State<HomePage> {
           }
 
           // Check if KYC is completed (is_admin: true)
-          if (refreshed is Map && refreshed['is_admin'] == true) {
-            debugPrint('[HomePage] KYC completed (is_admin: true) - fetching user details');
-            await store.fetchUserDetails();
-            if (mounted && store.userDetails != null) {
-              navigatingAway = true;
-              context.go('/${widget.company}/${widget.workflowName}/completed');
-              return;
-            } else if (mounted && store.errorUserDetails != null) {
-              debugPrint('[HomePage] Error fetching user details: ${store.errorUserDetails}');
-              if (store.isReturningFromWebView) {
-                setState(() => _webViewReturnError =
-                    'Error loading completion details. Please try again.');
-              } else {
-                Fluttertoast.showToast(msg: 'Error loading completion details', gravity: ToastGravity.TOP);
-              }
-              return;
-            }
+          if (_responseIndicatesKycCompleted(refreshed)) {
+            navigatingAway = true;
+            await _navigateToKycCompletedIfNeeded(store);
+            return;
           }
 
           // After refreshing context, check for redirects (backend may redirect to next step)
@@ -1265,6 +1286,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   dynamic _getActiveFields(AppStore store) {
+    if (_responseIndicatesKycCompleted(store.fieldsWithAuth)) {
+      return null;
+    }
     final withAuth = store.fieldsWithAuth;
     if (withAuth != null && withAuth is Map && withAuth['context'] != null) {
       final page = withAuth['context']['page'];
@@ -1390,6 +1414,25 @@ class _HomePageState extends State<HomePage> {
     return _isBpWealthCompany &&
         ((position ?? '') == 'personal_details' ||
             (pageLabel ?? '') == 'personal_details');
+  }
+
+  bool _isOnboardingAuthStep(String? position, String? pageLabel) {
+    final p = (position ?? '').toLowerCase();
+    final l = (pageLabel ?? '').toLowerCase();
+    if (p == 'mobile' || l == 'mobile') return true;
+    if (p == 'mobile_otp' || p.startsWith('mobile_otp')) return true;
+    if (p == 'email_otp' || p.startsWith('email_otp')) return true;
+    return _isEmailCaptureStep(position, pageLabel);
+  }
+
+  bool _isEmailCaptureStep(String? position, String? pageLabel) {
+    final p = (position ?? '').toLowerCase();
+    final l = (pageLabel ?? '').toLowerCase();
+    if (p == 'email_otp' || p.startsWith('email_otp')) return false;
+    if (p == 'email' || l == 'email' || p == 'emailid' || p == 'email_id') {
+      return true;
+    }
+    return p.startsWith('email') && !p.startsWith('email_otp');
   }
 
   bool _isPersonalDetailsStep(String? position, String? pageLabel) {
@@ -2588,16 +2631,11 @@ class _HomePageState extends State<HomePage> {
         }
         if (mounted) {
           final authResponse = store.fieldsWithAuth;
-          if (authResponse is Map && authResponse['is_admin'] == true) {
-            debugPrint('[HomePage] Submit response indicates completion (is_admin=true) - navigating to completed');
-            await store.fetchUserDetails();
-            if (!mounted) return;
-            if (store.userDetails != null) {
-              _clearSubmitFreeze();
-              setState(() => _submitLoading = false);
-              context.go('/${widget.company}/${widget.workflowName}/completed');
-              return;
-            }
+          if (_responseIndicatesKycCompleted(authResponse)) {
+            _clearSubmitFreeze();
+            setState(() => _submitLoading = false);
+            await _navigateToKycCompletedIfNeeded(store);
+            return;
           }
         }
         if (mounted) {
@@ -3140,16 +3178,11 @@ class _HomePageState extends State<HomePage> {
     }
     if (mounted) {
       final authResponse = store.fieldsWithAuth;
-      if (authResponse is Map && authResponse['is_admin'] == true) {
-        debugPrint('[HomePage] Common submit indicates completion (is_admin=true) - navigating to completed');
-        await store.fetchUserDetails();
-        if (!mounted) return;
-        if (store.userDetails != null) {
-          _clearSubmitFreeze();
-          setState(() => _submitLoading = false);
-          context.go('/${widget.company}/${widget.workflowName}/completed');
-          return;
-        }
+      if (_responseIndicatesKycCompleted(authResponse)) {
+        _clearSubmitFreeze();
+        setState(() => _submitLoading = false);
+        await _navigateToKycCompletedIfNeeded(store);
+        return;
       }
     }
     if (mounted) {
@@ -3844,6 +3877,11 @@ class _HomePageState extends State<HomePage> {
           widget.workflowName,
           '',
         );
+        if (!mounted) return;
+        if (_responseIndicatesKycCompleted(store.fieldsWithAuth)) {
+          await _navigateToKycCompletedIfNeeded(store);
+          return;
+        }
         if (mounted) {
           final activeAfter = _getActiveFields(store);
           final listAfter = (activeAfter?['fields'] as List?) ?? [];
@@ -4165,9 +4203,7 @@ class _HomePageState extends State<HomePage> {
               });
 
               // --- Stepper UI (hidden temporarily) ---
-              // Still used for "Documents to keep Handy" on early steps; re-enable
-              // showStepper + stepperWidget when bringing the stepper back.
-              final stepperIndex = _getStepperIndex(store, isAuthenticated);
+              // Re-enable showStepper + stepperWidget when bringing the stepper back.
               // final stepperSteps = _getStepperSteps(store);
               // Stepper visible only from 2nd step (mobile_otp) onwards; hidden on first step (mobile number entry)
               // final ctxForStepper = (store.fieldsWithAuth as Map?)?['context'] as Map?;
@@ -4251,6 +4287,38 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ],
                     ),
+                  ),
+                );
+              }
+
+              if (_ssoInProgress) {
+                return const Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Loader(message: 'Signing you in...'),
+                  ),
+                );
+              }
+
+              if (_loadWorkflowActive) {
+                return const Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Loader(message: 'Setting up your KYC journey...'),
+                  ),
+                );
+              }
+
+              if (_responseIndicatesKycCompleted(store.fieldsWithAuth) ||
+                  _navigatingToKycCompleted) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  unawaited(_navigateToKycCompletedIfNeeded(store));
+                });
+                return const Scaffold(
+                  backgroundColor: KycTheme.background,
+                  body: SafeArea(
+                    child: Loader(message: 'Loading your KYC status...'),
                   ),
                 );
               }
@@ -4365,9 +4433,7 @@ class _HomePageState extends State<HomePage> {
                 );
               }
 
-              // Show \"Documents to keep Handy\" only on first 4 steps of the stepper
-              // (Enter Mobile, Mobile OTP, Email, Email OTP)
-              final showDocumentsSection = stepperIndex <= 3;
+              const showDocumentsSection = false;
 
               return Scaffold(
                 backgroundColor: KycTheme.background,
@@ -5726,6 +5792,10 @@ class _HomePageState extends State<HomePage> {
     // Generic submit button: sirf tab dikhao jab OTP field nahi hai
     // Agar OTP field hai (chahe kitni bhi aur fields ho), sirf OtpVerifySection ka "Verify OTP" button use hoga
     final showGenericSubmit = otpField == null;
+    final isOnboardingAuthStep = _isOnboardingAuthStep(position, pageLabel);
+    final hideOnboardingFooter =
+        kHideOnboardingFormFooter && isOnboardingAuthStep;
+    final showSecurityFooter = !hideOnboardingFooter;
     final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
     final isNomineeStep = isNomineeKycStep(position, pageLabel);
     final nomineeBlocksSubmit = _isNomineeSubmitDisabled(position, pageLabel);
@@ -6007,7 +6077,8 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
             ),
-            if (showGenericSubmit && submitButton?['showSubmitAnywayButton'] == true) ...[
+            if (showGenericSubmit &&
+                submitButton?['showSubmitAnywayButton'] == true) ...[
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -6052,18 +6123,20 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ],
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.lock, size: 16, color: KycTheme.textSecondary),
-                const SizedBox(width: 8),
-                Text(
-                  'Your information is securely encrypted',
-                  style: TextStyle(fontSize: 12, color: KycTheme.textSecondary),
-                ),
-              ],
-            ),
+            if (showSecurityFooter) ...[
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.lock, size: 16, color: KycTheme.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Your information is securely encrypted',
+                    style: TextStyle(fontSize: 12, color: KycTheme.textSecondary),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

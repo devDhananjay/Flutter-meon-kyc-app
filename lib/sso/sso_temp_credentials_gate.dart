@@ -16,3 +16,6 @@ const SsoCredentials kSsoStaticCredentials = SsoCredentials(
 );
 
 SsoCredentials resolveSsoCredentials() => kSsoStaticCredentials;
+
+/// Hide "securely encrypted" footer on host-app onboarding screens.
+const bool kHideOnboardingFormFooter = true;
