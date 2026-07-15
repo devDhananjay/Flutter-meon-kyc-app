@@ -286,11 +286,13 @@ const String _kDigilockerFreezeJs = r'''
 })();
 ''';
 
-/// iOS Account Aggregator (CAMS) + Proceed to eSign: keep focused Aadhaar/OTP/mobile
-/// inputs above the keyboard. Does NOT disable scrollIntoView (that breaks CAMS OTP).
+/// iOS Proceed to eSign: keep focused fields visible above keyboard + banner.
+/// (Account Aggregator no longer uses this JS — native WKWebView insets only.)
 const String _kAccountAggregatorKeyboardAssistJs = r'''
 (function() {
-  if (window.__meonAaKeyboardAssist) return;
+  // Bump flag so reinject replaces older scroll logic (eSign ENTER OTP clearance).
+  if (window.__meonAaKeyboardAssistV3) return;
+  window.__meonAaKeyboardAssistV3 = true;
   window.__meonAaKeyboardAssist = true;
 
   function isField(el) {
@@ -299,56 +301,126 @@ const String _kAccountAggregatorKeyboardAssistJs = r'''
     return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable === true;
   }
 
+  function isOtpLike(el) {
+    if (!isField(el)) return false;
+    var ml = el.getAttribute && el.getAttribute('maxlength');
+    if (ml === '1' || ml === '1 ') return true;
+    var inputMode = (el.getAttribute && (el.getAttribute('inputmode') || '')) || '';
+    var name = ((el.name || el.id || el.className || '') + '').toLowerCase();
+    var ac = ((el.getAttribute && el.getAttribute('autocomplete')) || '').toLowerCase();
+    if (ac.indexOf('one-time-code') >= 0) return true;
+    if (name.indexOf('otp') >= 0 || name.indexOf('pin') >= 0) return true;
+    if (inputMode === 'numeric' && (el.size === 1 || ml === '1')) return true;
+    return false;
+  }
+
+  function isInOverlay(el) {
+    var p = el;
+    while (p && p !== document.body && p !== document.documentElement) {
+      try {
+        var s = window.getComputedStyle(p);
+        if (s.position === 'fixed' || s.position === 'sticky') return true;
+        var role = (p.getAttribute && p.getAttribute('role')) || '';
+        var cls = ((p.className && p.className.toString) ? p.className.toString() : '').toLowerCase();
+        if (role === 'dialog' || role === 'alertdialog') return true;
+        if (cls.indexOf('modal') >= 0 || cls.indexOf('sheet') >= 0 ||
+            cls.indexOf('drawer') >= 0 || cls.indexOf('bottomsheet') >= 0 ||
+            cls.indexOf('bottom-sheet') >= 0 || cls.indexOf('overlay') >= 0) {
+          return true;
+        }
+      } catch (_) {}
+      p = p.parentElement;
+    }
+    return false;
+  }
+
+  function findScrollParent(el) {
+    var p = el && el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      try {
+        var s = window.getComputedStyle(p);
+        var oy = s.overflowY;
+        if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') &&
+            p.scrollHeight > p.clientHeight + 4) {
+          return p;
+        }
+      } catch (_) {}
+      p = p.parentElement;
+    }
+    return null;
+  }
+
   function scrollFocusedIntoView() {
     var el = document.activeElement;
     if (!isField(el)) return;
+
+    var vv = window.visualViewport;
+    var rect = el.getBoundingClientRect();
+    var viewH = vv ? vv.height : (window.innerHeight || 0);
+    if (viewH <= 0) return;
+
+    // Leave room for eSign bottom warning banner + iOS accessory bar.
+    var safeBottom = viewH * 0.52;
+    if (rect.top >= 4 && rect.bottom <= safeBottom) return;
+
+    // Soft path only for real modals — page OTP (eSign ENTER OTP) needs stronger scroll.
+    if (isInOverlay(el)) {
+      try {
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+      } catch (_) {
+        try { el.scrollIntoView(false); } catch (__) {}
+      }
+      var parent = findScrollParent(el);
+      if (parent) {
+        rect = el.getBoundingClientRect();
+        var prect = parent.getBoundingClientRect();
+        var limit = Math.min(prect.bottom, viewH * 0.78);
+        var overflow = rect.bottom - limit;
+        if (overflow > 8) parent.scrollTop += overflow + 12;
+        if (rect.top < prect.top + 4) parent.scrollTop -= (prect.top + 4 - rect.top);
+      }
+      return;
+    }
+
+    // Full-page fields (eSign Aadhaar / ENTER OTP): park above keyboard + banner.
     try {
       el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
     } catch (_) {
       try { el.scrollIntoView(true); } catch (__) {}
     }
     try {
-      if (window.visualViewport) {
-        var rect = el.getBoundingClientRect();
-        var vv = window.visualViewport;
-        // Keep focused field in the upper third so typed digits stay visible.
-        var targetTop = vv.height * 0.22;
-        if (rect.top < 8 || rect.bottom > vv.height * 0.55) {
-          window.scrollBy(0, rect.top - targetTop);
-        }
+      rect = el.getBoundingClientRect();
+      var targetBottom = viewH * 0.42;
+      if (rect.bottom > targetBottom) {
+        window.scrollBy(0, rect.bottom - targetBottom);
+      } else if (rect.top < 8) {
+        window.scrollBy(0, rect.top - 12);
       }
     } catch (_) {}
   }
 
-  var timer1 = null;
-  var timer2 = null;
-  function schedule() {
-    if (timer1) clearTimeout(timer1);
-    if (timer2) clearTimeout(timer2);
-    // Keyboard animation on iOS is slow — nudge twice.
-    timer1 = setTimeout(scrollFocusedIntoView, 280);
-    timer2 = setTimeout(scrollFocusedIntoView, 650);
+  var timer = null;
+  function schedule(delay) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(scrollFocusedIntoView, delay || 300);
   }
 
   window.__meonAaNudgeKeyboardField = function() {
-    schedule();
-    scrollFocusedIntoView();
+    schedule(180);
   };
 
   document.addEventListener('focusin', function(e) {
-    if (isField(e.target)) schedule();
+    if (!isField(e.target)) return;
+    schedule(isOtpLike(e.target) || isInOverlay(e.target) ? 220 : 300);
   }, true);
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', function() {
-      if (isField(document.activeElement)) schedule();
-    });
-    window.visualViewport.addEventListener('scroll', function() {
-      if (isField(document.activeElement)) schedule();
+      if (isField(document.activeElement)) schedule(320);
     });
   }
   window.addEventListener('resize', function() {
-    if (isField(document.activeElement)) schedule();
+    if (isField(document.activeElement)) schedule(320);
   });
 })();
 ''';
@@ -1303,16 +1375,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final openedOrGrew = bottom > 80 && bottom > _lastKeyboardBottomInset + 8;
     _lastKeyboardBottomInset = bottom;
     if (!openedOrGrew) return;
+    // Single delayed nudge — triple-fire made CAMS OTP sheet jump while typing digits.
     Future<void>.delayed(
-      const Duration(milliseconds: 120),
-      _nudgeIosKeyboardFocusedField,
-    );
-    Future<void>.delayed(
-      const Duration(milliseconds: 420),
-      _nudgeIosKeyboardFocusedField,
-    );
-    Future<void>.delayed(
-      const Duration(milliseconds: 750),
+      const Duration(milliseconds: 350),
       _nudgeIosKeyboardFocusedField,
     );
   }
@@ -1361,16 +1426,15 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       _isAccountAggregatorUrl(widget.url) ||
       _isAccountAggregatorUrl(_activeWebViewUrl);
 
-  /// iOS form fields under keyboard: Account Aggregator OTP + Proceed to eSign Aadhaar.
+  /// iOS form fields under keyboard: Proceed to eSign Aadhaar only.
+  /// Account Aggregator uses native WKWebView insets (JS scroll fights CAMS modals).
   /// DigiLocker keeps its own freeze JS and must stay excluded.
   bool _needsIosKeyboardFieldAssist([String? url]) {
     if (!Platform.isIOS) return false;
     if (_isDigilockerFlow(url)) return false;
+    // AA/CAMS: do not inject scroll assist — breaks "Link accounts" OTP sheet layout.
+    if (_isAccountAggregatorFlow) return false;
     final sample = url ?? _activeWebViewUrl;
-    if (_isAccountAggregatorUrl(sample) ||
-        widget.title.toLowerCase().contains('account aggregator')) {
-      return true;
-    }
     if (_isProceedToEsignFlowContext(sample) ||
         _isDigioEsignUrl(sample) ||
         _isEsignServiceSpaUrl(sample) ||
@@ -1418,10 +1482,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     return _isIpvOrFaceFinderUrl(url);
   }
 
-  /// iOS scaffold resize + WKWebView keyboard scroll fight on DigiLocker forms.
+  /// iOS scaffold resize: DigiLocker + Account Aggregator keep fixed WebView height.
+  /// AA/CAMS layout breaks when Flutter shrinks the WebView while the page has bottom sheets.
   bool _shouldResizeForKeyboard() {
     if (!Platform.isIOS) return false;
-    return !_isDigilockerFlow();
+    if (_isDigilockerFlow()) return false;
+    if (_isAccountAggregatorFlow) return false;
+    return true;
   }
 
   /// DigiLocker-only: disable rubber-band / over-scroll on the native WebView.
@@ -1440,6 +1507,33 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       );
     } catch (e) {
       debugPrint('[WebView] DigiLocker native scroll settings error: $e');
+    }
+  }
+
+  /// iOS AA/CAMS: let WKWebView adjust content insets for the keyboard (stable sheet layout).
+  Future<void> _applyAccountAggregatorWebViewSettings(
+    InAppWebViewController controller, {
+    String? url,
+  }) async {
+    if (!Platform.isIOS) return;
+    final sample = url ?? _activeWebViewUrl;
+    if (!_isAccountAggregatorUrl(sample) &&
+        !widget.title.toLowerCase().contains('account aggregator')) {
+      return;
+    }
+    try {
+      await controller.setSettings(
+        settings: InAppWebViewSettings(
+          // Keep bounce natural for long CAMS pages.
+          disallowOverScroll: false,
+          alwaysBounceVertical: true,
+          contentInsetAdjustmentBehavior:
+              ScrollViewContentInsetAdjustmentBehavior.ALWAYS,
+        ),
+      );
+      debugPrint('[WebView] AA native keyboard inset settings applied');
+    } catch (e) {
+      debugPrint('[WebView] AA native settings error: $e');
     }
   }
 
@@ -2351,6 +2445,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             : null,
       ),
       body: SafeArea(
+        // AA: full bottom inset — SafeArea + keyboard + CAMS bottom-sheet was clipping first step.
+        bottom: !_isAccountAggregatorFlow,
         child: Stack(
           children: [
             // Main WebView
@@ -2375,7 +2471,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       alwaysBounceHorizontal: _isDigilockerFlow(widget.url) ? false : null,
                       contentInsetAdjustmentBehavior: _isDigilockerFlow(widget.url)
                           ? ScrollViewContentInsetAdjustmentBehavior.NEVER
-                          : null,
+                          : (_isAccountAggregatorFlow
+                              ? ScrollViewContentInsetAdjustmentBehavior.ALWAYS
+                              : null),
                       // Disable pinch-zoom to keep layout stable
                       supportZoom: false,
                       // Android-specific: Enable camera/microphone/location access in WebView
@@ -2762,6 +2860,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
                               await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
+                            await _applyAccountAggregatorWebViewSettings(
+                              controller,
+                              url: urlStr,
+                            );
                             await _injectAccountAggregatorKeyboardAssist(
                               controller,
                               url: urlStr,
@@ -2837,6 +2939,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         if (_shouldInjectNoAutoScrollJs(urlStr)) {
                           await _injectNoAutoScrollJs(controller, url: urlStr);
                         }
+                        await _applyAccountAggregatorWebViewSettings(
+                          controller,
+                          url: urlStr,
+                        );
                         await _injectAccountAggregatorKeyboardAssist(
                           controller,
                           url: urlStr,
@@ -3067,6 +3173,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
                               await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
+                            await _applyAccountAggregatorWebViewSettings(
+                              controller,
+                              url: urlStr,
+                            );
                             await _injectAccountAggregatorKeyboardAssist(
                               controller,
                               url: urlStr,
