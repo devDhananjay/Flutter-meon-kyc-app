@@ -286,6 +286,73 @@ const String _kDigilockerFreezeJs = r'''
 })();
 ''';
 
+/// iOS Account Aggregator (CAMS) + Proceed to eSign: keep focused Aadhaar/OTP/mobile
+/// inputs above the keyboard. Does NOT disable scrollIntoView (that breaks CAMS OTP).
+const String _kAccountAggregatorKeyboardAssistJs = r'''
+(function() {
+  if (window.__meonAaKeyboardAssist) return;
+  window.__meonAaKeyboardAssist = true;
+
+  function isField(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var t = (el.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable === true;
+  }
+
+  function scrollFocusedIntoView() {
+    var el = document.activeElement;
+    if (!isField(el)) return;
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+    } catch (_) {
+      try { el.scrollIntoView(true); } catch (__) {}
+    }
+    try {
+      if (window.visualViewport) {
+        var rect = el.getBoundingClientRect();
+        var vv = window.visualViewport;
+        // Keep focused field in the upper third so typed digits stay visible.
+        var targetTop = vv.height * 0.22;
+        if (rect.top < 8 || rect.bottom > vv.height * 0.55) {
+          window.scrollBy(0, rect.top - targetTop);
+        }
+      }
+    } catch (_) {}
+  }
+
+  var timer1 = null;
+  var timer2 = null;
+  function schedule() {
+    if (timer1) clearTimeout(timer1);
+    if (timer2) clearTimeout(timer2);
+    // Keyboard animation on iOS is slow — nudge twice.
+    timer1 = setTimeout(scrollFocusedIntoView, 280);
+    timer2 = setTimeout(scrollFocusedIntoView, 650);
+  }
+
+  window.__meonAaNudgeKeyboardField = function() {
+    schedule();
+    scrollFocusedIntoView();
+  };
+
+  document.addEventListener('focusin', function(e) {
+    if (isField(e.target)) schedule();
+  }, true);
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function() {
+      if (isField(document.activeElement)) schedule();
+    });
+    window.visualViewport.addEventListener('scroll', function() {
+      if (isField(document.activeElement)) schedule();
+    });
+  }
+  window.addEventListener('resize', function() {
+    if (isField(document.activeElement)) schedule();
+  });
+})();
+''';
+
 /// WebView page for external redirects (DigiLocker, IPV/Face Finder)
 /// Uses InAppWebView for camera/microphone (getUserMedia) support
 class WebViewPage extends StatefulWidget {
@@ -364,6 +431,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   // Reset the sessionStorage flag only once per WebViewPage instance,
   // so a reload caused by the console message doesn't re-clear the guard.
   bool _rpdSigningSessionFlagReset = false;
+  // iOS AA keyboard: track inset so we nudge OTP when keyboard opens/grows.
+  double _lastKeyboardBottomInset = 0;
   // eSign / cloudesign: retry only when server returns transient JSON (Invalid Token, etc.).
   int _cloudesignAutoReloadAttempts = 0;
   static const int _maxCloudesignAutoReloadAttempts = 3;
@@ -1223,6 +1292,31 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (!Platform.isIOS || !_needsIosKeyboardFieldAssist()) return;
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    if (views.isEmpty) return;
+    final view = views.first;
+    final bottom = view.viewInsets.bottom / view.devicePixelRatio;
+    final openedOrGrew = bottom > 80 && bottom > _lastKeyboardBottomInset + 8;
+    _lastKeyboardBottomInset = bottom;
+    if (!openedOrGrew) return;
+    Future<void>.delayed(
+      const Duration(milliseconds: 120),
+      _nudgeIosKeyboardFocusedField,
+    );
+    Future<void>.delayed(
+      const Duration(milliseconds: 420),
+      _nudgeIosKeyboardFocusedField,
+    );
+    Future<void>.delayed(
+      const Duration(milliseconds: 750),
+      _nudgeIosKeyboardFocusedField,
+    );
+  }
+
   bool _isIpvOrFaceFinderUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return false;
@@ -1242,6 +1336,48 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (uri == null) return false;
     final host = uri.host.toLowerCase();
     return host.contains('digilocker') || host.contains('digitallocker');
+  }
+
+  /// Account Aggregator / CAMS linked-account OTP pages.
+  bool _isAccountAggregatorUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    final query = uri.query.toLowerCase();
+    if (host.contains('camsfinserv') ||
+        host.contains('standardjourney.camsfinserv.com')) {
+      return true;
+    }
+    if (path.contains('account_aggregator') ||
+        query.contains('account_aggregator')) {
+      return true;
+    }
+    return false;
+  }
+
+  bool get _isAccountAggregatorFlow =>
+      widget.title.toLowerCase().contains('account aggregator') ||
+      _isAccountAggregatorUrl(widget.url) ||
+      _isAccountAggregatorUrl(_activeWebViewUrl);
+
+  /// iOS form fields under keyboard: Account Aggregator OTP + Proceed to eSign Aadhaar.
+  /// DigiLocker keeps its own freeze JS and must stay excluded.
+  bool _needsIosKeyboardFieldAssist([String? url]) {
+    if (!Platform.isIOS) return false;
+    if (_isDigilockerFlow(url)) return false;
+    final sample = url ?? _activeWebViewUrl;
+    if (_isAccountAggregatorUrl(sample) ||
+        widget.title.toLowerCase().contains('account aggregator')) {
+      return true;
+    }
+    if (_isProceedToEsignFlowContext(sample) ||
+        _isDigioEsignUrl(sample) ||
+        _isEsignServiceSpaUrl(sample) ||
+        widget.title.toLowerCase().contains('esign')) {
+      return true;
+    }
+    return false;
   }
 
   /// True only for the DigiLocker KYC step (title + live URL).
@@ -1315,6 +1451,35 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[WebView] Error injecting DigiLocker freeze JS: $e');
     }
+  }
+
+  /// iOS AA / Proceed-to-eSign: scroll focused Aadhaar/OTP/mobile field above keyboard.
+  /// Does not disable scrollIntoView (needed for CAMS/Digio OTP).
+  Future<void> _injectAccountAggregatorKeyboardAssist(
+    InAppWebViewController controller, {
+    String? url,
+  }) async {
+    if (!_needsIosKeyboardFieldAssist(url)) return;
+    try {
+      await controller.evaluateJavascript(
+        source: _kAccountAggregatorKeyboardAssistJs,
+      );
+      debugPrint('[WebView] iOS keyboard field assist injected');
+    } catch (e) {
+      debugPrint('[WebView] iOS keyboard field assist inject error: $e');
+    }
+  }
+
+  Future<void> _nudgeIosKeyboardFocusedField() async {
+    if (!_needsIosKeyboardFieldAssist()) return;
+    final controller = _webViewController;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(
+        source:
+            'try { if (window.__meonAaNudgeKeyboardField) window.__meonAaNudgeKeyboardField(); } catch (e) {}',
+      );
+    } catch (_) {}
   }
 
   bool _isReversePennyDropUrl(String url) {
@@ -2597,6 +2762,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
                               await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
+                            await _injectAccountAggregatorKeyboardAssist(
+                              controller,
+                              url: urlStr,
+                            );
                             return;
                           }
                         }
@@ -2668,6 +2837,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         if (_shouldInjectNoAutoScrollJs(urlStr)) {
                           await _injectNoAutoScrollJs(controller, url: urlStr);
                         }
+                        await _injectAccountAggregatorKeyboardAssist(
+                          controller,
+                          url: urlStr,
+                        );
                         if (_isReversePennyDropUrl(urlStr)) {
                           if (!_rpdSigningSessionFlagReset) {
                             try {
@@ -2894,6 +3067,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                             if (_shouldInjectNoAutoScrollJs(urlStr)) {
                               await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
+                            await _injectAccountAggregatorKeyboardAssist(
+                              controller,
+                              url: urlStr,
+                            );
 
                             if (_isReversePennyDropUrl(urlStr)) {
                               if (!_rpdSigningSessionFlagReset) {
