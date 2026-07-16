@@ -488,6 +488,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _permissionHandlerInFlight = false;
   bool _ipvPermissionGateActive = false;
   bool _redirectHandled = false;
+  /// Set as soon as IPV success URL is seen — blocks website paint before API finishes.
+  bool _ipvSuccessHandoff = false;
   /// Params captured from completion/success URLs (e.g. success=yes, transaction_id=...)
   /// Passed to get-context API so backend marks step as complete
   final Map<String, String> _completionParams = {};
@@ -1423,6 +1425,52 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         path.contains('facefinder');
   }
 
+  /// IPV/Face return to our workflow URL (`?success=yes` and/or `state=`).
+  /// Must not render the website — go straight to get-context API.
+  bool _isIpvOrFaceSuccessReturnUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    final hasSuccess =
+        uri.queryParameters['success']?.toLowerCase() == 'yes';
+    final hasState = uri.queryParameters.containsKey('state');
+    if (!hasSuccess && !hasState) return false;
+    final isWorkflowPath =
+        path.contains('/${widget.company}/${widget.workflowName}');
+    final isOurFrontend = (host.contains('meon.co.in') ||
+            host.contains('stoxbox.in')) &&
+        !host.contains('ipv.') &&
+        !host.contains('api.') &&
+        !host.contains('digilocker.');
+    return isOurFrontend && isWorkflowPath;
+  }
+
+  /// Keep white loader up, stop WebView paint, then run get-context / navigate.
+  Future<void> _beginIpvSuccessReturn(Uri uri) async {
+    if (_redirectHandled || _ipvSuccessHandoff || !mounted) return;
+    _ipvSuccessHandoff = true;
+    _cancelLoadTimers(resetLoadingMessage: false);
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+      _loadingMessage = 'Completing verification...';
+    });
+    try {
+      await _webViewController?.stopLoading();
+    } catch (_) {}
+    debugPrint(
+        '[WebView] IPV success redirect detected - closing WebView immediately');
+    await _handleRedirectComplete(
+      state: uri.queryParameters['state'] ?? _preservedState,
+      clientToken:
+          uri.queryParameters['client_token'] ?? _preservedClientToken,
+      auto: uri.queryParameters['auto'] ?? _preservedAuto,
+      verifyCompleted:
+          uri.queryParameters['success']?.toLowerCase() == 'yes',
+    );
+  }
+
   /// DigiLocker OAuth / Aadhaar–PIN pages (digitallocker.gov.in, digilocker.*).
   bool _isDigilockerUrl(String url) {
     final uri = Uri.tryParse(url);
@@ -2270,6 +2318,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   }
 
   Future<void> _onPageFinished(String url) async {
+    if (_redirectHandled || _ipvSuccessHandoff) return;
     final uri = Uri.tryParse(url);
     if (uri == null) return;
 
@@ -2524,6 +2573,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       javaScriptEnabled: true,
                       // eSign pdf.js uses blob: URLs — listen here, save in-page (see _onDownloadStartRequest).
                       useOnDownloadStart: true,
+                      // Needed so IPV success return can CANCEL before the website paints.
+                      useShouldOverrideUrlLoading: true,
                       // Allow JS popups / window.open only for special flows (Reverse Penny Drop, Digio eSign, etc.)
                       javaScriptCanOpenWindowsAutomatically: _enablePopupWindows,
                       supportMultipleWindows: _enablePopupWindows,
@@ -2673,6 +2724,17 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       // Works for RPD, DigiLocker, and other segments - any URL with params before final workflow URL
                       _captureCompletionParamsIfApplicable(url);
 
+                      // IPV/Face success return — never load ekyc website; API only.
+                      if (!_redirectHandled &&
+                          !_ipvSuccessHandoff &&
+                          _isIpvOrFaceSuccessReturnUrl(url)) {
+                        final successUri = Uri.tryParse(url);
+                        if (successUri != null) {
+                          unawaited(_beginIpvSuccessReturn(successUri));
+                        }
+                        return NavigationActionPolicy.CANCEL;
+                      }
+
                       // Reverse Penny Drop: if completion params appear in URL, close WebView immediately (no timer needed)
                       if (_isReversePennyDropUrl(url) &&
                           !_redirectHandled &&
@@ -2737,7 +2799,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       }
                     },
                     onLoadStart: (controller, url) async {
-                      if (url != null && !_redirectHandled) {
+                      if (url != null &&
+                          !_redirectHandled &&
+                          !_ipvSuccessHandoff) {
                         final urlStr = url.toString();
                         // Blob URLs are PDF downloads — never treat as a page load.
                         if (_isBlobDownloadUrl(urlStr)) {
@@ -2760,38 +2824,14 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _cloudesignInterruptRecoveryUsed = false;
                         }
 
-                        // IPV/Face Finder success: redirect to live.meon.co.in/.../individual?state=...&success=yes
-                        // Close WebView immediately on success redirect (don't wait for page load)
-                        final uri = Uri.tryParse(url.toString());
-                        if (uri != null) {
-                          final host = uri.host.toLowerCase();
-                          final path = uri.path.toLowerCase();
-                          final hasSuccess =
-                              uri.queryParameters['success']?.toLowerCase() ==
-                                  'yes';
-                          final hasState = uri.queryParameters.containsKey('state');
-                          final isWorkflowPath = path.contains(
-                              '/${widget.company}/${widget.workflowName}');
-                          final isMeonRedirect = (host.contains('meon.co.in') ||
-                                  host.contains('stoxbox.in')) &&
-                              !host.contains('ipv.') &&
-                              !host.contains('api.') &&
-                              !host.contains('digilocker.');
-
-                          if (isMeonRedirect &&
-                              isWorkflowPath &&
-                              (hasSuccess || hasState)) {
-                            debugPrint(
-                                '[WebView] IPV success redirect detected - closing WebView immediately');
-                            await _handleRedirectComplete(
-                              state: uri.queryParameters['state'] ?? _preservedState,
-                              clientToken: uri.queryParameters['client_token'] ??
-                                  _preservedClientToken,
-                              auto: uri.queryParameters['auto'] ?? _preservedAuto,
-                              verifyCompleted: hasSuccess,
-                            );
-                            return;
+                        // IPV/Face Finder success: redirect to .../individual?state=...&success=yes
+                        // Do not paint the website — stop load + get-context API only.
+                        if (_isIpvOrFaceSuccessReturnUrl(urlStr)) {
+                          final successUri = Uri.tryParse(urlStr);
+                          if (successUri != null) {
+                            await _beginIpvSuccessReturn(successUri);
                           }
+                          return;
                         }
 
                         // Request permissions on load (iOS or if Android permissions weren't requested before)
@@ -2899,6 +2939,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                     onLoadStop: (controller, url) async {
                       if (url != null) {
                         final urlStr = url.toString();
+                        // IPV already handed off to get-context — never hide loader / paint site.
+                        if (_redirectHandled || _ipvSuccessHandoff) {
+                          debugPrint(
+                              '[WebView] Ignoring page finished after redirect handoff: $urlStr');
+                          return;
+                        }
                         // Stop timeout/hint timers but keep overlay up briefly on eSign/PDF
                         // so pdf.js / canvas can paint (avoids blank flash).
                         _cancelLoadTimers(resetLoadingMessage: false);
