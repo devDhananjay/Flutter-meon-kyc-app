@@ -286,6 +286,34 @@ const String _kDigilockerFreezeJs = r'''
 })();
 ''';
 
+/// CAMS AA pages sometimes report a 980px desktop layout in WKWebView, which
+/// renders as a small centred box. Force mobile viewport before first paint.
+const String _kAccountAggregatorViewportFixJs = r'''
+(function() {
+  if (window.__meonAaViewportFixV1) return;
+  window.__meonAaViewportFixV1 = true;
+  function apply() {
+    try {
+      var meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.setAttribute('name', 'viewport');
+        var head = document.head || document.getElementsByTagName('head')[0];
+        if (head) head.appendChild(meta);
+      }
+      meta.setAttribute(
+        'content',
+        'width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover'
+      );
+    } catch (_) {}
+  }
+  apply();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', apply);
+  }
+})();
+''';
+
 /// iOS Proceed to eSign: keep focused fields visible above keyboard + banner.
 /// (Account Aggregator no longer uses this JS — native WKWebView insets only.)
 const String _kAccountAggregatorKeyboardAssistJs = r'''
@@ -1473,6 +1501,23 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     ]);
   }
 
+  UnmodifiableListView<UserScript>? get _accountAggregatorInitialUserScripts {
+    final isAaFromStart = widget.title.toLowerCase().contains('account aggregator') ||
+        _isAccountAggregatorUrl(widget.url);
+    if (!isAaFromStart) return null;
+    return UnmodifiableListView<UserScript>([
+      UserScript(
+        source: _kAccountAggregatorViewportFixJs,
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        forMainFrameOnly: true,
+      ),
+    ]);
+  }
+
+  UnmodifiableListView<UserScript>? get _initialUserScripts {
+    return _digilockerInitialUserScripts ?? _accountAggregatorInitialUserScripts;
+  }
+
   /// On iOS, disabling `scrollIntoView` breaks OTP on CAMS/Digio; enable only where
   /// auto-scroll-on-focus causes visible jank (IPV/Face). DigiLocker uses [_injectDigilockerFreezeJs].
   bool _shouldInjectNoAutoScrollJs(String? url) {
@@ -1510,12 +1555,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  /// iOS AA/CAMS: let WKWebView adjust content insets for the keyboard (stable sheet layout).
+  /// AA/CAMS: mobile viewport + iOS keyboard insets (stable OTP sheet layout).
   Future<void> _applyAccountAggregatorWebViewSettings(
     InAppWebViewController controller, {
     String? url,
   }) async {
-    if (!Platform.isIOS) return;
     final sample = url ?? _activeWebViewUrl;
     if (!_isAccountAggregatorUrl(sample) &&
         !widget.title.toLowerCase().contains('account aggregator')) {
@@ -1524,16 +1568,37 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     try {
       await controller.setSettings(
         settings: InAppWebViewSettings(
-          // Keep bounce natural for long CAMS pages.
-          disallowOverScroll: false,
-          alwaysBounceVertical: true,
-          contentInsetAdjustmentBehavior:
-              ScrollViewContentInsetAdjustmentBehavior.ALWAYS,
+          preferredContentMode: UserPreferredContentMode.MOBILE,
+          useWideViewPort: true,
+          loadWithOverviewMode: true,
+          disallowOverScroll: Platform.isIOS ? false : null,
+          alwaysBounceVertical: Platform.isIOS ? true : null,
+          contentInsetAdjustmentBehavior: Platform.isIOS
+              ? ScrollViewContentInsetAdjustmentBehavior.ALWAYS
+              : null,
         ),
       );
-      debugPrint('[WebView] AA native keyboard inset settings applied');
+      debugPrint('[WebView] AA viewport + native settings applied');
     } catch (e) {
       debugPrint('[WebView] AA native settings error: $e');
+    }
+  }
+
+  Future<void> _injectAccountAggregatorViewportFix(
+    InAppWebViewController controller, {
+    String? url,
+  }) async {
+    final sample = url ?? _activeWebViewUrl;
+    if (!_isAccountAggregatorUrl(sample) &&
+        !widget.title.toLowerCase().contains('account aggregator')) {
+      return;
+    }
+    try {
+      await controller.evaluateJavascript(
+        source: _kAccountAggregatorViewportFixJs,
+      );
+    } catch (e) {
+      debugPrint('[WebView] AA viewport fix inject error: $e');
     }
   }
 
@@ -2454,7 +2519,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                 ? const Center(child: CircularProgressIndicator())
                 : InAppWebView(
                     initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-                    initialUserScripts: _digilockerInitialUserScripts,
+                    initialUserScripts: _initialUserScripts,
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
                       // eSign pdf.js uses blob: URLs — listen here, save in-page (see _onDownloadStartRequest).
@@ -2465,6 +2530,12 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       mediaPlaybackRequiresUserGesture: false,
                       allowsInlineMediaPlayback: true,
                       useHybridComposition: true,
+                      preferredContentMode: _isAccountAggregatorFlow
+                          ? UserPreferredContentMode.MOBILE
+                          : null,
+                      useWideViewPort: _isAccountAggregatorFlow ? true : null,
+                      loadWithOverviewMode:
+                          _isAccountAggregatorFlow ? true : null,
                       // DigiLocker step: no rubber-band / inset scroll while typing Aadhaar/PIN
                       disallowOverScroll: _isDigilockerFlow(widget.url) ? true : null,
                       alwaysBounceVertical: _isDigilockerFlow(widget.url) ? false : null,
@@ -2864,6 +2935,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               controller,
                               url: urlStr,
                             );
+                            await _injectAccountAggregatorViewportFix(
+                              controller,
+                              url: urlStr,
+                            );
                             await _injectAccountAggregatorKeyboardAssist(
                               controller,
                               url: urlStr,
@@ -2940,6 +3015,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           await _injectNoAutoScrollJs(controller, url: urlStr);
                         }
                         await _applyAccountAggregatorWebViewSettings(
+                          controller,
+                          url: urlStr,
+                        );
+                        await _injectAccountAggregatorViewportFix(
                           controller,
                           url: urlStr,
                         );
@@ -3174,6 +3253,10 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                               await _injectNoAutoScrollJs(controller, url: urlStr);
                             }
                             await _applyAccountAggregatorWebViewSettings(
+                              controller,
+                              url: urlStr,
+                            );
+                            await _injectAccountAggregatorViewportFix(
                               controller,
                               url: urlStr,
                             );
