@@ -490,6 +490,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   bool _redirectHandled = false;
   /// Set as soon as IPV success URL is seen — blocks website paint before API finishes.
   bool _ipvSuccessHandoff = false;
+  /// One silent reload if Face/IPV main-frame fails once (permission/reload race).
+  int _ipvLoadErrorAutoRetryCount = 0;
   /// Params captured from completion/success URLs (e.g. success=yes, transaction_id=...)
   /// Passed to get-context API so backend marks step as complete
   final Map<String, String> _completionParams = {};
@@ -669,8 +671,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
-  /// Benign load errors (blob PDF save, etc.). Cloudesign document URLs are handled
-  /// via [_onNavigationResponse] + optional reload — not silently ignored.
+  /// Benign load errors (blob PDF save, cancelled reloads, etc.). Cloudesign document
+  /// URLs are handled via [_onNavigationResponse] + optional reload — not silently ignored.
   bool _shouldIgnoreWebViewLoadError(
     String url, {
     int? code,
@@ -679,10 +681,116 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final u = url.toLowerCase();
     if (u.startsWith('blob:')) return true;
     if (_isCloudesignDocumentUrl(url)) return false;
-    if (code == 102) return true;
+    // iOS NSURLErrorCancelled / interrupted navigations (permission dialog, reload).
+    if (code == -999 || code == 102) return true;
     final d = (description ?? '').toLowerCase();
     if (d.contains('frame load interrupted')) return true;
+    if (d.contains('cancelled') || d.contains('canceled')) return true;
+    if (d.contains('aborted')) return true;
+    if (d.contains('operation canceled') || d.contains('operation cancelled')) {
+      return true;
+    }
     return false;
+  }
+
+  /// True when Face/IPV permission UI or post-grant reload is mid-flight.
+  /// Load cancels here are not real connectivity failures.
+  bool get _isIpvPermissionLoadTransient {
+    if (!_isIpvOrFaceFinderUrl(_activeWebViewUrl) &&
+        !widget.title.toLowerCase().contains('face')) {
+      return false;
+    }
+    return _ipvPermissionGateActive ||
+        _permissionHandlerInFlight ||
+        _permissionRequestScheduled ||
+        (_permissionsRequested && !_hasReloadedAfterPermissions);
+  }
+
+  /// Main-frame only — IPV pages load many camera/CDN subresources that must not
+  /// trigger the full-screen "check your connection" overlay.
+  bool _isMainFrameErrorUrl(String errorUrl) {
+    if (errorUrl.isEmpty) return true;
+    final current = _currentUrl.isNotEmpty ? _currentUrl : widget.url;
+    if (errorUrl == current) return true;
+    try {
+      final a = Uri.parse(errorUrl);
+      final b = Uri.parse(current);
+      if (a.host.isEmpty || b.host.isEmpty) return false;
+      return a.host.toLowerCase() == b.host.toLowerCase() &&
+          a.path == b.path;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Surfaces a load failure only for real main-frame problems (not IPV noise).
+  void _surfaceWebViewLoadFailure({
+    required String errorUrl,
+    int? code,
+    String? description,
+  }) {
+    if (_shouldIgnoreWebViewLoadError(
+      errorUrl,
+      code: code,
+      description: description,
+    )) {
+      debugPrint(
+          '[WebView] Ignoring benign load error ($code): $description, url=$errorUrl');
+      return;
+    }
+    if (errorUrl.isNotEmpty && !_isMainFrameErrorUrl(errorUrl)) {
+      debugPrint(
+          '[WebView] Ignoring non-main-frame load error ($code): $errorUrl');
+      return;
+    }
+    if (_isIpvPermissionLoadTransient) {
+      debugPrint(
+          '[WebView] Ignoring IPV permission/reload transient error ($code): $description');
+      return;
+    }
+    if (_redirectHandled || _ipvSuccessHandoff) return;
+
+    final isFaceStep = _isIpvOrFaceFinderUrl(_activeWebViewUrl) ||
+        widget.title.toLowerCase().contains('face');
+    if (isFaceStep && _ipvLoadErrorAutoRetryCount < 1) {
+      _ipvLoadErrorAutoRetryCount++;
+      debugPrint(
+          '[WebView] Face/IPV load error — silent auto-retry ($_ipvLoadErrorAutoRetryCount)');
+      if (mounted) {
+        setState(() {
+          _isLoading = true;
+          _hasError = false;
+          _loadingMessage = 'Loading...';
+        });
+      }
+      _startLoadTimers(url: _activeWebViewUrl);
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (!mounted || _redirectHandled) return;
+        _webViewController?.reload();
+      });
+      return;
+    }
+
+    _cancelLoadTimers();
+    if (!mounted) return;
+    final looksNetwork = () {
+      final d = (description ?? '').toLowerCase();
+      return code == -2 || // HOST_LOOKUP
+          code == -6 || // CONNECT
+          code == -8 || // TIMEOUT
+          d.contains('host_lookup') ||
+          d.contains('err_internet') ||
+          d.contains('err_name_not_resolved') ||
+          d.contains('err_connection') ||
+          d.contains('network');
+    }();
+    setState(() {
+      _isLoading = false;
+      _hasError = true;
+      _errorMessage = looksNetwork
+          ? 'Failed to load page. Please check your connection and try again.'
+          : 'Failed to load this page. Tap Try Again to reload.';
+    });
   }
 
   bool _isCloudesignLoadInterruptError({
@@ -2856,15 +2964,6 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                       debugPrint(
                           '[WebView] Load error ($code): $message, url=$url');
                       final errorUrl = url?.toString() ?? '';
-                      if (_shouldIgnoreWebViewLoadError(
-                        errorUrl,
-                        code: code,
-                        description: message,
-                      )) {
-                        debugPrint(
-                            '[WebView] Ignoring benign load error: $errorUrl');
-                        return;
-                      }
                       // Ignore unknown URL scheme errors — these are UPI/intent
                       // deep-links handled externally and are not real page failures.
                       if (code == -10 &&
@@ -2875,21 +2974,11 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         }
                         return;
                       }
-                      // Only surface errors for the current main-frame URL to
-                      // avoid triggering retry UI for sub-resource failures.
-                      if (errorUrl.isNotEmpty &&
-                          errorUrl != _currentUrl &&
-                          !errorUrl.startsWith('http')) {
-                        return;
-                      }
-                      _cancelLoadTimers();
-                      if (!mounted) return;
-                      setState(() {
-                        _isLoading = false;
-                        _hasError = true;
-                        _errorMessage =
-                            'Failed to load page. Please check your connection and try again.';
-                      });
+                      _surfaceWebViewLoadFailure(
+                        errorUrl: errorUrl,
+                        code: code,
+                        description: message,
+                      );
                     },
                     onReceivedError: (controller, request, error) {
                       // flutter_inappwebview v6 main-frame error handler.
@@ -2918,23 +3007,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         }
                         return;
                       }
-                      if (_shouldIgnoreWebViewLoadError(
-                        errUrl,
-                        code: error.type.toNativeValue(),
-                        description: error.description,
-                      )) {
+                      if (error.type == WebResourceErrorType.CANCELLED) {
                         debugPrint(
-                            '[WebView] Ignoring benign received error: $errUrl');
+                            '[WebView] Ignoring CANCELLED main-frame error: $errUrl');
                         return;
                       }
-                      _cancelLoadTimers();
-                      if (!mounted) return;
-                      setState(() {
-                        _isLoading = false;
-                        _hasError = true;
-                        _errorMessage =
-                            'Failed to load page. Please check your connection and try again.';
-                      });
+                      _surfaceWebViewLoadFailure(
+                        errorUrl: errUrl,
+                        code: error.type.toNativeValue(),
+                        description: error.description,
+                      );
                     },
                     onLoadStop: (controller, url) async {
                       if (url != null) {
@@ -3005,6 +3087,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           _currentUrl = urlStr;
                           _loadingMessage = 'Loading...';
                         });
+                        if (_isIpvOrFaceFinderUrl(urlStr)) {
+                          _ipvLoadErrorAutoRetryCount = 0;
+                        }
                         debugPrint('[WebView] Page finished: $url');
 
                         // Successful load — stop retries; let the page stay visible.

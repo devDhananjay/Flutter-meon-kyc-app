@@ -31,6 +31,10 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="paytmmp"/>
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:mimeType="application/pdf"/>
+        </intent>
         <package android:name="com.google.android.apps.nbu.paisa.user"/>
         <package android:name="net.one97.paytm"/>
         <package android:name="com.phonepe.app"/>
@@ -56,6 +60,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>

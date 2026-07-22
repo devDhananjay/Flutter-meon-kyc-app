@@ -37,8 +37,10 @@ import 'package:meon_kyc/services/connectivity_controller.dart';
 import 'package:meon_kyc/store/app_store.dart';
 import 'package:flutter/gestures.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
-import 'package:pdfx/pdfx.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 class HomePage extends StatefulWidget {
   final String company;
@@ -5136,24 +5138,60 @@ class _HomePageState extends State<HomePage> {
   static const String _kBpWealthTariffPdfAsset =
       'assets/pdf/bpwealth_tariff_plan.pdf';
 
-  bool _bpWealthTariffPdfModalOpen = false;
+  bool _bpWealthTariffPdfOpening = false;
 
+  /// Opens the bundled tariff PDF.
+  /// iOS: in-app WebView (QuickLook/open_filex needs 2 taps after dismiss).
+  /// Android: system viewer via open_filex.
   Future<void> _openBpWealthTariffPdf() async {
-    _showBpWealthTariffPdfModal();
-  }
+    if (_bpWealthTariffPdfOpening) return;
+    _bpWealthTariffPdfOpening = true;
+    try {
+      if (Platform.isIOS) {
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: true,
+          builder: (ctx) => const _BpWealthTariffPdfPreviewDialog(
+            assetPath: _kBpWealthTariffPdfAsset,
+          ),
+        );
+        return;
+      }
 
-  void _showBpWealthTariffPdfModal() {
-    if (_bpWealthTariffPdfModalOpen) return;
-    _bpWealthTariffPdfModalOpen = true;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => _BpWealthTariffPdfDialog(
-        assetPath: _kBpWealthTariffPdfAsset,
-      ),
-    ).whenComplete(() {
-      _bpWealthTariffPdfModalOpen = false;
-    });
+      final data = await rootBundle.load(_kBpWealthTariffPdfAsset);
+      final bytes = data.buffer.asUint8List();
+      final dir = await getTemporaryDirectory();
+      final file = File(
+        '${dir.path}/bpwealth_tariff_plan_${DateTime.now().millisecondsSinceEpoch}.pdf',
+      );
+      await file.writeAsBytes(bytes, flush: true);
+
+      final result = await OpenFilex.open(
+        file.path,
+        type: 'application/pdf',
+      );
+      debugPrint(
+          '[HomePage] Tariff PDF open: type=${result.type} message=${result.message} path=${file.path}');
+
+      if (result.type != ResultType.done) {
+        Fluttertoast.showToast(
+          msg: result.message.isNotEmpty
+              ? result.message
+              : 'Unable to open PDF. Please install a PDF viewer and try again.',
+          gravity: ToastGravity.TOP,
+          toastLength: Toast.LENGTH_LONG,
+        );
+      }
+    } catch (e) {
+      debugPrint('[HomePage] Tariff PDF open failed: $e');
+      Fluttertoast.showToast(
+        msg: 'Unable to open PDF. Please try again later.',
+        gravity: ToastGravity.TOP,
+      );
+    } finally {
+      _bpWealthTariffPdfOpening = false;
+    }
   }
 
   /// BP Wealth personal_details: web-like header, single-column main (2nd screenshot fields only),
@@ -6712,241 +6750,139 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// BP Wealth personal details — tariff PDF inside modal (native pdfx viewer).
-class _BpWealthTariffPdfDialog extends StatefulWidget {
+/// In-app tariff PDF preview (iOS). Avoids QuickLook/open_filex reopen race
+/// where the first tap after dismiss returns done but shows nothing.
+class _BpWealthTariffPdfPreviewDialog extends StatefulWidget {
   final String assetPath;
 
-  const _BpWealthTariffPdfDialog({
+  const _BpWealthTariffPdfPreviewDialog({
     required this.assetPath,
   });
 
   @override
-  State<_BpWealthTariffPdfDialog> createState() =>
-      _BpWealthTariffPdfDialogState();
+  State<_BpWealthTariffPdfPreviewDialog> createState() =>
+      _BpWealthTariffPdfPreviewDialogState();
 }
 
-class _BpWealthTariffPdfDialogState extends State<_BpWealthTariffPdfDialog> {
-  static const double _dialogRadius = 12;
-  static const EdgeInsets _dialogInsetPadding =
-      EdgeInsets.symmetric(horizontal: 16, vertical: 20);
-
-  PdfDocument? _document;
-  List<PdfPageImage> _pageImages = [];
+class _BpWealthTariffPdfPreviewDialogState
+    extends State<_BpWealthTariffPdfPreviewDialog> {
+  late final WebViewController _controller;
   bool _loading = true;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _preloadAllPages());
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (_) {
+            if (mounted) setState(() => _loading = false);
+          },
+          onWebResourceError: (error) {
+            debugPrint(
+                '[HomePage] Tariff PDF WebView error: ${error.description}');
+            if (mounted) {
+              setState(() {
+                _loading = false;
+                _error = 'Unable to load PDF.';
+              });
+            }
+          },
+        ),
+      );
+    _loadPdf();
   }
 
-  Future<void> _preloadAllPages() async {
+  Future<void> _loadPdf() async {
     try {
-      final doc = await PdfDocument.openAsset(widget.assetPath);
-      if (!mounted) {
-        await doc.close();
-        return;
-      }
-
-      final dpr = MediaQuery.devicePixelRatioOf(context);
-      final scale = (dpr * 2).clamp(2.0, 3.0);
-      final pageCount = doc.pagesCount;
-      final loaded = <PdfPageImage>[];
-
-      // Android pdfx must render pages one-by-one on the same document.
-      for (var pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-        final image = await _renderPage(doc, pageNumber, scale);
-        if (image != null) loaded.add(image);
-      }
-
-      if (!mounted) {
-        await doc.close();
-        return;
-      }
-
-      if (loaded.isEmpty) {
-        await doc.close();
-        throw Exception('No PDF pages could be rendered');
-      }
-
-      setState(() {
-        _document = doc;
-        _pageImages = loaded;
-        _loading = false;
-      });
+      await _controller.loadFlutterAsset(widget.assetPath);
     } catch (e) {
-      debugPrint('[HomePage] Tariff PDF preload failed: $e');
+      debugPrint('[HomePage] Tariff PDF asset load failed: $e');
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = 'Unable to load PDF.';
       });
     }
-  }
-
-  Future<PdfPageImage?> _renderPage(
-    PdfDocument doc,
-    int pageNumber,
-    double scale,
-  ) async {
-    final page = await doc.getPage(pageNumber);
-    try {
-      return await page.render(
-        width: page.width * scale,
-        height: page.height * scale,
-        format: PdfPageImageFormat.png,
-        backgroundColor: '#ffffff',
-      );
-    } finally {
-      await page.close();
-    }
-  }
-
-  @override
-  void dispose() {
-    _document?.close();
-    super.dispose();
-  }
-
-  Widget _buildLoadingIndicator() {
-    return SizedBox.expand(
-      child: ColoredBox(
-        color: Colors.white,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(
-                width: 36,
-                height: 36,
-                child: CircularProgressIndicator(
-                  strokeWidth: 3,
-                  color: KycTheme.primary,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Loading document…',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPdfContent() {
-    if (_error != null) {
-      return ColoredBox(
-        color: Colors.white,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(
-              'Unable to load PDF.\nPlease try again later.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      physics: const ClampingScrollPhysics(),
-      itemCount: _pageImages.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
-      itemBuilder: (context, index) {
-        final image = _pageImages[index];
-        return ColoredBox(
-          color: Colors.white,
-          child: Image.memory(
-            image.bytes,
-            width: double.infinity,
-            fit: BoxFit.fitWidth,
-            filterQuality: FilterQuality.high,
-            gaplessPlayback: true,
-          ),
-        );
-      },
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
-    final inset = _dialogInsetPadding;
-    final maxWidth = mq.size.width - inset.horizontal;
-    final maxHeight = mq.size.height -
-        mq.viewPadding.vertical -
-        inset.vertical;
-    final dialogWidth = maxWidth.clamp(280.0, mq.size.width);
-    final dialogHeight = (maxHeight * 0.88).clamp(320.0, maxHeight);
+    final maxWidth = mq.size.width - 32;
+    final maxHeight = mq.size.height - mq.viewPadding.vertical - 40;
 
     return Dialog(
-      insetPadding: inset,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(_dialogRadius),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(_dialogRadius),
-        child: SizedBox(
-          width: dialogWidth,
-          height: dialogHeight,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              ColoredBox(
-                color: KycTheme.primary,
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
-                        child: Text(
-                          'DP Standing Instructions & Tariff',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 16,
-                          ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: SizedBox(
+        width: maxWidth.clamp(280.0, mq.size.width),
+        height: (maxHeight * 0.88).clamp(320.0, maxHeight),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ColoredBox(
+              color: KycTheme.primary,
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(16, 14, 8, 14),
+                      child: Text(
+                        'DP Standing Instructions & Tariff',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ColoredBox(
+                color: Colors.white,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (_error == null) WebViewWidget(controller: _controller),
+                    if (_error != null)
+                      Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            _error!,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_loading)
+                      const ColoredBox(
+                        color: Colors.white,
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: KycTheme.primary,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
-              Expanded(
-                child: ClipRect(
-                  child: ColoredBox(
-                    color: Colors.white,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (!_loading) _buildPdfContent(),
-                        if (_loading) _buildLoadingIndicator(),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
