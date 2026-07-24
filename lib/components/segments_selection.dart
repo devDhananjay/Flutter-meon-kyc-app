@@ -42,6 +42,10 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     'bse_cash',
     'mf',
   };
+  /// Always off; user cannot select.
+  static const Set<String> _disabledOffSegmentKeys = {
+    'nse_slbm',
+  };
   static const _linkBlue = Color(0xFF2563EB);
 
   bool _getValue(String key) {
@@ -60,6 +64,9 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
   }
 
   void _handleSegmentChange(String name, dynamic value) {
+    if (_disabledOffSegmentKeys.contains(name)) {
+      return;
+    }
     if (_lockedSegmentKeys.contains(name) && !_coerceBool(value)) {
       return;
     }
@@ -198,8 +205,11 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                     label: pair[0].label,
                     value: _lockedSegmentKeys.contains(pair[0].key)
                         ? true
-                        : _getValue(pair[0].key),
-                    locked: _lockedSegmentKeys.contains(pair[0].key),
+                        : _disabledOffSegmentKeys.contains(pair[0].key)
+                            ? false
+                            : _getValue(pair[0].key),
+                    locked: _lockedSegmentKeys.contains(pair[0].key) ||
+                        _disabledOffSegmentKeys.contains(pair[0].key),
                     onChanged: (v) => _handleSegmentChange(pair[0].key, v),
                   ),
                 ),
@@ -209,8 +219,11 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
                     label: pair[1].label,
                     value: _lockedSegmentKeys.contains(pair[1].key)
                         ? true
-                        : _getValue(pair[1].key),
-                    locked: _lockedSegmentKeys.contains(pair[1].key),
+                        : _disabledOffSegmentKeys.contains(pair[1].key)
+                            ? false
+                            : _getValue(pair[1].key),
+                    locked: _lockedSegmentKeys.contains(pair[1].key) ||
+                        _disabledOffSegmentKeys.contains(pair[1].key),
                     onChanged: (v) => _handleSegmentChange(pair[1].key, v),
                   ),
                 ),
@@ -318,8 +331,8 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     required void Function(bool) onChanged,
     bool locked = false,
   }) {
-    // Locked (mandatory) segments: tick stays on, but visually match the
-    // enabled segments — same colors, same text weight (no greyed-out look).
+    // Locked segments: non-interactive, but look the same as normal checkboxes
+    // (no greyed-out / disabled styling).
     return InkWell(
       onTap: locked ? null : () => onChanged(!value),
       borderRadius: BorderRadius.circular(8),

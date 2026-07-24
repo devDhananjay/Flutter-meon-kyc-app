@@ -2304,6 +2304,8 @@ class _HomePageState extends State<HomePage> {
       data['nse_cash'] = true;
       data['bse_cash'] = true;
       data['mf'] = true;
+      // NSE SLBM is not selectable — always submit as false.
+      data['nse_slbm'] = false;
     }
 
     // Only send fields for the active step — not entire accumulated formData.
@@ -5594,7 +5596,7 @@ class _HomePageState extends State<HomePage> {
           if (!mounted) return;
           if (_segmentsBpDefaultsStepKey != defaultsStepKey) return;
           const mandatorySegmentKeys = <String>['nse_cash', 'bse_cash', 'mf'];
-          const optionalDefaultKeys = <String>['nse_fo', 'nse_slbm', 'bse_fo'];
+          const optionalDefaultKeys = <String>['nse_fo', 'bse_fo'];
           var didApplyDefaults = false;
           for (final key in mandatorySegmentKeys) {
             if (_formNotifier.formData[key] != true) {
@@ -5607,6 +5609,11 @@ class _HomePageState extends State<HomePage> {
               _formNotifier.handleChange(key, true);
               didApplyDefaults = true;
             }
+          }
+          // NSE SLBM: always unchecked and non-selectable.
+          if (_formNotifier.formData['nse_slbm'] != false) {
+            _formNotifier.handleChange('nse_slbm', false);
+            didApplyDefaults = true;
           }
           if (didApplyDefaults) {
             debugPrint('[HomePage] Applied segment defaults for bpwealth');
@@ -5638,6 +5645,9 @@ class _HomePageState extends State<HomePage> {
           onChange: (name, value) {
             if (name == 'nse_cash' || name == 'bse_cash' || name == 'mf') {
               if (value != true) return;
+            }
+            if (name == 'nse_slbm') {
+              return;
             }
             _formNotifier.handleChange(name, value);
           },
