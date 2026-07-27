@@ -43,8 +43,9 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
     'mf',
   };
   /// Always off; user cannot select.
+  /// Keep for when NSE SLBM checkbox is re-enabled in the UI below.
   static const Set<String> _disabledOffSegmentKeys = {
-    'nse_slbm',
+    // 'nse_slbm',
   };
   static const _linkBlue = Color(0xFF2563EB);
 
@@ -173,7 +174,8 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
         _CheckboxItem(label: 'BSE FO', key: 'bse_fo'),
       ],
       [
-        _CheckboxItem(label: 'NSE SLBM', key: 'nse_slbm'),
+        // TODO: uncomment to show NSE SLBM again
+        // _CheckboxItem(label: 'NSE SLBM', key: 'nse_slbm'),
         _CheckboxItem(label: 'MF', key: 'mf'),
       ],
     ];
@@ -195,37 +197,31 @@ class _SegmentsSelectionState extends State<SegmentsSelection> {
         ),
         const SizedBox(height: 24),
         ...segmentRows.map((pair) {
+          Widget buildItem(_CheckboxItem item) {
+            return _buildCheckbox(
+              label: item.label,
+              value: _lockedSegmentKeys.contains(item.key)
+                  ? true
+                  : _disabledOffSegmentKeys.contains(item.key)
+                      ? false
+                      : _getValue(item.key),
+              locked: _lockedSegmentKeys.contains(item.key) ||
+                  _disabledOffSegmentKeys.contains(item.key),
+              onChanged: (v) => _handleSegmentChange(item.key, v),
+            );
+          }
+
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: _buildCheckbox(
-                    label: pair[0].label,
-                    value: _lockedSegmentKeys.contains(pair[0].key)
-                        ? true
-                        : _disabledOffSegmentKeys.contains(pair[0].key)
-                            ? false
-                            : _getValue(pair[0].key),
-                    locked: _lockedSegmentKeys.contains(pair[0].key) ||
-                        _disabledOffSegmentKeys.contains(pair[0].key),
-                    onChanged: (v) => _handleSegmentChange(pair[0].key, v),
-                  ),
-                ),
+                Expanded(child: buildItem(pair[0])),
                 const SizedBox(width: 16),
                 Expanded(
-                  child: _buildCheckbox(
-                    label: pair[1].label,
-                    value: _lockedSegmentKeys.contains(pair[1].key)
-                        ? true
-                        : _disabledOffSegmentKeys.contains(pair[1].key)
-                            ? false
-                            : _getValue(pair[1].key),
-                    locked: _lockedSegmentKeys.contains(pair[1].key) ||
-                        _disabledOffSegmentKeys.contains(pair[1].key),
-                    onChanged: (v) => _handleSegmentChange(pair[1].key, v),
-                  ),
+                  child: pair.length > 1
+                      ? buildItem(pair[1])
+                      : const SizedBox.shrink(),
                 ),
               ],
             ),
