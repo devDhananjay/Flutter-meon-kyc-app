@@ -550,6 +550,13 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   /// One reload if iOS still interrupts cloudesign inline load (WK error 102).
   bool _cloudesignInterruptRecoveryUsed = false;
 
+  /// Account Aggregator ke external-flow ke dauran kabhi-kabhi server
+  /// "Pretty print" JSON error (success:false) return karta hai. Us raw JSON
+  /// ko user ko dikhne se rokne ke liye limited auto-reload.
+  int _aaJsonErrorAutoReloadAttempts = 0;
+  static const int _maxAaJsonErrorAutoReloadAttempts = 2;
+  String? _aaJsonErrorAutoReloadUrl;
+
   final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
@@ -1143,6 +1150,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
 
     final pretty = t.contains('pretty print');
     final hasMsgKey = t.contains('"msg"');
+    final hasErrorKey = t.contains('"error"');
     final statusFalse = t.contains('"status":false') ||
         t.contains('"status": false') ||
         t.contains('"success":false') ||
@@ -1151,7 +1159,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         t.contains('pdf is not generated') ||
         t.contains('journey status');
 
-    if (statusFalse && hasMsgKey) return true;
+    // Some backend JSON errors use `error` instead of `msg` (e.g. Python TypeError).
+    // Treat both as transient to avoid showing raw JSON UI.
+    if (statusFalse && (hasMsgKey || hasErrorKey)) return true;
     if (pretty && (statusFalse || tokenOrPdf)) return true;
     if (tokenOrPdf && hasMsgKey && t.length < 600) return true;
     return false;
@@ -2040,6 +2050,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     }
   }
 
+  void _showTransitionLoader([String message = 'Preparing next step...']) {
+    if (!mounted) return;
+    _cancelLoadTimers(resetLoadingMessage: false);
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+      _loadingMessage = message;
+    });
+  }
+
   /// One delayed reload for transient JSON bridge pages — not a periodic loop.
   void _scheduleCloudesignRecovery(
     InAppWebViewController controller,
@@ -2332,6 +2352,9 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     if (_redirectHandled || !mounted) return;
     _redirectHandled = true;
     if (!mounted) return;
+    _showTransitionLoader(
+      verifyCompleted ? 'Completing verification...' : 'Preparing next step...',
+    );
     
     // When verifyCompleted=true (IPV success), call get-context API directly
     // Don't navigate to route - let API call handle the data loading
@@ -2492,6 +2515,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         return;
       } else {
         debugPrint('[WebView] Verify form submitted - closing WebView');
+        _showTransitionLoader('Completing verification...');
         await _handleRedirectComplete(
           state: uri.queryParameters['state'] ?? _preservedState,
           clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
@@ -2501,6 +2525,7 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
       }
     } else if (isCleanWorkflowUrl && !initialWasVerifyPage) {
       debugPrint('[WebView] External flow completed - closing WebView');
+      _showTransitionLoader('Preparing next step...');
       await _handleRedirectComplete(
         state: uri.queryParameters['state'] ?? _preservedState,
         clientToken: uri.queryParameters['client_token'] ?? _preservedClientToken,
@@ -3075,6 +3100,52 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                           }
                         }
 
+                        // Account Aggregator: sometimes backend returns a short "Pretty print"
+                        // JSON error page (success:false, error:..., url:"") instead of a valid
+                        // next URL. Detect it and do a limited reload so the app can proceed.
+                        if (_isAccountAggregatorFlow &&
+                            !_redirectHandled &&
+                            _aaJsonErrorAutoReloadAttempts <
+                                _maxAaJsonErrorAutoReloadAttempts &&
+                            _aaJsonErrorAutoReloadUrl != urlStr) {
+                          // Prevent raw JSON "Pretty print" page flash: show loader
+                          // immediately, then confirm via body text.
+                          if (!mounted) return;
+                          setState(() {
+                            _isLoading = true;
+                            _hasError = false;
+                            _loadingMessage = 'Preparing...';
+                            _currentUrl = urlStr;
+                          });
+
+                          final bodyText = await _readMainFrameBodyText(controller);
+                          final t = bodyText.trim().toLowerCase();
+                          final statusFalse = t.contains('"success":false') ||
+                              t.contains('"success": false') ||
+                              t.contains('"status":false') ||
+                              t.contains('"status": false');
+                          final hasError = t.contains('"error"') ||
+                              t.contains('argument of type') ||
+                              t.contains('nonetype');
+                          final urlEmpty = t.contains('"url":""') ||
+                              t.contains('"url": ""') ||
+                              t.contains('"url":"') ||
+                              t.contains('"url": "');
+
+                          if (t.isNotEmpty &&
+                              t.length <= 8000 &&
+                              statusFalse &&
+                              hasError &&
+                              urlEmpty) {
+                            _aaJsonErrorAutoReloadAttempts++;
+                            _aaJsonErrorAutoReloadUrl = urlStr;
+                            debugPrint(
+                                '[WebView] AA transient JSON error detected — auto-reloading (attempt $_aaJsonErrorAutoReloadAttempts/$_maxAaJsonErrorAutoReloadAttempts)');
+                            await _reloadWebViewInternal(showToast: false);
+                            return;
+                          }
+                        }
+
                         if (heavyDoc && mounted) {
                           setState(() => _loadingMessage = 'Rendering document...');
                           await Future.delayed(const Duration(milliseconds: 1400));
@@ -3096,6 +3167,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
                         _cancelCloudesignRecovery();
                         _cloudesignRecoveryPending = false;
                         _resetDocumentRetryState();
+                        _aaJsonErrorAutoReloadAttempts = 0;
+                        _aaJsonErrorAutoReloadUrl = null;
 
                         if (_isProceedToEsignFlowContext(urlStr)) {
                           await _injectEsignDownloadUserGestureTracker(controller);
