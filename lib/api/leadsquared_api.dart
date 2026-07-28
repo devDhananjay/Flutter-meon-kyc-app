@@ -34,6 +34,26 @@ class LeadSquaredAPI {
     ];
   }
 
+  /// SSO `additional_info` keys (different naming than LeadSquared Attribute list).
+  static Map<String, String> buildSsoAdditionalInfo({
+    required String mobileNumber,
+    String firstName = '',
+    String ageGroup = '',
+  }) {
+    return <String, String>{
+      'Phone': mobileNumber,
+      'firstname': firstName,
+      'age_group': ageGroup,
+      'source': _utmSource,
+      'mx_utmsource': _utmSource,
+      'source_medium': _utmMedium,
+      'source_campaign': _utmCampaign,
+      'mx_comsource': _commSource,
+      'mx_adgroup': '',
+      'sourcecontent': _sourceContent,
+    };
+  }
+
   static String? _extractLeadId(String body) {
     try {
       final decoded = jsonDecode(body);

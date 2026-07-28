@@ -9,8 +9,8 @@ class EnvConfig {
       'https://ekyc.stoxbox.in/leadsquared_api/bp';
 
   /// Default company and workflow (static for now)
-  static const String companyName = 'bpwealth'; //'bpwealth'; mandotsecurities
-  static const String workflowName = 'app_test'; //'app_test'; individual ind_bp
+  static const String companyName = 'bpwealth'; //'bpwealth';
+  static const String workflowName = 'app_test'; //'app_test'; individual
 
 
   static String get baseUrl {

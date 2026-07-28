@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:meon_kyc/api/base_api.dart';
 import 'package:meon_kyc/config/env_config.dart';
+import 'package:meon_kyc/api/leadsquared_api.dart';
 
 class SsoTokenResult {
   final String accessToken;
@@ -90,9 +91,16 @@ class SsoAPI {
     required String workflowName,
     required String mobileNumber,
     required String email,
+    String firstName = '',
+    String ageGroup = '',
     String? kycLeadId,
   }) async {
     final url = '$_ssoBaseUrl$_ssoRoutePath';
+    final leadSquaredAdditionalInfo = LeadSquaredAPI.buildSsoAdditionalInfo(
+      mobileNumber: mobileNumber,
+      firstName: firstName,
+      ageGroup: ageGroup,
+    );
 
     final body = <String, dynamic>{
       'company': company,
@@ -108,6 +116,7 @@ class SsoAPI {
       },
       'additional_info': <String, dynamic>{
         'email': email,
+        ...leadSquaredAdditionalInfo,
         if (kycLeadId != null && kycLeadId.isNotEmpty) 'kyc_lead': kycLeadId,
       },
       'temp_data': <String, dynamic>{
@@ -116,6 +125,9 @@ class SsoAPI {
     };
 
     debugPrint('[SSO] Calling get_sso_route for $company / $workflowName');
+    debugPrint(
+      '[SSO] additional_info payload: ${jsonEncode(body['additional_info'])}',
+    );
     debugPrint('[SSO] Request payload: ${jsonEncode(body)}');
 
     try {

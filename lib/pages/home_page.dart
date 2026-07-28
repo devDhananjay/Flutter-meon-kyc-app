@@ -406,6 +406,11 @@ class _HomePageState extends State<HomePage> {
 
       debugPrint('[HomePage] No access token - attempting SSO login...');
 
+      final leadFirstName =
+          _leadQueryParam(['firstname', 'first_name', 'FirstName']);
+      final leadAgeGroup =
+          _leadQueryParam(['age_group', 'mx_Lead_Age_Group']);
+
       final kycLeadId = await _fetchKycLeadIdBeforeSso(
         mobileNumber: mobileNumber,
       );
@@ -418,6 +423,8 @@ class _HomePageState extends State<HomePage> {
         workflowName: widget.workflowName,
         mobileNumber: mobileNumber,
         email: email,
+        firstName: leadFirstName,
+        ageGroup: leadAgeGroup,
         kycLeadId: kycLeadId,
       );
 
