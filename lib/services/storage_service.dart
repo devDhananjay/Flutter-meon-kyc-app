@@ -16,6 +16,21 @@ class StorageService {
   static const _keyMessage = 'message';
   static const _keyUserStep = 'userStep';
   static const _keyUserData = 'user_data';
+  static const _keyHasRunBefore = 'has_run_before';
+
+  /// iOS Keychain (and some Android Keystore setups) entries survive app
+  /// uninstall/reinstall, unlike SharedPreferences. Call this once at app
+  /// startup, before any other secure-storage read, to detect a genuine
+  /// fresh install via a SharedPreferences flag (which IS cleared on
+  /// uninstall) and wipe stale secure-storage data left over from a
+  /// previous install.
+  static Future<void> resetOnFreshInstall() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_keyHasRunBefore) != true) {
+      await _storage.deleteAll();
+      await prefs.setBool(_keyHasRunBefore, true);
+    }
+  }
 
   static Future<String?> getAccessToken() async {
     return _storage.read(key: _keyAccessToken);
