@@ -35,9 +35,58 @@ class AppStore extends ChangeNotifier {
   dynamic _fields;
   bool _loading = false;
   String? _error;
+  /// Cached for pdfPassCheck / verifyPdfPassword (survives auth/unauth switches).
+  String? _workflowKey;
   dynamic get fields => _fields;
   bool get loading => _loading;
   String? get error => _error;
+  String? get workflowKey => _workflowKey;
+
+  void _cacheWorkflowKeyFrom(dynamic source, {required String label}) {
+    if (source is! Map) return;
+    for (final key in ['workflow_key', 'id', 'muid']) {
+      final v = source[key]?.toString().trim();
+      if (v != null && v.isNotEmpty) {
+        _workflowKey = v;
+        debugPrint('[AppStore] workflowKey cached from $label.$key=$_workflowKey');
+        return;
+      }
+    }
+  }
+
+  /// Best-effort resolve for PDF password APIs.
+  String? resolveWorkflowKey() {
+    if (_workflowKey != null && _workflowKey!.trim().isNotEmpty) {
+      return _workflowKey!.trim();
+    }
+    final auth = _fieldsWithAuth;
+    if (auth is Map) {
+      final ctx = auth['context'];
+      if (ctx is Map) {
+        final k = ctx['workflow_key']?.toString().trim();
+        if (k != null && k.isNotEmpty) {
+          _workflowKey = k;
+          return k;
+        }
+      }
+      final root = auth['workflow_key']?.toString().trim();
+      if (root != null && root.isNotEmpty) {
+        _workflowKey = root;
+        return root;
+      }
+    }
+    final wf = _fields;
+    if (wf is Map) {
+      for (final key in ['workflow_key', 'id', 'muid']) {
+        final k = wf[key]?.toString().trim();
+        if (k != null && k.isNotEmpty) {
+          _workflowKey = k;
+          return k;
+        }
+      }
+    }
+    return null;
+  }
 
   Future<void> fetchWorkflowFields(String urlCompany, String urlWorkflowName) async {
     debugPrint('[AppStore] fetchWorkflowFields START: $urlCompany / $urlWorkflowName');
@@ -51,6 +100,7 @@ class AppStore extends ChangeNotifier {
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final data = _parseJson(res.body);
         _fields = data?['workflow'];
+        _cacheWorkflowKeyFrom(_fields, label: 'workflow');
         debugPrint('[AppStore] fetchWorkflowFields OK, workflow keys: ${_fields is Map ? (_fields as Map).keys.toList() : 'n/a'}');
       } else {
         _error = friendlyApiErrorMessage(res.body, statusCode: res.statusCode);
@@ -80,8 +130,15 @@ class AppStore extends ChangeNotifier {
   dynamic get fieldsWithAuth => _fieldsWithAuth;
   bool get loadingWithAuth => _loadingWithAuth;
   String? get errorWithAuth => _errorWithAuth;
+  String? get lastGetContextRawBody => _lastGetContextRawBody;
   bool get isReturningFromWebView => _isReturningFromWebView;
   bool get rpdReturn => _rpdReturn;
+
+  /// True when get-context failed because uploaded PDF is still encrypted/closed.
+  bool get hasPdfDocumentEncryptedContextError {
+    return isPdfDocumentEncryptedError(_lastGetContextRawBody) ||
+        isPdfDocumentEncryptedError(_errorWithAuth);
+  }
 
   /// True when saved token is rejected (e.g. get-context 404 User not found).
   bool get invalidUserSession {
@@ -105,6 +162,8 @@ class AppStore extends ChangeNotifier {
 
   void clearAuthError() {
     _errorWithAuth = null;
+    _lastGetContextRawBody = null;
+    _lastGetContextStatusCode = null;
     notifyListeners();
   }
 
@@ -167,6 +226,7 @@ class AppStore extends ChangeNotifier {
           if (data is Map && data.containsKey('context')) {
             final context = data['context'];
             if (context is Map) {
+              _cacheWorkflowKeyFrom(context, label: 'context');
               if (context.containsKey('position')) {
                 _currentPosition = context['position']?.toString();
                 debugPrint('[AppStore] Position extracted: $_currentPosition');
@@ -432,6 +492,7 @@ class AppStore extends ChangeNotifier {
   void resetState() {
     _fields = null;
     _fieldsWithAuth = null;
+    _workflowKey = null;
     _userDetails = null;
     _stepperWorkflow = null;
     _currentPosition = null;

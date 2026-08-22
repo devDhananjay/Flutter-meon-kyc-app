@@ -2187,8 +2187,7 @@ class _HomePageState extends State<HomePage> {
                 ? field['cols']
                 : int.tryParse(field['cols']?.toString() ?? ''),
             urlCompany: widget.company,
-            workflowKey:
-                (store.fieldsWithAuth as Map?)?['context']?['workflow_key']?.toString(),
+            workflowKey: store.resolveWorkflowKey(),
             disable: disable,
             apiFieldMeta: field,
             useDdMmYyyyDateDisplay: _useDdMmYyyyPanDateStep(position, pageLabel),
@@ -2344,6 +2343,21 @@ class _HomePageState extends State<HomePage> {
         fields: fieldList,
         position: nomineePos,
         pageLabel: nomineeLbl,
+      );
+    }
+
+    // Step filter drops companion keys like `{fileField}_pass` (not in API field list).
+    // Web sends them with the upload — re-inject from formData for every File on this step.
+    for (final e in List<MapEntry<String, dynamic>>.from(data.entries)) {
+      if (e.value is! File) continue;
+      final passKey = '${e.key}_pass';
+      final passVal = _formNotifier.formData[passKey];
+      if (passVal == null) continue;
+      final passStr = passVal.toString();
+      if (passStr.isEmpty) continue;
+      data[passKey] = passStr;
+      debugPrint(
+        '[HomePage] Re-injected PDF password field: $passKey (len=${passStr.length})',
       );
     }
 
@@ -2625,6 +2639,11 @@ class _HomePageState extends State<HomePage> {
         // Keep filled values visible until get-context returns; then clear and apply new step.
         await store.fetchWorkflowFieldsWithAuth(widget.company, widget.workflowName, '');
         if (mounted && store.errorWithAuth != null) {
+          if (store.hasPdfDocumentEncryptedContextError) {
+            _recoverFromPdfDocumentEncryptedError(store);
+            _finishSubmitTransition(store: store, applyFreshStep: false);
+            return;
+          }
           if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
             debugPrint(
                 '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
@@ -3172,6 +3191,11 @@ class _HomePageState extends State<HomePage> {
       );
     }
     if (mounted && store.errorWithAuth != null) {
+      if (store.hasPdfDocumentEncryptedContextError) {
+        _recoverFromPdfDocumentEncryptedError(store);
+        _finishSubmitTransition(store: store, applyFreshStep: false);
+        return;
+      }
       if (_isHtmlOrInfraErrorBody(store.errorWithAuth)) {
         debugPrint(
             '[HomePage] get-context failed with server/HTML response — keeping session (not clearing storage)');
@@ -3505,6 +3529,10 @@ class _HomePageState extends State<HomePage> {
               req.fields[e.key] = v.toString();
             }
           }
+          debugPrint(
+            '[HomePage] multipart fields keys=${req.fields.keys.toList()} '
+            'files=${req.files.map((f) => f.field).toList()}',
+          );
           if (nomineeStep) {
             logNomineeKycPostPayloadDiagnostics(
               data: data,
@@ -3696,6 +3724,33 @@ class _HomePageState extends State<HomePage> {
         t.contains('502 bad gateway') ||
         t.contains('503 service unavailable') ||
         t.contains('504 gateway');
+  }
+
+  /// Keep user on the current upload step after backend rejects encrypted/closed PDF.
+  void _recoverFromPdfDocumentEncryptedError(AppStore store) {
+    debugPrint(
+      '[HomePage] PDF document closed/encrypted — staying on upload step (not clearing session)',
+    );
+    store.clearAuthError();
+
+    // Clear file + companion password fields so user can re-upload.
+    final active = _getActiveFields(store);
+    final fieldList = (active?['fields'] as List?) ?? const [];
+    for (final f in fieldList) {
+      if (f is! Map) continue;
+      if (f['type']?.toString() != 'file') continue;
+      final name = f['name']?.toString();
+      if (name == null || name.isEmpty) continue;
+      _formNotifier.handleChange(name, null, type: 'file');
+      _formNotifier.handleChange('${name}_pass', null, type: 'text');
+    }
+
+    Fluttertoast.showToast(
+      msg: kPdfDocumentEncryptedUserMessage,
+      gravity: ToastGravity.TOP,
+      toastLength: Toast.LENGTH_LONG,
+    );
+    if (mounted) setState(() {});
   }
 
   Future<void> _clearCookiesAndRefresh() async {
@@ -4374,22 +4429,43 @@ class _HomePageState extends State<HomePage> {
               }
 
               // Show error if get-context API failed (502, server HTML, technical tokens, etc.)
+              // PDF encrypted/closed: keep upload step visible (previous context still valid).
               if (store.errorWithAuth != null) {
-                return _buildApiErrorScaffold(
-                  store: store,
-                  message: store.errorWithAuth!,
-                  isAuthenticated: isAuthenticated,
-                  onRetry: () async {
-                    if (store.invalidUserSession) {
-                      final ssoOk = await _recoverInvalidSessionViaSso(store);
-                      if (ssoOk && mounted) {
+                if (store.hasPdfDocumentEncryptedContextError &&
+                    store.fieldsWithAuth is Map) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    if (!store.hasPdfDocumentEncryptedContextError) return;
+                    _recoverFromPdfDocumentEncryptedError(store);
+                  });
+                } else {
+                  return _buildApiErrorScaffold(
+                    store: store,
+                    message: store.hasPdfDocumentEncryptedContextError
+                        ? kPdfDocumentEncryptedUserMessage
+                        : store.errorWithAuth!,
+                    isAuthenticated: isAuthenticated,
+                    onRetry: () async {
+                      if (store.hasPdfDocumentEncryptedContextError &&
+                          store.fieldsWithAuth is! Map) {
+                        // Stuck session after encrypted PDF with no step context —
+                        // reset auth so user can continue from a clean upload journey.
+                        await StorageService.clearAuthTokens();
+                        store.clearAuthError();
+                        if (mounted) await _loadWorkflow();
+                        return;
+                      }
+                      if (store.invalidUserSession) {
+                        final ssoOk = await _recoverInvalidSessionViaSso(store);
+                        if (ssoOk && mounted) {
+                          await _loadWorkflow();
+                        }
+                      } else {
                         await _loadWorkflow();
                       }
-                    } else {
-                      await _loadWorkflow();
-                    }
-                  },
-                );
+                    },
+                  );
+                }
               }
 
               // Get page title from context.page.data.label or context.page.name, fallback to title/pageTitle

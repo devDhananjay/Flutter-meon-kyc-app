@@ -53,16 +53,22 @@ class KycAPI {
     String workflowKey,
     Map<String, dynamic> dataToSend,
   ) async {
+    // Match web: /pdfPassCheck/{workflow_Key} (raw key, not double-encoded).
     final uri = Uri.parse('$_baseUrl/pdfPassCheck/$workflowKey');
-    final request = http.MultipartRequest('POST', uri);
-    if (dataToSend['financial'] != null && dataToSend['financial'] is File) {
-      request.files.add(await http.MultipartFile.fromPath(
-        'financial',
-        (dataToSend['financial'] as File).path,
-      ));
-    }
-    final stream = await request.send();
-    return http.Response.fromStream(stream);
+    return _client.postMultipart(
+      () async {
+        final request = http.MultipartRequest('POST', uri);
+        final financial = dataToSend['financial'];
+        if (financial is File) {
+          request.files.add(await http.MultipartFile.fromPath(
+            'financial',
+            financial.path,
+          ));
+        }
+        return request;
+      },
+      skipRefreshOn401: true,
+    );
   }
 
   static Future<http.Response> verifyPdfPassword(
@@ -70,16 +76,23 @@ class KycAPI {
     String workflowKey,
     Map<String, dynamic> dataToSend,
   ) async {
-    final uri = Uri.parse('$_baseUrl/verifyPdfPassword/$pdfPassword/$workflowKey');
-    final request = http.MultipartRequest('POST', uri);
-    if (dataToSend['financial'] != null && dataToSend['financial'] is File) {
-      request.files.add(await http.MultipartFile.fromPath(
-        'financial',
-        (dataToSend['financial'] as File).path,
-      ));
-    }
-    final stream = await request.send();
-    return http.Response.fromStream(stream);
+    final encodedPassword = Uri.encodeComponent(pdfPassword);
+    final uri =
+        Uri.parse('$_baseUrl/verifyPdfPassword/$encodedPassword/$workflowKey');
+    return _client.postMultipart(
+      () async {
+        final request = http.MultipartRequest('POST', uri);
+        final financial = dataToSend['financial'];
+        if (financial is File) {
+          request.files.add(await http.MultipartFile.fromPath(
+            'financial',
+            financial.path,
+          ));
+        }
+        return request;
+      },
+      skipRefreshOn401: true,
+    );
   }
 
   static Future<http.Response> getUserDetails() async {

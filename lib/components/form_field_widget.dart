@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:meon_kyc/components/otp_input.dart';
 import 'package:meon_kyc/components/popup_modal.dart';
+import 'package:meon_kyc/services/pdf_password_service.dart';
 import 'package:meon_kyc/theme/kyc_theme.dart';
 import 'package:meon_kyc/utils/conditional_flow.dart';
 import 'package:meon_kyc/utils/kyc_date_utils.dart';
@@ -78,6 +79,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
   Map<String, dynamic>? _currentPopup;
   bool _isPdfEncrypted = false;
   String _pdfPassword = '';
+  bool _showPdfPassword = false;
   bool _isVerifyingPdf = false;
   String _pdfVerificationError = '';
   File? _encryptedPdfFile;
@@ -1187,8 +1189,171 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
         return;
       }
     }
-    setState(() => _fileError = null);
+
+    // Non-PDF: accept as before.
+    if (!PdfPasswordService.isPdfFile(file)) {
+      _clearPdfPasswordState(clearPassFormKey: true);
+      setState(() => _fileError = null);
+      widget.onChange(widget.name, file);
+      return;
+    }
+
+    final workflowKey = widget.workflowKey?.trim() ?? '';
+    if (workflowKey.isEmpty) {
+      debugPrint(
+        '[FormField] PDF picked but workflowKey missing — cannot run pdfPassCheck',
+      );
+      setState(() {
+        _fileError =
+            'Unable to verify PDF password protection. Please try again.';
+        _isVerifyingPdf = false;
+        _isPdfEncrypted = false;
+        _encryptedPdfFile = null;
+      });
+      return;
+    }
+
+    debugPrint(
+      '[FormField] PDF password check start field=${widget.name} workflowKey=$workflowKey',
+    );
+
+    setState(() {
+      _fileError = null;
+      _isVerifyingPdf = true;
+      _pdfVerificationError = '';
+      _isPdfEncrypted = false;
+      _encryptedPdfFile = null;
+      _pdfPassword = '';
+    });
+
+    final check = await PdfPasswordService.checkEncrypted(
+      file: file,
+      workflowKey: workflowKey,
+      urlCompany: widget.urlCompany,
+    );
+
+    if (!mounted) return;
+
+    // Explicit corrupt PDF — block.
+    if (check.status == PdfPasswordCheckStatus.corrupted) {
+      setState(() {
+        _isVerifyingPdf = false;
+        _fileError = check.message.isNotEmpty
+            ? check.message
+            : 'Your file is corrupted. Please upload a valid file.';
+        _isPdfEncrypted = false;
+        _encryptedPdfFile = null;
+      });
+      return;
+    }
+
+    // Check API flaked (403/429/HTML WAF) — do not block non-password PDFs.
+    // If the file is actually encrypted, backend will still reject on submit.
+    if (check.status == PdfPasswordCheckStatus.error) {
+      debugPrint(
+        '[FormField] PDF check failed (${check.message}) — accepting file as not encrypted',
+      );
+      setState(() {
+        _isVerifyingPdf = false;
+        _isPdfEncrypted = false;
+        _encryptedPdfFile = null;
+        _pdfPassword = '';
+        _pdfVerificationError = '';
+        _fileError = null;
+      });
+      widget.onChange('${widget.name}_pass', null);
+      widget.onChange(widget.name, file);
+      return;
+    }
+
+    if (check.status == PdfPasswordCheckStatus.encrypted) {
+      setState(() {
+        _isVerifyingPdf = false;
+        _isPdfEncrypted = true;
+        _encryptedPdfFile = file;
+        _pdfPassword = '';
+        _pdfVerificationError = '';
+        _fileError = null;
+      });
+      // Do not accept into formData until password is verified.
+      return;
+    }
+
+    // Not encrypted — accept file and clear any previous password key.
+    setState(() {
+      _isVerifyingPdf = false;
+      _isPdfEncrypted = false;
+      _encryptedPdfFile = null;
+      _pdfPassword = '';
+      _pdfVerificationError = '';
+      _fileError = null;
+    });
+    widget.onChange('${widget.name}_pass', null);
     widget.onChange(widget.name, file);
+  }
+
+  void _clearPdfPasswordState({bool clearPassFormKey = false}) {
+    _isPdfEncrypted = false;
+    _encryptedPdfFile = null;
+    _pdfPassword = '';
+    _showPdfPassword = false;
+    _pdfVerificationError = '';
+    _isVerifyingPdf = false;
+    if (clearPassFormKey) {
+      widget.onChange('${widget.name}_pass', null);
+    }
+  }
+
+  Future<void> _verifyPendingPdfPassword() async {
+    final file = _encryptedPdfFile;
+    final workflowKey = widget.workflowKey?.trim() ?? '';
+    if (file == null || workflowKey.isEmpty) return;
+
+    // Web note: blank password allowed via a space.
+    final password = _pdfPassword.isEmpty ? ' ' : _pdfPassword;
+
+    setState(() {
+      _isVerifyingPdf = true;
+      _pdfVerificationError = '';
+    });
+
+    final result = await PdfPasswordService.verifyPassword(
+      file: file,
+      password: password,
+      workflowKey: workflowKey,
+    );
+
+    if (!mounted) return;
+
+    if (!result.success) {
+      setState(() {
+        _isVerifyingPdf = false;
+        _pdfVerificationError = result.message.isNotEmpty
+            ? result.message
+            : 'Incorrect password. Please try again.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isVerifyingPdf = false;
+      _isPdfEncrypted = false;
+      _encryptedPdfFile = null;
+      _pdfVerificationError = '';
+      _fileError = null;
+    });
+    widget.onChange('${widget.name}_pass', password);
+    widget.onChange(widget.name, file);
+  }
+
+  void _removeSelectedOrPendingFile() {
+    setState(() {
+      _showInlineSignaturePad = false;
+      _clearPdfPasswordState();
+      _fileError = null;
+    });
+    widget.onChange('${widget.name}_pass', null);
+    widget.onChange(widget.name, null);
   }
 
   bool get _isSignatureField {
@@ -1480,6 +1645,7 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
 
   Widget _buildFile() {
     final hasFile = widget.value != null && widget.value is File;
+    final pendingEncrypted = _isPdfEncrypted && _encryptedPdfFile != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1496,7 +1662,10 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           _buildInlineSignaturePad()
         else
           InkWell(
-            onTap: widget.disable
+            onTap: widget.disable ||
+                    _isVerifyingPdf ||
+                    hasFile ||
+                    pendingEncrypted
                 ? null
                 : () async {
                     final result = await FilePicker.platform.pickFiles(
@@ -1519,30 +1688,118 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
                 borderRadius: BorderRadius.circular(12),
                 color: Colors.grey.shade50,
               ),
-              child: hasFile
-                  ? Column(
+              child: _isVerifyingPdf && !pendingEncrypted
+                  ? const Column(
                       children: [
-                        _buildSelectedFilePreview(widget.value as File),
-                        const SizedBox(height: 8),
-                        TextButton(
-                          onPressed: () {
-                            setState(() => _showInlineSignaturePad = false);
-                            widget.onChange(widget.name, null);
-                          },
-                          child: const Text('Remove'),
+                        SizedBox(
+                          width: 28,
+                          height: 28,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
                         ),
+                        SizedBox(height: 12),
+                        Text('Checking PDF...'),
                       ],
                     )
-                  : Column(
-                      children: [
-                        Icon(Icons.cloud_upload,
-                            size: 48, color: Colors.grey.shade600),
-                        const SizedBox(height: 8),
-                        const Text('Tap to browse or drop file'),
-                      ],
-                    ),
+                  : hasFile
+                      ? Column(
+                          children: [
+                            _buildSelectedFilePreview(widget.value as File),
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: _removeSelectedOrPendingFile,
+                              child: const Text('Remove'),
+                            ),
+                          ],
+                        )
+                      : pendingEncrypted
+                          ? Column(
+                              children: [
+                                _buildSelectedFilePreview(_encryptedPdfFile!),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Password protected PDF',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.orange.shade800,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: _removeSelectedOrPendingFile,
+                                  child: const Text('Remove'),
+                                ),
+                              ],
+                            )
+                          : Column(
+                              children: [
+                                Icon(Icons.cloud_upload,
+                                    size: 48, color: Colors.grey.shade600),
+                                const SizedBox(height: 8),
+                                const Text('Tap to browse or drop file'),
+                              ],
+                            ),
             ),
           ),
+        if (pendingEncrypted) ...[
+          const SizedBox(height: 12),
+          TextField(
+            obscureText: !_showPdfPassword,
+            enabled: !_isVerifyingPdf && !widget.disable,
+            onChanged: (v) => setState(() {
+              _pdfPassword = v;
+              _pdfVerificationError = '';
+            }),
+            decoration: InputDecoration(
+              labelText: 'Enter Password',
+              hintText: 'Enter Password',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              errorText: _pdfVerificationError.isEmpty
+                  ? null
+                  : _pdfVerificationError,
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _showPdfPassword ? Icons.visibility_off : Icons.visibility,
+                ),
+                onPressed: () =>
+                    setState(() => _showPdfPassword = !_showPdfPassword),
+              ),
+            ),
+            onSubmitted: (_) {
+              if (!_isVerifyingPdf) _verifyPendingPdfPassword();
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Note: If your document isn\'t password protected, you can simply leave the password field blank by entering a space.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: (_isVerifyingPdf || widget.disable)
+                  ? null
+                  : _verifyPendingPdfPassword,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: KycTheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: _isVerifyingPdf
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text('Verify Password'),
+            ),
+          ),
+        ],
         if (_fileError != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -1553,12 +1810,9 @@ class _FormFieldWidgetState extends State<FormFieldWidget> {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
-              onPressed: widget.disable
+              onPressed: widget.disable || hasFile || pendingEncrypted
                   ? null
                   : () {
-                      if (hasFile) {
-                        widget.onChange(widget.name, null);
-                      }
                       setState(() {
                         _showInlineSignaturePad = true;
                         _signaturePoints.clear();

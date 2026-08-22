@@ -77,3 +77,15 @@ String _defaultForStatus(int? statusCode) {
       return 'Something went wrong. Please check your connection and tap Try Again.';
   }
 }
+
+/// Backend get-context / process error when uploaded PDF is still locked.
+bool isPdfDocumentEncryptedError(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return false;
+  final lower = raw.toLowerCase();
+  return lower.contains('document closed or encrypted') ||
+      lower.contains('closed or encrypted');
+}
+
+const String kPdfDocumentEncryptedUserMessage =
+    'This PDF is password protected or could not be opened. Please upload again and enter the correct password.';
+
