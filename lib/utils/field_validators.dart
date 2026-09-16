@@ -393,7 +393,7 @@ void clearMainNomineeBlockFormData({
       formData[name] = false;
     }
   }
-  formData[kNomineeOptOutTermsField] = false;
+  formData[kNomineeOptOutTermsField] = true;
 }
 
 /// Resume only when API/form already has nominee 1 data (dropoff).
@@ -437,6 +437,8 @@ void seedAddNomineeFieldDefaultNo({
 
   final values = def['values'] as List?;
   formData[kAddNomineeField] = resolveKycYesNoOptionValue(values, 'No');
+  // Landing default: consent checked so Add Later can submit without extra ticks.
+  formData[kNomineeOptOutTermsField] = true;
 }
 
 bool _isUnsetPersonalDetailsDefaultValue(dynamic existing) {

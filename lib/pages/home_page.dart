@@ -1892,26 +1892,27 @@ class _HomePageState extends State<HomePage> {
     required Map? ctx,
   }) {
     final addingNominee = isAddNomineeSelectedYes(_formNotifier.formData);
-    final rows = <Widget>[
-      NomineeStepSection.primaryToggle(
-        addingNominee: addingNominee,
-        onAdd: () => _setAddNomineeSelection(
-          fieldList: fieldList,
-          yes: true,
-          position: position,
-          pageLabel: pageLabel,
-        ),
-        onRemove: () => _setAddNomineeSelection(
-          fieldList: fieldList,
-          yes: false,
-          position: position,
-          pageLabel: pageLabel,
-        ),
-      ),
-      NomineeStepSection.maxNomineesHint(),
-    ];
+    final rows = <Widget>[];
 
     if (addingNominee) {
+      rows.addAll([
+        NomineeStepSection.primaryToggle(
+          addingNominee: addingNominee,
+          onAdd: () => _setAddNomineeSelection(
+            fieldList: fieldList,
+            yes: true,
+            position: position,
+            pageLabel: pageLabel,
+          ),
+          onRemove: () => _setAddNomineeSelection(
+            fieldList: fieldList,
+            yes: false,
+            position: position,
+            pageLabel: pageLabel,
+          ),
+        ),
+        NomineeStepSection.maxNomineesHint(),
+      ]);
       for (final raw in visibleFieldsForDisplay) {
         if (raw is! Map) continue;
         final fieldMap = Map<dynamic, dynamic>.from(raw);
@@ -1961,22 +1962,30 @@ class _HomePageState extends State<HomePage> {
       }
     } else {
       final optOut = _findFieldDefByName(fieldList, kNomineeOptOutTermsField);
-      if (optOut != null) {
-        rows.add(
-          _buildFormFieldRow(
-            field: Map<dynamic, dynamic>.from(optOut),
-            otpField: otpField,
-            otpFieldName: otpFieldName,
-            hasAadharImage: hasAadharImage,
-            activeFields: activeFields,
-            store: store,
-            fieldList: fieldList,
-            position: position,
-            pageLabel: pageLabel,
-            ctx: ctx,
+      rows.add(
+        NomineeStepSection.optOutLanding(
+          checked: isCheckboxCheckedValue(
+            _formNotifier.formData[kNomineeOptOutTermsField],
           ),
-        );
-      }
+          onToggle: () {
+            if (optOut == null) return;
+            final currently = isCheckboxCheckedValue(
+              _formNotifier.formData[kNomineeOptOutTermsField],
+            );
+            _formNotifier.handleChange(
+              kNomineeOptOutTermsField,
+              !currently,
+              type: optOut['type']?.toString() ?? 'checkbox',
+              validationType: optOut['validation']?.toString(),
+              validateWith: optOut['validateWith']?.toString(),
+            );
+            if (mounted) setState(() {});
+          },
+          onDeclarationTap: () {
+            NomineeStepSection.showOptOutDeclarationDialog(context);
+          },
+        ),
+      );
     }
 
     return rows;
@@ -5929,7 +5938,15 @@ class _HomePageState extends State<HomePage> {
     final showSecurityFooter = !hideOnboardingFooter;
     final isMobileStep = position == 'mobile' || pageLabel == 'mobile';
     final isNomineeStep = isNomineeKycStep(position, pageLabel);
-    final nomineeBlocksSubmit = _isNomineeSubmitDisabled(position, pageLabel);
+    final addingNominee =
+        isNomineeStep && isAddNomineeSelectedYes(_formNotifier.formData);
+    final nomineeLanding = isNomineeStep && !addingNominee;
+    final nomineeOptOutChecked = isCheckboxCheckedValue(
+      _formNotifier.formData[kNomineeOptOutTermsField],
+    );
+    final nomineeBlocksSubmit = nomineeLanding
+        ? false
+        : _isNomineeSubmitDisabled(position, pageLabel);
     final fatcaBlocksSubmit = _isPersonalDetailsStep(position, pageLabel) &&
         (_fatcaTaxResidencyMustPickNo ||
             _fatcaTaxResidencyYesFields(fieldList).isNotEmpty);
@@ -6157,6 +6174,15 @@ class _HomePageState extends State<HomePage> {
                   ? null
                   : () {
                       debugPrint('[HomePage] Submit button clicked! isAuth=$isAuth, position=$position');
+                      if (nomineeLanding && !nomineeOptOutChecked) {
+                        _setAddNomineeSelection(
+                          fieldList: fieldList,
+                          yes: true,
+                          position: position,
+                          pageLabel: pageLabel,
+                        );
+                        return;
+                      }
                       if (isAuth) {
                         if (_enforceFatcaTaxResidencyNoOnSubmit(
                           position: position,
@@ -6200,10 +6226,12 @@ class _HomePageState extends State<HomePage> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text(
-                          _primarySubmitLabel(
-                            isMobileStep: isMobileStep,
-                            submitButton: submitButton,
-                          ),
+                          nomineeLanding
+                              ? (nomineeOptOutChecked ? 'Add Later' : 'Add Now')
+                              : _primarySubmitLabel(
+                                  isMobileStep: isMobileStep,
+                                  submitButton: submitButton,
+                                ),
                         ),
                       ],
                     ),

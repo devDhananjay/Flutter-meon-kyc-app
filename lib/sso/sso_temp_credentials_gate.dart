@@ -11,7 +11,7 @@ class SsoCredentials {
 
 /// Static SSO credentials (change here or wire from host app later).
 const SsoCredentials kSsoStaticCredentials = SsoCredentials(
-  mobileNumber: '9411441937',
+  mobileNumber: '7768970725',
   email: 'dhananjay@meon.co.in',
 );
 
