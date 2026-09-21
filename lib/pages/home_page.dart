@@ -128,6 +128,9 @@ class _HomePageState extends State<HomePage> {
   /// Prevents post-frame form sync from re-running on every rebuild (same step).
   String? _activeFieldsSyncKey;
 
+  /// Max-3 product: auto-submit through unwanted additional_nominee* steps.
+  int _autoSkipAdditionalNomineeDepth = 0;
+
   bool _responseIndicatesKycCompleted(dynamic response) {
     return response is Map && response['is_admin'] == true;
   }
@@ -1380,6 +1383,57 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.orange.shade700,
       textColor: Colors.white,
     );
+    return true;
+  }
+
+  /// When product caps at 3 nominees, workflow may still open additional_nominee*.
+  /// If prior allocation is already 100%, auto-submit to advance past those steps.
+  Future<bool> _maybeAutoSkipAdditionalNomineeForMaxThree(AppStore store) async {
+    if (!kNomineeMaxThreeOnly) return false;
+    // Allow nested skip for additional_nominee → additional_nominee_second (max 2).
+    if (_autoSkipAdditionalNomineeDepth >= 2) return false;
+    if (!mounted) return false;
+
+    final step = _submitValidationStep(store);
+    if (!isAdditionalNomineeKycStep(step.position, step.pageLabel)) {
+      return false;
+    }
+
+    final fieldList = (_getActiveFields(store)?['fields'] as List?) ?? [];
+    final prior = readPriorNomineeAllocatedPercent(
+      formData: _formNotifier.formData,
+      fields: fieldList,
+      position: step.position,
+      pageLabel: step.pageLabel,
+    );
+    if (prior < 99.999) {
+      debugPrint(
+        '[HomePage] Max-3: additional_nominee prior=$prior — not auto-skipping',
+      );
+      return false;
+    }
+
+    debugPrint(
+      '[HomePage] Max-3: auto-skipping ${step.position}/${step.pageLabel} '
+      '(prior=$prior depth=$_autoSkipAdditionalNomineeDepth)',
+    );
+    _formNotifier.formData[kExtraSecondNomineeField] = 'No';
+    if (_findFieldDefByName(fieldList, kRemainNomineePercentField) != null) {
+      _formNotifier.formData[kRemainNomineePercentField] = '100';
+    }
+    if (_findFieldDefByName(fieldList, kRemainNomineePercent2Field) != null) {
+      _formNotifier.formData[kRemainNomineePercent2Field] = '100';
+    }
+    if (_findFieldDefByName(fieldList, kTotalNomineePercentage2Field) != null) {
+      _formNotifier.formData[kTotalNomineePercentage2Field] = '100';
+    }
+
+    _autoSkipAdditionalNomineeDepth++;
+    try {
+      await _handleCommonSubmit(true);
+    } finally {
+      _autoSkipAdditionalNomineeDepth--;
+    }
     return true;
   }
 
@@ -2695,6 +2749,11 @@ class _HomePageState extends State<HomePage> {
           }
           _clearSubmitFreeze();
           setState(() => _submitLoading = false);
+          // Workflow still opens additional_nominee even with extra_nominee=No —
+          // auto-advance those steps when product caps at 3 nominees.
+          if (await _maybeAutoSkipAdditionalNomineeForMaxThree(store)) {
+            return;
+          }
           await _checkAndHandleRedirect(store);
         }
       } else {

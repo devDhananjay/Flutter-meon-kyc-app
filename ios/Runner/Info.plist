@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -20,9 +22,52 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>upi</string>
+		<string>bhim</string>
+		<string>gpay</string>
+		<string>tez</string>
+		<string>googlepay</string>
+		<string>google.payments</string>
+		<string>paytm</string>
+		<string>paytmmp</string>
+		<string>phonepe</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartobservatory._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>We are using it for user uploading documents</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app uses the local network to connect to development services on your device.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>We need your location for better services.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>We need your location to provide better services even when the app is not active.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We need your location to provide better services.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>We need access to your microphone for audio recording.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>We are using it for user attendance and uploading documents</string>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
@@ -41,54 +86,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>CADisableMinimumFrameDurationOnPhone</key>
-	<true/>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>This app uses the local network to connect to development services on your device.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_dartobservatory._tcp</string>
-	</array>
-
-	<key>NSLocationWhenInUseUsageDescription</key>
-<string>We need your location to provide better services.</string>
-<key>NSLocationAlwaysUsageDescription</key>
-<string>We need your location to provide better services even when the app is not active.</string>
-<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>We need your location for better services.</string>
-<key>NSPhotoLibraryUsageDescription</key>
-<string>We are using it for user attendance and uploading documents</string>
-<key>NSCameraUsageDescription</key>
-<string>We are using it for user uploading documents</string>
-<key>NSMicrophoneUsageDescription</key>
-<string>We need access to your microphone for audio recording.</string>
-	
-	<!-- Allow querying / opening UPI & payment apps from url_launcher -->
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>upi</string>
-		<string>bhim</string>
-		<string>gpay</string>
-		<string>tez</string>
-		<string>googlepay</string>
-		<string>google.payments</string>
-		<string>paytm</string>
-		<string>paytmmp</string>
-		<string>phonepe</string>
-	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>com.googleusercontent.apps.1077626154170-es9hivvnhu47uscieen8cgj8aq1afg7g</string>
-			</array>
-		</dict>
-	</array>
-	
 </dict>
 </plist>

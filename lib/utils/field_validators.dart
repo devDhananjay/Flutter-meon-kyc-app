@@ -496,6 +496,10 @@ const String kExtraNomineeField = 'extra_nominee';
 /// Additional nominee step API field: "Do you want to add more nominee".
 const String kExtraSecondNomineeField = 'extra_second_nominee';
 
+/// Product rule: only nominees 1–3 (exactly 100%). Ignore workflow `extra_nominee`
+/// so the app never routes to Additional Nominee (4+) even if that field still exists.
+const bool kNomineeMaxThreeOnly = true;
+
 const String kNomineePctMustBeExactly100Message =
     'Total nominee percentage must be exactly 100%.';
 const String kNomineePctAllocateRemainingMessage =
@@ -1636,7 +1640,9 @@ void _applyNomineeSupplementaryFieldsVisibility({
   if (fields == null) return;
 
   final onMainNominee = isNomineeKycStep(position, pageLabel);
-  final extraYes = _isKycYesNoValue(formData[kExtraNomineeField]);
+  final extraYes = kNomineeMaxThreeOnly
+      ? false
+      : _isKycYesNoValue(formData[kExtraNomineeField]);
 
   for (final f in fields) {
     if (f is! Map) continue;
@@ -1841,6 +1847,7 @@ bool isExtraNomineeDropdownVisible({
   String? position,
   String? pageLabel,
 }) {
+  if (kNomineeMaxThreeOnly) return false;
   if (_findFieldDefByName(fields, kExtraNomineeField) == null) return false;
 
   final total = sumActiveNomineePercentages(
@@ -1880,7 +1887,7 @@ void applyExtraNomineeFieldState({
 
   if (!show) {
     runtimeFieldVisibility[kExtraNomineeField] = false;
-    formData[kExtraNomineeField] = '';
+    formData[kExtraNomineeField] = kNomineeMaxThreeOnly ? 'No' : '';
     fieldEditable[kExtraNomineeField] = true;
   } else {
     runtimeFieldVisibility[kExtraNomineeField] = true;
@@ -1932,9 +1939,17 @@ void syncExtraNomineeSubmitPayload({
   if (!isNomineeKycStep(position, pageLabel) || !_addNomineeSelectedYes(data)) {
     return;
   }
+
+  // Max 3: always send explicit No (blank still routes to additional_nominee
+  // on this live workflow). Field may be missing from the step field list.
+  if (kNomineeMaxThreeOnly) {
+    data[kExtraNomineeField] = 'No';
+    return;
+  }
+
   if (_findFieldDefByName(fields, kExtraNomineeField) == null) return;
 
-  // Main nominee at 100% → explicit blank (skip additional_nominee step).
+  // Main nominee at 100% → blank `extra_nominee` so backend skips additional_nominee.
   if (isNomineeActiveShareFull(
     formData: data,
     fields: fields,
@@ -1943,12 +1958,6 @@ void syncExtraNomineeSubmitPayload({
     position: position,
     pageLabel: pageLabel,
   )) {
-    if (_findFieldDefByName(fields, kAddSecondNomineeField) != null) {
-      data[kAddSecondNomineeField] = false;
-    }
-    if (_findFieldDefByName(fields, kAddThirdNomineeField) != null) {
-      data[kAddThirdNomineeField] = false;
-    }
     data[kExtraNomineeField] = '';
     return;
   }
@@ -2090,6 +2099,16 @@ Map<String, dynamic> buildNomineeKycPostV2Body({
   for (final name in kNomineeComputedSubmitFieldNames) {
     if (data.containsKey(name)) {
       out[name] = normalizeNomineeKycPostFieldValue(data[name]);
+    }
+  }
+
+  // Max-3 product: always include explicit No for backend routing
+  // (blank is not enough on some live workflows — still opens additional_nominee).
+  if (kNomineeMaxThreeOnly) {
+    out[kExtraNomineeField] = 'No';
+    if (out.containsKey(kExtraSecondNomineeField) ||
+        _findFieldDefByName(fields, kExtraSecondNomineeField) != null) {
+      out[kExtraSecondNomineeField] = 'No';
     }
   }
 
